@@ -364,6 +364,22 @@
     closeAllDropdown();
   }
 
+  // 마우스 가로 휠 및 Shift + 마우스 세로 휠 가로 스크롤 지원
+  function handleWheel(e: WheelEvent) {
+    if (!textareaEl) return;
+    
+    // deltaX가 존재하면 가로 휠 입력이 있는 것임
+    if (e.deltaX !== 0) {
+      textareaEl.scrollLeft += e.deltaX;
+      e.preventDefault();
+    } 
+    // Shift 키를 누르고 세로 휠을 돌릴 때 가로 스크롤 매핑
+    else if (e.shiftKey && e.deltaY !== 0) {
+      textareaEl.scrollLeft += e.deltaY;
+      e.preventDefault();
+    }
+  }
+
   // 글로벌 키보드 단축키 감지
   function handleKeyDown(e: KeyboardEvent) {
     if (e.ctrlKey && e.key.toLowerCase() === 'n') {
@@ -506,6 +522,7 @@
       onkeyup={updateCursorPosition}
       onclick={updateCursorPosition}
       onfocus={updateCursorPosition}
+      onwheel={handleWheel}
       spellcheck="false"
     ></textarea>
 

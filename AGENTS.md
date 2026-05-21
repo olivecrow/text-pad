@@ -92,3 +92,12 @@
   - `npm run tauri build`를 백그라운드 태스크로 재수행하여 Windows 독립 실행형 릴리스 패키지(MSI, NSIS 설치 파일 및 `tauri-app.exe` 바이너리) 빌드 성공 완료.
 - **다음 작업**: Phase 2 CodeMirror 6 기반 에디터 및 소스 모드/렌더링 뷰 기능 고도화 설계 및 적용.
 
+### [2026-05-21] 마우스 가로 휠 스크롤 미작동 이슈 해결
+- **작업자**: Antigravity
+- **상세 내용**:
+  - HTML `textarea` 요소가 `white-space: pre` 상태일 때 일부 WebView2 환경에서 마우스 가로 휠 입력(`deltaX`)이 텍스트 스크롤에 디폴트로 반영되지 않는 현상 확인.
+  - `textarea`에 `onwheel` 이벤트 리스너 `handleWheel`을 연결하여 `deltaX`가 감지되면 `textareaEl.scrollLeft += deltaX`로 직접 스크롤되도록 로직 구현.
+  - 마우스에 가로 휠이 없는 사용자를 위해 `Shift + 세로 휠(deltaY)` 입력 시에도 가로 스크롤이 작동하도록 범용 단축 조작 지원 추가.
+- **다음 작업**: 빌드 검증 후 핫픽스 버전 패키징 완료.
+
+
