@@ -1,0 +1,22 @@
+{
+  "app": {
+    "name": "kimchi-pad",
+    "locale": "ko-KR",
+    "autosave": false
+  },
+  "window": {
+    "width": 1280,
+    "height": 820,
+    "rememberBounds": true
+  },
+  "recentFiles": [
+    "notes/draft.md",
+    "samples/customer-orders.csv",
+    "samples/workspace-config.toml"
+  ],
+  "features": {
+    "structuredTextPreview": true,
+    "csvHeaderToggle": true,
+    "themeSync": true
+  }
+}

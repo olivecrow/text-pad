@@ -1,0 +1,18 @@
+---
+defaults: &defaults
+  image: kimchi-pad:debug
+  replicas: 2
+service:
+  <<: *defaults
+  env:
+    LOG_LEVEL: debug
+releaseNotes: |
+  First line of release notes.
+  Second line stays inside the block scalar.
+...
+---
+profiles:
+  - name: staging
+    host: staging.local
+  - name: production
+    host: kimchi.example.com

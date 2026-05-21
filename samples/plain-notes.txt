@@ -1,0 +1,5 @@
+Kimchi Pad plain text sample
+---------------------------
+This file is a normal UTF-8 text sample.
+Use it to confirm plain text mode, save, and reopen behavior.
+It should stay in plain text mode and keep LF line endings.

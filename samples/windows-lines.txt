@@ -1,0 +1,3 @@
+Windows line ending sample
+Second line stays CRLF
+Third line is here

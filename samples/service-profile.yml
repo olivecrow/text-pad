@@ -1,0 +1,9 @@
+profile:
+  name: editor-preview
+  region: ap-northeast-2
+limits:
+  workers: 4
+  autosave: true
+paths:
+  - notes/draft.md
+  - samples/customer-orders.csv
