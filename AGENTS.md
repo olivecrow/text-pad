@@ -11,8 +11,8 @@
 ## 1. 현재 에이전트 상태 및 우선순위 (Current Status & Priorities)
 
 - **활성 에이전트**: Antigravity (Senior Developer Persona)
-- **현재 초점**: Phase 0 (기본 프로젝트 스택 확정 및 저장소 구조 빌드 준비)
-- **최우선 태스크**: Tauri 2 + Rust + Svelte + CodeMirror 6 기반 기술 스택 구성 및 기초 보일러플레이트 작성 계획 수립
+- **현재 초점**: Phase 2 (CodeMirror 6 기반 소스 에디터 통합 준비)
+- **최우선 태스크**: 원시 텍스트 뷰어(Phase 1 마일스톤) 검증 완료 후, 본격적인 원문 편집 모드 구축 준비
 
 ---
 
@@ -47,3 +47,14 @@
   - 단일 가이드 문서가 길어질 경우의 토큰 비효율성을 방지하기 위해 가이드를 분할함.
   - Rust 백엔드 가이드 [backend-guide.md](file:///c:/Users/olive/Desktop/Development/text-pad/docs/backend-guide.md) 및 Svelte/TS 프론트엔드 가이드 [frontend-guide.md](file:///c:/Users/olive/Desktop/Development/text-pad/docs/frontend-guide.md)를 별도 파일로 분리 생성.
   - [project-guide.md](file:///c:/Users/olive/Desktop/Development/text-pad/docs/project-guide.md) 및 [AGENTS.md](file:///c:/Users/olive/Desktop/Development/text-pad/AGENTS.md)에 각각 개별 가이드 문서 경로 링크 인덱싱 및 가이드 분할 작성 원칙 명시 완료.
+
+### [2026-05-21] Phase 1 - 텍스트 파일 뷰어 및 메모장형 편집기 구현
+- **작업자**: Antigravity
+- **상세 내용**:
+  - Tauri 2 및 SvelteKit-TS 보일러플레이트 결합하여 앱 셸 인프라 구축.
+  - Rust 백엔드에 안전한 파일 콘텐츠 로더 커맨드 `read_file_content` 및 파일 저장 커맨드 `write_file_content` 구현 완료 (`unwrap()` 배제).
+  - Tauri `@tauri-apps/plugin-dialog` 연동 및 Svelte UI 단에서 파일 열기/저장 액션 연동 완료.
+  - **리팩토링**: 불필요한 웰컴 그래픽 화면을 모두 제거하고, 켜자마자 바로 텍스트 편집이 가능한 메모장 형식으로 개선.
+  - 상단 툴바에 컴팩트한 네이티브 윈도우 스타일의 메뉴(새 파일, 열기, 저장) 배치 및 하단 상태바 메타 데이터 출력 연동.
+  - `npm run tauri dev`를 통해 파일 열기, 즉시 편집 및 변경 사항 디스크 저장 기능 정상 동작 확인.
+- **다음 작업**: Phase 2 CodeMirror 6 기반의 원문 편집기(Source Mode) 연동 및 기본 편집 기능 구현.
