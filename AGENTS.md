@@ -42,6 +42,8 @@
 - **다음 작업**: Tauri 2 기반 프레임워크 초기화 및 기초 디렉토리 구조 생성 계획(Implementation Plan) 마련.
 
 ### [2026-05-21] 가이드 문서의 분할 아키텍처 도입
+
+### [2026-05-21] 가이드 문서의 분할 아키텍처 도입
 - **작업자**: Antigravity
 - **상세 내용**:
   - 단일 가이드 문서가 길어질 경우의 토큰 비효율성을 방지하기 위해 가이드를 분할함.
@@ -57,4 +59,15 @@
   - **리팩토링**: 불필요한 웰컴 그래픽 화면을 모두 제거하고, 켜자마자 바로 텍스트 편집이 가능한 메모장 형식으로 개선.
   - 상단 툴바에 컴팩트한 네이티브 윈도우 스타일의 메뉴(새 파일, 열기, 저장) 배치 및 하단 상태바 메타 데이터 출력 연동.
   - `npm run tauri dev`를 통해 파일 열기, 즉시 편집 및 변경 사항 디스크 저장 기능 정상 동작 확인.
+  - **릴리스 최적화**: 샌드박스 없는 독립형 기동 및 콘솔 창 팝업 방지를 위해 `npm run tauri build` 릴리스 빌드 검증 수행 및 루트의 [text-pad.lnk](file:///c:/Users/olive/Desktop/Development/text-pad/text-pad.lnk) 바로가기가 릴리스 바이너리를 조준하도록 구성 완료.
 - **다음 작업**: Phase 2 CodeMirror 6 기반의 원문 편집기(Source Mode) 연동 및 기본 편집 기능 구현.
+
+### [2026-05-21] 바로가기 단독 실행 오류 핫픽스 (터미널 팝업 및 연결 오류 해결)
+- **작업자**: Antigravity
+- **상세 내용**:
+  - 생성된 바로가기가 디버그 빌드 바이너리(`debug/tauri-app.exe`)를 가리켜, 실행 시 디버그 터미널이 열린 채 사라지지 않고 로컬 개발 서버가 꺼져 있을 때 `ERR_CONNECTION_REFUSED` 에러가 뜨는 문제 확인.
+  - `npm run tauri build`를 수동 재실행하여 SvelteKit 정적 파일들이 패키징된 독립 실행형 릴리스 바이너리(`release/tauri-app.exe`)를 빌드 완료.
+  - 바로가기 생성 파워셸 스크립트를 사용하여 루트의 [text-pad.lnk](file:///c:/Users/olive/Desktop/Development/text-pad/text-pad.lnk)가 릴리스 바이너리를 가리키도록 갱신 완료.
+  - 릴리스 빌드에서는 `windows_subsystem = "windows"` 매크로가 정상 작동하여 콘솔 창 없이 GUI 창만 깔끔하게 로드됨을 확인.
+- **다음 작업**: Phase 2 소스 에디터(CodeMirror 6) 통합 구현 계획 수립 및 개발 착수.
+
