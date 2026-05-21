@@ -1,6 +1,7 @@
 <script lang="ts">
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { invoke } from "@tauri-apps/api/core";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
 
   let filePath = $state<string | null>(null);
   let fileName = $state<string>("제목 없음");
@@ -9,27 +10,41 @@
   let isLoading = $state<boolean>(false);
   let errorMsg = $state<string | null>(null);
 
-  // 스크롤 동기화를 위한 DOM 바인딩
-  let gutterEl = $state<HTMLElement | null>(null);
+  // 커서 상태 추적
+  let cursorLine = $state<number>(1);
+  let cursorCol = $state<number>(1);
+
+  // 메뉴 상태 추적
+  let openDropdown = $state<'file' | 'edit' | null>(null);
+
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
 
-  // 반응형 파생 상태 (Rune)
-  let lines = $derived(fileContent.split(/\r?\n/));
-  let lineCount = $derived(lines.length === 0 ? 1 : lines.length);
+  // 반응형 상태
+  let lineCount = $derived(fileContent.split(/\r?\n/).length);
   let charCount = $derived(fileContent.length);
 
-  function syncScroll() {
-    if (gutterEl && textareaEl) {
-      gutterEl.scrollTop = textareaEl.scrollTop;
-    }
+  // 창 제목 동기화 (Rune Effect)
+  $effect(() => {
+    const appWindow = getCurrentWindow();
+    const title = `${isDirty ? "*" : ""}${fileName} - 메모장`;
+    appWindow.setTitle(title).catch(() => {});
+  });
+
+  // 커서 위치 업데이트
+  function updateCursorPosition() {
+    if (!textareaEl) return;
+    const pos = textareaEl.selectionStart;
+    const textBeforeCursor = fileContent.substring(0, pos);
+    const linesBefore = textBeforeCursor.split(/\r?\n/);
+    cursorLine = linesBefore.length;
+    cursorCol = linesBefore[linesBefore.length - 1].length + 1;
   }
 
   // 변경 감지
   function handleInput() {
     isDirty = true;
     errorMsg = null;
-    // 입력 시 비동기로 스크롤 높이가 변경될 수 있으므로 동기화 시도
-    setTimeout(syncScroll, 0);
+    updateCursorPosition();
   }
 
   // 새 파일 생성
@@ -43,6 +58,7 @@
     fileContent = "";
     isDirty = false;
     errorMsg = null;
+    closeAllDropdown();
   }
 
   // 파일 열기
@@ -55,6 +71,7 @@
     try {
       isLoading = true;
       errorMsg = null;
+      closeAllDropdown();
       const selected = await open({
         multiple: false,
         directory: false,
@@ -79,7 +96,13 @@
       errorMsg = typeof err === "string" ? err : err.message || String(err);
     } finally {
       isLoading = false;
-      setTimeout(syncScroll, 50);
+      setTimeout(() => {
+        if (textareaEl) {
+          textareaEl.focus();
+          textareaEl.selectionStart = textareaEl.selectionEnd = 0;
+          updateCursorPosition();
+        }
+      }, 50);
     }
   }
 
@@ -88,10 +111,10 @@
     try {
       isLoading = true;
       errorMsg = null;
+      closeAllDropdown();
 
       let targetPath = filePath;
 
-      // 경로가 없으면 '새 이름으로 저장' 다이얼로그 호출
       if (!targetPath) {
         const selected = await save({
           filters: [
@@ -103,12 +126,11 @@
         });
         if (!selected) {
           isLoading = false;
-          return; // 취소됨
+          return;
         }
         targetPath = selected;
       }
 
-      // Rust 백엔드 저장 커맨드 호출
       await invoke("write_file_content", { path: targetPath, content: fileContent });
       
       filePath = targetPath;
@@ -121,119 +143,399 @@
       isLoading = false;
     }
   }
+
+  // 다른 이름으로 저장
+  async function handleSaveAsFile() {
+    try {
+      isLoading = true;
+      errorMsg = null;
+      closeAllDropdown();
+
+      const selected = await save({
+        filters: [
+          {
+            name: "Text Files",
+            extensions: ["txt"]
+          }
+        ]
+      });
+      if (!selected) {
+        isLoading = false;
+        return;
+      }
+
+      await invoke("write_file_content", { path: selected, content: fileContent });
+      filePath = selected;
+      const parts = selected.split(/[/\\]/);
+      fileName = parts[parts.length - 1] || selected;
+      isDirty = false;
+    } catch (err: any) {
+      errorMsg = typeof err === "string" ? err : err.message || String(err);
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  // 앱 종료
+  function handleExit() {
+    if (isDirty) {
+      const confirmDiscard = confirm("저장되지 않은 변경 사항이 있습니다. 정말 종료하시겠습니까?");
+      if (!confirmDiscard) return;
+    }
+    getCurrentWindow().close().catch(() => {});
+  }
+
+  // 메뉴 제어
+  function toggleDropdown(menu: 'file' | 'edit', event: MouseEvent) {
+    event.stopPropagation();
+    if (openDropdown === menu) {
+      openDropdown = null;
+    } else {
+      openDropdown = menu;
+    }
+  }
+
+  function handleMouseEnter(menu: 'file' | 'edit') {
+    if (openDropdown !== null) {
+      openDropdown = menu;
+    }
+  }
+
+  function closeAllDropdown() {
+    openDropdown = null;
+  }
+
+  // 날짜/시간 삽입 (F5)
+  function insertDateTime() {
+    if (!textareaEl) return;
+    const start = textareaEl.selectionStart;
+    const end = textareaEl.selectionEnd;
+    const now = new Date();
+    
+    const timeStr = now.toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit', hour12: true });
+    const dateStr = now.toLocaleDateString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit' })
+      .replace(/\. /g, '-').replace(/\./g, '');
+      
+    const formatted = `${timeStr} ${dateStr}`;
+    
+    const before = fileContent.substring(0, start);
+    const after = fileContent.substring(end);
+    fileContent = before + formatted + after;
+    isDirty = true;
+    
+    closeAllDropdown();
+    
+    setTimeout(() => {
+      if (textareaEl) {
+        textareaEl.focus();
+        textareaEl.selectionStart = textareaEl.selectionEnd = start + formatted.length;
+        updateCursorPosition();
+      }
+    }, 0);
+  }
+
+  // 편집 메뉴 액션들
+  function handleUndo() {
+    if (textareaEl) {
+      textareaEl.focus();
+      document.execCommand('undo');
+    }
+    closeAllDropdown();
+  }
+
+  function handleRedo() {
+    if (textareaEl) {
+      textareaEl.focus();
+      document.execCommand('redo');
+    }
+    closeAllDropdown();
+  }
+
+  async function handleCut() {
+    if (!textareaEl) return;
+    const start = textareaEl.selectionStart;
+    const end = textareaEl.selectionEnd;
+    if (start === end) return;
+    
+    const selectedText = fileContent.substring(start, end);
+    await navigator.clipboard.writeText(selectedText);
+    
+    const before = fileContent.substring(0, start);
+    const after = fileContent.substring(end);
+    fileContent = before + after;
+    isDirty = true;
+    
+    closeAllDropdown();
+    setTimeout(() => {
+      if (textareaEl) {
+        textareaEl.focus();
+        textareaEl.selectionStart = textareaEl.selectionEnd = start;
+        updateCursorPosition();
+      }
+    }, 0);
+  }
+
+  async function handleCopy() {
+    if (!textareaEl) return;
+    const start = textareaEl.selectionStart;
+    const end = textareaEl.selectionEnd;
+    if (start === end) return;
+    
+    const selectedText = fileContent.substring(start, end);
+    await navigator.clipboard.writeText(selectedText);
+    closeAllDropdown();
+  }
+
+  async function handlePaste() {
+    if (!textareaEl) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      const start = textareaEl.selectionStart;
+      const end = textareaEl.selectionEnd;
+      
+      const before = fileContent.substring(0, start);
+      const after = fileContent.substring(end);
+      fileContent = before + text + after;
+      isDirty = true;
+      
+      closeAllDropdown();
+      setTimeout(() => {
+        if (textareaEl) {
+          textareaEl.focus();
+          textareaEl.selectionStart = textareaEl.selectionEnd = start + text.length;
+          updateCursorPosition();
+        }
+      }, 0);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  function handleDelete() {
+    if (!textareaEl) return;
+    const start = textareaEl.selectionStart;
+    const end = textareaEl.selectionEnd;
+    let newCursorPos = start;
+
+    if (start === end) {
+      const before = fileContent.substring(0, start);
+      const after = fileContent.substring(start + 1);
+      fileContent = before + after;
+    } else {
+      const before = fileContent.substring(0, start);
+      const after = fileContent.substring(end);
+      fileContent = before + after;
+    }
+    isDirty = true;
+    
+    closeAllDropdown();
+    setTimeout(() => {
+      if (textareaEl) {
+        textareaEl.focus();
+        textareaEl.selectionStart = textareaEl.selectionEnd = newCursorPos;
+        updateCursorPosition();
+      }
+    }, 0);
+  }
+
+  function handleSelectAll() {
+    if (textareaEl) {
+      textareaEl.focus();
+      textareaEl.select();
+      updateCursorPosition();
+    }
+    closeAllDropdown();
+  }
+
+  // 글로벌 키보드 단축키 감지
+  function handleKeyDown(e: KeyboardEvent) {
+    if (e.ctrlKey && e.key.toLowerCase() === 'n') {
+      e.preventDefault();
+      handleNewFile();
+    } else if (e.ctrlKey && e.key.toLowerCase() === 'o') {
+      e.preventDefault();
+      handleOpenFile();
+    } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      handleSaveFile();
+    } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      handleSaveAsFile();
+    } else if (e.key === 'F5') {
+      e.preventDefault();
+      insertDateTime();
+    }
+  }
 </script>
 
+<svelte:window onkeydown={handleKeyDown} onclick={closeAllDropdown} />
+
 <div class="app-container">
-  <!-- 컴팩트 데스크톱 네이티브 스타일 툴바 -->
-  <header class="toolbar">
-    <div class="toolbar-section left">
-      <span class="app-title">text-pad</span>
-      <div class="divider"></div>
-      <!-- 파일 메뉴 액션 버튼군 -->
-      <div class="menu-bar">
-        <button class="menu-btn" onclick={handleNewFile} title="새 파일 생성">
-          <span class="btn-icon">📄</span> 새 파일
-        </button>
-        <button class="menu-btn" onclick={handleOpenFile} disabled={isLoading} title="파일 열기">
-          <span class="btn-icon">📂</span> 열기
-        </button>
-        <button class="menu-btn" onclick={handleSaveFile} disabled={isLoading} title="파일 저장">
-          <span class="btn-icon">💾</span> 저장
-        </button>
-      </div>
-    </div>
-
-    <!-- 파일 정보 및 저장 상태 -->
-    <div class="toolbar-section center">
-      <span class="file-name" class:dirty={isDirty}>
-        {fileName}{isDirty ? " *" : ""}
-      </span>
-    </div>
-
-    <div class="toolbar-section right">
-      {#if isLoading}
-        <span class="status-indicator loading">처리 중...</span>
-      {:else if errorMsg}
-        <span class="status-indicator error" title={errorMsg}>⚠️ 에러 발생</span>
-      {:else}
-        <span class="status-indicator text-success">정상</span>
+  <!-- 메뉴바 영역 -->
+  <nav class="menu-bar">
+    <div class="menu-item-container">
+      <button 
+        class="menu-trigger" 
+        class:active={openDropdown === 'file'}
+        onclick={(e) => toggleDropdown('file', e)}
+        onmouseenter={() => handleMouseEnter('file')}
+      >
+        파일(F)
+      </button>
+      {#if openDropdown === 'file'}
+        <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
+          <button class="dropdown-item" onclick={handleNewFile}>
+            <span class="item-label">새 파일</span>
+            <span class="shortcut-label">Ctrl+N</span>
+          </button>
+          <button class="dropdown-item" onclick={handleOpenFile}>
+            <span class="item-label">열기...</span>
+            <span class="shortcut-label">Ctrl+O</span>
+          </button>
+          <button class="dropdown-item" onclick={handleSaveFile}>
+            <span class="item-label">저장</span>
+            <span class="shortcut-label">Ctrl+S</span>
+          </button>
+          <button class="dropdown-item" onclick={handleSaveAsFile}>
+            <span class="item-label">다른 이름으로 저장...</span>
+            <span class="shortcut-label">Ctrl+Shift+S</span>
+          </button>
+          <div class="menu-divider"></div>
+          <button class="dropdown-item" onclick={handleExit}>
+            <span class="item-label">끝내기</span>
+            <span class="shortcut-label">Alt+F4</span>
+          </button>
+        </div>
       {/if}
     </div>
-  </header>
 
-  <!-- 메인 편집 에어리어 -->
-  <main class="editor-area">
-    <div class="editor-layout">
-      <!-- 줄 번호 Gutter -->
-      <div class="editor-gutter" bind:this={gutterEl}>
-        {#each lines as _, i}
-          <div class="gutter-number">{i + 1}</div>
-        {/each}
-      </div>
-
-      <!-- 편집 Textarea -->
-      <textarea
-        bind:this={textareaEl}
-        class="editor-textarea"
-        bind:value={fileContent}
-        oninput={handleInput}
-        onscroll={syncScroll}
-        placeholder="여기에 텍스트를 입력하거나 파일을 열어주세요..."
-        spellcheck="false"
-      ></textarea>
+    <div class="menu-item-container">
+      <button 
+        class="menu-trigger" 
+        class:active={openDropdown === 'edit'}
+        onclick={(e) => toggleDropdown('edit', e)}
+        onmouseenter={() => handleMouseEnter('edit')}
+      >
+        편집(E)
+      </button>
+      {#if openDropdown === 'edit'}
+        <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
+          <button class="dropdown-item" onclick={handleUndo}>
+            <span class="item-label">실행 취소</span>
+            <span class="shortcut-label">Ctrl+Z</span>
+          </button>
+          <button class="dropdown-item" onclick={handleRedo}>
+            <span class="item-label">다시 실행</span>
+            <span class="shortcut-label">Ctrl+Y</span>
+          </button>
+          <div class="menu-divider"></div>
+          <button class="dropdown-item" onclick={handleCut} disabled={!fileContent}>
+            <span class="item-label">잘라내기</span>
+            <span class="shortcut-label">Ctrl+X</span>
+          </button>
+          <button class="dropdown-item" onclick={handleCopy} disabled={!fileContent}>
+            <span class="item-label">복사</span>
+            <span class="shortcut-label">Ctrl+C</span>
+          </button>
+          <button class="dropdown-item" onclick={handlePaste}>
+            <span class="item-label">붙여넣기</span>
+            <span class="shortcut-label">Ctrl+V</span>
+          </button>
+          <button class="dropdown-item" onclick={handleDelete} disabled={!fileContent}>
+            <span class="item-label">삭제</span>
+            <span class="shortcut-label">Del</span>
+          </button>
+          <div class="menu-divider"></div>
+          <button class="dropdown-item" onclick={handleSelectAll}>
+            <span class="item-label">모두 선택</span>
+            <span class="shortcut-label">Ctrl+A</span>
+          </button>
+          <button class="dropdown-item" onclick={insertDateTime}>
+            <span class="item-label">시간/날짜</span>
+            <span class="shortcut-label">F5</span>
+          </button>
+        </div>
+      {/if}
     </div>
+
+    <!-- 에러 표시 간소화 -->
+    {#if errorMsg}
+      <div class="menu-error-indicator" title={errorMsg}>⚠️ {errorMsg}</div>
+    {/if}
+  </nav>
+
+  <!-- 편집 공간 -->
+  <main class="editor-area">
+    <textarea
+      bind:this={textareaEl}
+      class="editor-textarea"
+      bind:value={fileContent}
+      oninput={handleInput}
+      onkeyup={updateCursorPosition}
+      onclick={updateCursorPosition}
+      onfocus={updateCursorPosition}
+      spellcheck="false"
+    ></textarea>
   </main>
 
-  <!-- 하단 상태 메타 표시 바 -->
+  <!-- 하단 상태 표시줄 -->
   <footer class="status-bar">
     <div class="status-left">
       {#if filePath}
-        <span class="file-path-text" title={filePath}>{filePath}</span>
-      {:else}
-        <span class="file-path-text italic">저장되지 않은 파일 (로컬 임시 상태)</span>
+        <span class="file-path" title={filePath}>{filePath}</span>
       {/if}
     </div>
     <div class="status-right">
-      <span class="status-meta">UTF-8</span>
-      <span class="status-meta">Line {lineCount.toLocaleString()}</span>
-      <span class="status-meta">Char {charCount.toLocaleString()}</span>
+      <span class="status-item">Ln {cursorLine}, Col {cursorCol}</span>
+      <span class="status-item">100%</span>
+      <span class="status-item">Windows (CRLF)</span>
+      <span class="status-item">UTF-8</span>
     </div>
   </footer>
 </div>
 
 <style>
-  /* 네이티브 앱 느낌의 극초경량 컴팩트 CSS 스타일링 */
   :global(:root) {
-    --bg-base: #18181c;            /* 더 부드러운 네이티브 그레이 */
-    --bg-toolbar: #1e1e24;         /* 툴바 배경 */
-    --bg-gutter: #16161a;          /* 거터 배경 */
-    --bg-textarea: #1a1a1f;        /* 입력 공간 배경 */
-    --border-color: #2a2a32;        /* 얇고 심플한 경계선 */
+    /* Windows 11 Fluent Notepad Light/Dark CSS variables */
+    --font-notepad: "Consolas", "Courier New", "Malgun Gothic", monospace;
+    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif;
+    
+    /* 기본은 시스템 다크/라이트 자동 지원 */
+    --bg-window: #f3f3f3;
+    --bg-editor: #ffffff;
+    --bg-menu-hover: #e5e5e5;
+    --bg-menu-active: #eaeaea;
+    --bg-dropdown: #ffffff;
+    --border-color: #e5e5e5;
+    --text-color: #1c1c1c;
+    --text-muted: #5f5f5f;
+    --accent-color: #0078d4;
+    --shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+  }
 
-    --primary: #3b82f6;
-    --primary-hover: #4f4f56;      /* 툴바 버튼용 컴팩트 호버 */
-    --text-main: #e3e3e7;          /* 선명한 텍스트 */
-    --text-muted: #8e8e93;          /* 어두운 텍스트 */
-    --text-success: #10b981;
-    --text-error: #ef4444;
-
-    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    --font-mono: "Fira Code", "Courier New", Courier, monospace;
-
-    background-color: var(--bg-base);
-    color: var(--text-main);
-    font-family: var(--font-ui);
-    margin: 0;
-    padding: 0;
-    overflow: hidden;
-    height: 100vh;
+  @media (prefers-color-scheme: dark) {
+    :global(:root) {
+      --bg-window: #1e1e1e;
+      --bg-editor: #1b1b1b;
+      --bg-menu-hover: #2d2d2d;
+      --bg-menu-active: #323232;
+      --bg-dropdown: #2c2c2c;
+      --border-color: #2c2c2c;
+      --text-color: #e3e3e3;
+      --text-muted: #9f9f9f;
+      --accent-color: #0078d4;
+      --shadow-menu: 0 4px 16px rgba(0, 0, 0, 0.25), 0 2px 4px rgba(0, 0, 0, 0.15);
+    }
   }
 
   :global(body) {
     margin: 0;
     padding: 0;
     height: 100vh;
-    background-color: var(--bg-base);
+    background-color: var(--bg-window);
+    overflow: hidden;
+    font-family: var(--font-ui);
+    color: var(--text-color);
   }
 
   .app-container {
@@ -244,231 +546,181 @@
     box-sizing: border-box;
   }
 
-  /* 네이티브 툴바 */
-  .toolbar {
+  /* 메뉴바 디자인 (윈도우 11 Fluent 스타일) */
+  .menu-bar {
+    display: flex;
+    align-items: center;
+    background-color: var(--bg-window);
+    height: 32px;
+    padding: 0 0.5rem;
+    border-bottom: 1px solid var(--border-color);
+    user-select: none;
+    box-sizing: border-box;
+    z-index: 10;
+  }
+
+  .menu-item-container {
+    position: relative;
+  }
+
+  .menu-trigger {
+    background: transparent;
+    border: none;
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 0.8rem;
+    padding: 0.25rem 0.5rem;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background-color 0.1s;
+    outline: none;
+  }
+
+  .menu-trigger:hover, .menu-trigger.active {
+    background-color: var(--bg-menu-hover);
+  }
+
+  /* 드롭다운 메뉴 */
+  .dropdown-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    background-color: var(--bg-dropdown);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: var(--shadow-menu);
+    min-width: 240px;
+    padding: 0.25rem;
+    display: flex;
+    flex-direction: column;
+    z-index: 20;
+    margin-top: 2px;
+  }
+
+  .dropdown-item {
+    background: transparent;
+    border: none;
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 0.8rem;
+    padding: 0.35rem 0.75rem;
+    text-align: left;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background-color: var(--bg-toolbar);
-    border-bottom: 1px solid var(--border-color);
-    height: 38px;                 /* 네이티브 툴바의 컴팩트한 높이 */
-    padding: 0 0.75rem;
-    box-sizing: border-box;
-    user-select: none;
-  }
-
-  .toolbar-section {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .toolbar-section.left {
-    min-width: 30%;
-  }
-
-  .toolbar-section.center {
-    justify-content: center;
-    max-width: 40%;
-  }
-
-  .toolbar-section.right {
-    justify-content: flex-end;
-    min-width: 30%;
-    font-size: 0.8rem;
-  }
-
-  .app-title {
-    font-size: 0.85rem;
-    font-weight: 700;
-    color: #60a5fa;
-    letter-spacing: -0.01em;
-  }
-
-  .divider {
-    width: 1px;
-    height: 14px;
-    background-color: var(--border-color);
-    margin: 0 0.25rem;
-  }
-
-  .menu-bar {
-    display: flex;
-    gap: 0.15rem;
-  }
-
-  /* 컴팩트 메뉴형 버튼 */
-  .menu-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-main);
-    font-family: var(--font-ui);
-    font-size: 0.8rem;
-    font-weight: 500;
-    padding: 0.2rem 0.5rem;
-    border-radius: 4px;
     cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    transition: background-color 0.15s;
-  }
-
-  .menu-btn:hover {
-    background-color: var(--primary-hover);
-  }
-
-  .menu-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .btn-icon {
-    font-size: 0.85rem;
-  }
-
-  /* 파일 이름 표시 */
-  .file-name {
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: var(--text-muted);
-    padding: 0.15rem 0.5rem;
     border-radius: 4px;
-    background-color: rgba(0, 0, 0, 0.15);
-    border: 1px solid var(--border-color);
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    overflow: hidden;
+    outline: none;
+    transition: background-color 0.08s;
   }
 
-  .file-name.dirty {
-    color: #f59e0b;
-    border-color: rgba(245, 158, 11, 0.3);
+  .dropdown-item:hover:not(:disabled) {
+    background-color: var(--bg-menu-hover);
   }
 
-  /* 상태 표시 */
-  .status-indicator {
-    padding: 0.1rem 0.4rem;
-    border-radius: 3px;
+  .dropdown-item:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .item-label {
+    flex: 1;
+  }
+
+  .shortcut-label {
+    color: var(--text-muted);
     font-size: 0.75rem;
+    margin-left: 1.5rem;
   }
 
-  .status-indicator.loading {
-    color: #60a5fa;
+  .menu-divider {
+    height: 1px;
+    background-color: var(--border-color);
+    margin: 0.25rem 0.5rem;
   }
 
-  .status-indicator.error {
-    color: var(--text-error);
-    background-color: rgba(239, 68, 68, 0.1);
+  .menu-error-indicator {
+    margin-left: auto;
+    font-size: 0.75rem;
+    color: #ef4444;
+    padding-right: 0.5rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 250px;
   }
 
-  .status-indicator.text-success {
-    color: var(--text-success);
-  }
-
-  /* 메인 편집 영역 */
+  /* 메인 편집기 공간 */
   .editor-area {
     flex: 1;
+    background-color: var(--bg-editor);
     overflow: hidden;
     position: relative;
-    background-color: var(--bg-textarea);
   }
 
-  .editor-layout {
-    display: flex;
+  .editor-textarea {
     width: 100%;
     height: 100%;
-    position: relative;
-  }
-
-  /* 거터 (줄 번호) */
-  .editor-gutter {
-    width: 45px;
-    padding: 0.75rem 0.25rem 0.75rem 0;
-    background-color: var(--bg-gutter);
-    border-right: 1px solid var(--border-color);
-    color: #4b5563;
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    line-height: 1.45;
-    text-align: right;
-    user-select: none;
-    overflow-y: hidden;          /* textarea 스크롤 이벤트에 의해 강제 동기화 */
-    box-sizing: border-box;
-  }
-
-  .gutter-number {
-    height: 1.45rem;             /* textarea 라인 높이와 매칭 */
-    padding-right: 0.5rem;
-  }
-
-  /* 입력 영역 */
-  .editor-textarea {
-    flex: 1;
-    height: 100%;
-    background-color: var(--bg-textarea);
+    background-color: var(--bg-editor);
     border: none;
     outline: none;
     resize: none;
-    color: #f3f4f6;
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    line-height: 1.45;
-    padding: 0.75rem 1rem;
+    color: var(--text-color);
+    font-family: var(--font-notepad);
+    font-size: 1rem;
+    line-height: 1.5;
+    padding: 8px 12px;
     box-sizing: border-box;
-    overflow-y: auto;            /* 스크롤바 허용 */
-    white-space: pre;            /* 줄바꿈 보존 */
+    overflow-y: scroll;
+    white-space: pre;
     word-wrap: normal;
   }
 
-  .editor-textarea::placeholder {
-    color: #4b5563;
-    font-style: italic;
-  }
-
-  /* 하단 상태 표시줄 */
+  /* 하단 상태바 */
   .status-bar {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background-color: var(--bg-toolbar);
+    background-color: var(--bg-window);
+    height: 24px;
     border-top: 1px solid var(--border-color);
-    height: 22px;
-    padding: 0 0.75rem;
     font-size: 0.75rem;
     color: var(--text-muted);
     user-select: none;
+    padding: 0 0.5rem;
     box-sizing: border-box;
   }
 
   .status-left {
     display: flex;
     align-items: center;
-    max-width: 60%;
-  }
-
-  .file-path-text {
+    max-width: 50%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .file-path-text.italic {
-    font-style: italic;
-    color: #52525b;
+  .file-path {
+    padding-left: 0.25rem;
   }
 
   .status-right {
     display: flex;
-    gap: 1rem;
+    align-items: center;
+    height: 100%;
   }
 
-  .status-meta {
+  .status-item {
+    padding: 0 12px;
     border-left: 1px solid var(--border-color);
-    padding-left: 1rem;
+    display: flex;
+    align-items: center;
+    height: 100%;
+    white-space: nowrap;
   }
 
-  .status-meta:first-child {
+  .status-item:first-child {
     border-left: none;
   }
 </style>
+
