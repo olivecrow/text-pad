@@ -14,8 +14,10 @@
   let cursorLine = $state<number>(1);
   let cursorCol = $state<number>(1);
 
-  // 메뉴 상태 추적
+  // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | null>(null);
+  let showSettings = $state<boolean>(false);
+  let fontSize = $state<number>(11); // 기본 폰트 크기 11pt
 
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
 
@@ -59,6 +61,17 @@
     isDirty = false;
     errorMsg = null;
     closeAllDropdown();
+    
+    // 스크롤 및 선택 영역 초기화
+    setTimeout(() => {
+      if (textareaEl) {
+        textareaEl.focus();
+        textareaEl.selectionStart = textareaEl.selectionEnd = 0;
+        textareaEl.scrollTop = 0;
+        textareaEl.scrollLeft = 0;
+        updateCursorPosition();
+      }
+    }, 50);
   }
 
   // 파일 열기
@@ -96,10 +109,13 @@
       errorMsg = typeof err === "string" ? err : err.message || String(err);
     } finally {
       isLoading = false;
+      // 스크롤 및 선택 영역 0,0 초기화
       setTimeout(() => {
         if (textareaEl) {
           textareaEl.focus();
           textareaEl.selectionStart = textareaEl.selectionEnd = 0;
+          textareaEl.scrollTop = 0;
+          textareaEl.scrollLeft = 0;
           updateCursorPosition();
         }
       }, 50);
@@ -243,6 +259,7 @@
     closeAllDropdown();
   }
 
+  // 다시 실행
   function handleRedo() {
     if (textareaEl) {
       textareaEl.focus();
@@ -373,95 +390,109 @@
 <div class="app-container">
   <!-- 메뉴바 영역 -->
   <nav class="menu-bar">
-    <div class="menu-item-container">
-      <button 
-        class="menu-trigger" 
-        class:active={openDropdown === 'file'}
-        onclick={(e) => toggleDropdown('file', e)}
-        onmouseenter={() => handleMouseEnter('file')}
-      >
-        파일(F)
-      </button>
-      {#if openDropdown === 'file'}
-        <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
-          <button class="dropdown-item" onclick={handleNewFile}>
-            <span class="item-label">새 파일</span>
-            <span class="shortcut-label">Ctrl+N</span>
-          </button>
-          <button class="dropdown-item" onclick={handleOpenFile}>
-            <span class="item-label">열기...</span>
-            <span class="shortcut-label">Ctrl+O</span>
-          </button>
-          <button class="dropdown-item" onclick={handleSaveFile}>
-            <span class="item-label">저장</span>
-            <span class="shortcut-label">Ctrl+S</span>
-          </button>
-          <button class="dropdown-item" onclick={handleSaveAsFile}>
-            <span class="item-label">다른 이름으로 저장...</span>
-            <span class="shortcut-label">Ctrl+Shift+S</span>
-          </button>
-          <div class="menu-divider"></div>
-          <button class="dropdown-item" onclick={handleExit}>
-            <span class="item-label">끝내기</span>
-            <span class="shortcut-label">Alt+F4</span>
-          </button>
-        </div>
+    <div class="menu-left">
+      <div class="menu-item-container">
+        <button 
+          class="menu-trigger" 
+          class:active={openDropdown === 'file'}
+          onclick={(e) => toggleDropdown('file', e)}
+          onmouseenter={() => handleMouseEnter('file')}
+        >
+          파일(F)
+        </button>
+        {#if openDropdown === 'file'}
+          <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
+            <button class="dropdown-item" onclick={handleNewFile}>
+              <span class="item-label">새 파일</span>
+              <span class="shortcut-label">Ctrl+N</span>
+            </button>
+            <button class="dropdown-item" onclick={handleOpenFile}>
+              <span class="item-label">열기...</span>
+              <span class="shortcut-label">Ctrl+O</span>
+            </button>
+            <button class="dropdown-item" onclick={handleSaveFile}>
+              <span class="item-label">저장</span>
+              <span class="shortcut-label">Ctrl+S</span>
+            </button>
+            <button class="dropdown-item" onclick={handleSaveAsFile}>
+              <span class="item-label">다른 이름으로 저장...</span>
+              <span class="shortcut-label">Ctrl+Shift+S</span>
+            </button>
+            <div class="menu-divider"></div>
+            <button class="dropdown-item" onclick={handleExit}>
+              <span class="item-label">끝내기</span>
+              <span class="shortcut-label">Alt+F4</span>
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      <div class="menu-item-container">
+        <button 
+          class="menu-trigger" 
+          class:active={openDropdown === 'edit'}
+          onclick={(e) => toggleDropdown('edit', e)}
+          onmouseenter={() => handleMouseEnter('edit')}
+        >
+          편집(E)
+        </button>
+        {#if openDropdown === 'edit'}
+          <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
+            <button class="dropdown-item" onclick={handleUndo}>
+              <span class="item-label">실행 취소</span>
+              <span class="shortcut-label">Ctrl+Z</span>
+            </button>
+            <button class="dropdown-item" onclick={handleRedo}>
+              <span class="item-label">다시 실행</span>
+              <span class="shortcut-label">Ctrl+Y</span>
+            </button>
+            <div class="menu-divider"></div>
+            <button class="dropdown-item" onclick={handleCut} disabled={!fileContent}>
+              <span class="item-label">잘라내기</span>
+              <span class="shortcut-label">Ctrl+X</span>
+            </button>
+            <button class="dropdown-item" onclick={handleCopy} disabled={!fileContent}>
+              <span class="item-label">복사</span>
+              <span class="shortcut-label">Ctrl+C</span>
+            </button>
+            <button class="dropdown-item" onclick={handlePaste}>
+              <span class="item-label">붙여넣기</span>
+              <span class="shortcut-label">Ctrl+V</span>
+            </button>
+            <button class="dropdown-item" onclick={handleDelete} disabled={!fileContent}>
+              <span class="item-label">삭제</span>
+              <span class="shortcut-label">Del</span>
+            </button>
+            <div class="menu-divider"></div>
+            <button class="dropdown-item" onclick={handleSelectAll}>
+              <span class="item-label">모두 선택</span>
+              <span class="shortcut-label">Ctrl+A</span>
+            </button>
+            <button class="dropdown-item" onclick={insertDateTime}>
+              <span class="item-label">시간/날짜</span>
+              <span class="shortcut-label">F5</span>
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      <!-- 에러 표시 간소화 -->
+      {#if errorMsg}
+        <div class="menu-error-indicator" title={errorMsg}>⚠️ {errorMsg}</div>
       {/if}
     </div>
 
-    <div class="menu-item-container">
+    <!-- 우측 설정 톱니바퀴 버튼 -->
+    <div class="menu-right">
       <button 
-        class="menu-trigger" 
-        class:active={openDropdown === 'edit'}
-        onclick={(e) => toggleDropdown('edit', e)}
-        onmouseenter={() => handleMouseEnter('edit')}
+        class="settings-trigger" 
+        class:active={showSettings}
+        onclick={(e) => { e.stopPropagation(); showSettings = !showSettings; }} 
+        title="설정"
       >
-        편집(E)
+        ⚙️
       </button>
-      {#if openDropdown === 'edit'}
-        <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
-          <button class="dropdown-item" onclick={handleUndo}>
-            <span class="item-label">실행 취소</span>
-            <span class="shortcut-label">Ctrl+Z</span>
-          </button>
-          <button class="dropdown-item" onclick={handleRedo}>
-            <span class="item-label">다시 실행</span>
-            <span class="shortcut-label">Ctrl+Y</span>
-          </button>
-          <div class="menu-divider"></div>
-          <button class="dropdown-item" onclick={handleCut} disabled={!fileContent}>
-            <span class="item-label">잘라내기</span>
-            <span class="shortcut-label">Ctrl+X</span>
-          </button>
-          <button class="dropdown-item" onclick={handleCopy} disabled={!fileContent}>
-            <span class="item-label">복사</span>
-            <span class="shortcut-label">Ctrl+C</span>
-          </button>
-          <button class="dropdown-item" onclick={handlePaste}>
-            <span class="item-label">붙여넣기</span>
-            <span class="shortcut-label">Ctrl+V</span>
-          </button>
-          <button class="dropdown-item" onclick={handleDelete} disabled={!fileContent}>
-            <span class="item-label">삭제</span>
-            <span class="shortcut-label">Del</span>
-          </button>
-          <div class="menu-divider"></div>
-          <button class="dropdown-item" onclick={handleSelectAll}>
-            <span class="item-label">모두 선택</span>
-            <span class="shortcut-label">Ctrl+A</span>
-          </button>
-          <button class="dropdown-item" onclick={insertDateTime}>
-            <span class="item-label">시간/날짜</span>
-            <span class="shortcut-label">F5</span>
-          </button>
-        </div>
-      {/if}
     </div>
-
-    <!-- 에러 표시 간소화 -->
-    {#if errorMsg}
-      <div class="menu-error-indicator" title={errorMsg}>⚠️ {errorMsg}</div>
-    {/if}
   </nav>
 
   <!-- 편집 공간 -->
@@ -469,6 +500,7 @@
     <textarea
       bind:this={textareaEl}
       class="editor-textarea"
+      style="font-size: {fontSize}pt;"
       bind:value={fileContent}
       oninput={handleInput}
       onkeyup={updateCursorPosition}
@@ -476,6 +508,37 @@
       onfocus={updateCursorPosition}
       spellcheck="false"
     ></textarea>
+
+    <!-- 설정 창 오버레이 (Fluent Style Modal) -->
+    {#if showSettings}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="settings-overlay" onclick={() => showSettings = false}>
+        <div class="settings-modal" onclick={(e) => e.stopPropagation()}>
+          <div class="settings-header">
+            <h3>설정</h3>
+            <button class="settings-close" onclick={() => showSettings = false}>&times;</button>
+          </div>
+          <div class="settings-content">
+            <div class="settings-row">
+              <label for="font-size-input">글꼴 크기 (pt)</label>
+              <div class="size-control">
+                <input 
+                  id="font-size-input"
+                  type="number" 
+                  min="6" 
+                  max="72" 
+                  bind:value={fontSize} 
+                  class="font-size-num"
+                />
+                <button class="adjust-btn" onclick={() => fontSize = Math.max(6, fontSize - 1)}>-</button>
+                <button class="adjust-btn" onclick={() => fontSize = Math.min(72, fontSize + 1)}>+</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    {/if}
   </main>
 
   <!-- 하단 상태 표시줄 -->
@@ -511,6 +574,9 @@
     --text-muted: #5f5f5f;
     --accent-color: #0078d4;
     --shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+    
+    --bg-modal: #ffffff;
+    --bg-overlay: rgba(0, 0, 0, 0.2);
   }
 
   @media (prefers-color-scheme: dark) {
@@ -525,6 +591,9 @@
       --text-muted: #9f9f9f;
       --accent-color: #0078d4;
       --shadow-menu: 0 4px 16px rgba(0, 0, 0, 0.25), 0 2px 4px rgba(0, 0, 0, 0.15);
+      
+      --bg-modal: #2c2c2c;
+      --bg-overlay: rgba(0, 0, 0, 0.4);
     }
   }
 
@@ -546,9 +615,10 @@
     box-sizing: border-box;
   }
 
-  /* 메뉴바 디자인 (윈도우 11 Fluent 스타일) */
+  /* 메뉴바 디자인 */
   .menu-bar {
     display: flex;
+    justify-content: space-between;
     align-items: center;
     background-color: var(--bg-window);
     height: 32px;
@@ -559,11 +629,23 @@
     z-index: 10;
   }
 
+  .menu-left {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    flex: 1;
+  }
+
+  .menu-right {
+    display: flex;
+    align-items: center;
+  }
+
   .menu-item-container {
     position: relative;
   }
 
-  .menu-trigger {
+  .menu-trigger, .settings-trigger {
     background: transparent;
     border: none;
     color: var(--text-color);
@@ -574,9 +656,19 @@
     border-radius: 4px;
     transition: background-color 0.1s;
     outline: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
-  .menu-trigger:hover, .menu-trigger.active {
+  .settings-trigger {
+    font-size: 0.95rem;
+    padding: 0.2rem 0.4rem;
+    margin-right: 0.25rem;
+  }
+
+  .menu-trigger:hover, .menu-trigger.active,
+  .settings-trigger:hover, .settings-trigger.active {
     background-color: var(--bg-menu-hover);
   }
 
@@ -667,13 +759,127 @@
     resize: none;
     color: var(--text-color);
     font-family: var(--font-notepad);
-    font-size: 1rem;
     line-height: 1.5;
     padding: 8px 12px;
     box-sizing: border-box;
     overflow-y: scroll;
     white-space: pre;
     word-wrap: normal;
+  }
+
+  /* 설정 팝업 오버레이 */
+  .settings-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: var(--bg-overlay);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 30;
+  }
+
+  .settings-modal {
+    background-color: var(--bg-modal);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-shadow: var(--shadow-menu);
+    width: 320px;
+    padding: 1rem;
+    box-sizing: border-box;
+    animation: fadeIn 0.15s ease-out;
+  }
+
+  .settings-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 0.5rem;
+  }
+
+  .settings-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+
+  .settings-close {
+    background: transparent;
+    border: none;
+    font-size: 1.25rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    outline: none;
+  }
+
+  .settings-close:hover {
+    color: var(--text-color);
+  }
+
+  .settings-content {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .settings-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.85rem;
+  }
+
+  .size-control {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .font-size-num {
+    width: 50px;
+    padding: 0.2rem 0.4rem;
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-editor);
+    color: var(--text-color);
+    border-radius: 4px;
+    font-family: var(--font-ui);
+    font-size: 0.85rem;
+    text-align: center;
+    outline: none;
+  }
+
+  .adjust-btn {
+    background-color: var(--bg-menu-hover);
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+    border-radius: 4px;
+    width: 26px;
+    height: 26px;
+    cursor: pointer;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    outline: none;
+  }
+
+  .adjust-btn:hover {
+    background-color: var(--bg-menu-active);
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: scale(0.95);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
   }
 
   /* 하단 상태바 */
@@ -723,4 +929,5 @@
     border-left: none;
   }
 </style>
+
 

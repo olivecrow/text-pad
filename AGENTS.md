@@ -82,3 +82,13 @@
   - 시스템 다크/라이트 테마 환경에 맞춰 Fluent Notepad 테마가 자동 전환되도록 CSS 및 변수 구성.
   - `npm run tauri build`를 재수행하여 최신 UI가 패키징된 독립형 바이너리 정상 빌드 완료.
 - **다음 작업**: Phase 2 CodeMirror 6 기반 연동 계획 구체화.
+
+### [2026-05-21] 설정창(폰트 크기 조절) 및 파일 로드 스크롤 초기화 구현
+- **작업자**: Antigravity
+- **상세 내용**:
+  - 상단 메뉴바 우측에 ⚙️(설정) 버튼을 추가하고, 클릭 시 Fluent 디자인 스타일의 팝업 모달을 통해 원본 모드의 폰트 크기(Font Size)를 조절하는 기능 구현.
+  - 폰트 크기 기본값을 11pt로 조정 (`fontSize = $state<number>(11)`).
+  - 새 파일을 열거나(`handleNewFile`) 기존 파일을 불러왔을 때(`handleOpenFile`), 텍스트 영역의 스크롤 위치를 `scrollTop = 0`, `scrollLeft = 0`으로 확실히 리셋하여 화면이 이상한 위치로 튀는 현상 차단.
+  - `npm run tauri build`를 백그라운드 태스크로 재수행하여 Windows 독립 실행형 릴리스 패키지(MSI, NSIS 설치 파일 및 `tauri-app.exe` 바이너리) 빌드 성공 완료.
+- **다음 작업**: Phase 2 CodeMirror 6 기반 에디터 및 소스 모드/렌더링 뷰 기능 고도화 설계 및 적용.
+
