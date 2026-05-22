@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { PhysicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
+  import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
 
   let filePath = $state<string | null>(null);
   let fileName = $state<string>("제목 없음");
@@ -43,6 +44,9 @@
   let colorHlNumber = $state<string>('');
   let colorHlComment = $state<string>('');
   let colorIndentGuide = $state<string>('');
+  let colorRenderBg = $state<string>('');
+  let colorRenderText = $state<string>('');
+  let renderFontFamily = $state<string>('monospace');
 
   // 설정창 드래그 이동 상태 변수
   let settingsX = $state<number>(0);
@@ -59,19 +63,23 @@
   // 시스템 테마별 기본 강조 색상
   function getSystemDefaultColors(isDark: boolean) {
     return isDark ? {
-      codeBg: '#26374a',
-      codeText: '#4fc1ff',
-      string: '#ce9178',
-      number: '#b5cea8',
-      comment: '#6a9955',
-      guide: '#2c2c2c'
+      renderBg: '#12151c',
+      renderText: '#d6f6ff',
+      codeBg: '#1e293b',
+      codeText: '#38bdf8',
+      string: '#fb7185',
+      number: '#ffd666',
+      comment: '#64748b',
+      guide: '#334155'
     } : {
-      codeBg: '#e6f1fc',
-      codeText: '#0078d4',
-      string: '#a31515',
-      number: '#098658',
-      comment: '#008000',
-      guide: '#e5e5e5'
+      renderBg: '#f8fafc',
+      renderText: '#0f172a',
+      codeBg: '#f1f5f9',
+      codeText: '#0284c7',
+      string: '#b91c1c',
+      number: '#d97706',
+      comment: '#475569',
+      guide: '#cbd5e1'
     };
   }
 
@@ -86,6 +94,9 @@
     colorHlNumber = defaults.number;
     colorHlComment = defaults.comment;
     colorIndentGuide = defaults.guide;
+    colorRenderBg = defaults.renderBg;
+    colorRenderText = defaults.renderText;
+    renderFontFamily = 'monospace';
   }
 
   // 마운트 시 localStorage Preferences 로드
@@ -110,6 +121,9 @@
     colorHlNumber = localStorage.getItem('pref_color_hl_number') || defaults.number;
     colorHlComment = localStorage.getItem('pref_color_hl_comment') || defaults.comment;
     colorIndentGuide = localStorage.getItem('pref_color_indent_guide') || defaults.guide;
+    colorRenderBg = localStorage.getItem('pref_color_render_bg') || defaults.renderBg;
+    colorRenderText = localStorage.getItem('pref_color_render_text') || defaults.renderText;
+    renderFontFamily = localStorage.getItem('pref_render_font_family') || 'monospace';
   });
 
   // 상태 변경 감지 자동 로컬스토리지 동기화
@@ -139,6 +153,15 @@
   });
   $effect(() => {
     if (isBrowser && colorIndentGuide) localStorage.setItem('pref_color_indent_guide', colorIndentGuide);
+  });
+  $effect(() => {
+    if (isBrowser && colorRenderBg) localStorage.setItem('pref_color_render_bg', colorRenderBg);
+  });
+  $effect(() => {
+    if (isBrowser && colorRenderText) localStorage.setItem('pref_color_render_text', colorRenderText);
+  });
+  $effect(() => {
+    if (isBrowser && renderFontFamily) localStorage.setItem('pref_render_font_family', renderFontFamily);
   });
 
   // 앱 윈도우 크기 및 위치 복원/저장 $effect
@@ -466,8 +489,12 @@
 
   // 줄 높이 실측 로직
   function measureLineHeight() {
+    if (!isBrowser) return;
     const testEl = document.createElement('div');
-    testEl.style.fontFamily = 'var(--font-notepad)';
+    const fontFamilyVal = isRenderMode 
+      ? (renderFontFamily === 'monospace' ? 'Consolas, Fira Code, Monaco, monospace' : 'var(--font-notepad)')
+      : 'var(--font-notepad)';
+    testEl.style.fontFamily = fontFamilyVal;
     testEl.style.fontSize = `${currentFontSize}pt`;
     testEl.style.lineHeight = '1.5';
     testEl.style.position = 'absolute';
@@ -482,6 +509,9 @@
 
   // 폰트 변경 반응성
   $effect(() => {
+    const _size = currentFontSize;
+    const _mode = isRenderMode;
+    const _family = renderFontFamily;
     measureLineHeight();
   });
 
@@ -880,7 +910,7 @@
     
     // Windows WebView2에서는 가로 휠 조작 시 브라우저 내 wheel 이벤트의 deltaX가 아예 0이 되는 버그가 있습니다.
     // 이를 우회하기 위해 Rust 백엔드에서 WM_MOUSEHWHEEL 메시지를 후킹하여 가로 휠 델타를 직접 수신받습니다.
-    const unlistenPromise = listen<number>("native-horizontal-wheel", (event) => {
+    const unlistenPromise = listen<number>("native-horizontal-wheel", (event: TauriEvent<number>) => {
       if (!textareaEl) return;
       const delta = event.payload;
       // OS의 delta 값(보통 120 또는 -120)을 받아 가로 스크롤에 직접 반영
@@ -897,7 +927,7 @@
       if (textareaEl) {
         textareaEl.removeEventListener('wheel', onWheelNative);
       }
-      unlistenPromise.then((unlisten) => unlisten());
+      unlistenPromise.then((unlisten: UnlistenFn) => unlisten());
     };
   });
 
@@ -931,6 +961,9 @@
   --color-hl-number: {colorHlNumber};
   --color-hl-comment: {colorHlComment};
   --color-indent-guide: {colorIndentGuide};
+  --color-render-bg: {colorRenderBg};
+  --color-render-text: {colorRenderText};
+  --font-render-family: {renderFontFamily === 'monospace' ? 'Consolas, Fira Code, Monaco, monospace' : 'var(--font-notepad)'};
 ">
   <!-- 메뉴바 영역 -->
   <nav class="menu-bar">
@@ -1053,7 +1086,7 @@
     <div class="editor-container">
       <!-- 라인 번호 Gutter -->
       {#if isRenderMode}
-        <div class="editor-gutter" style="background-color: var(--bg-gutter);">
+        <div class="editor-gutter" style="background-color: var(--color-render-bg); border-right: 1px solid var(--border-color);">
           <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
             {#each Array(endLine - startLine + 1) as _, idx}
               {@const lineIdx = startLine + idx}
@@ -1185,11 +1218,35 @@
                       <option value={8}>8</option>
                     </select>
                   </div>
+
+                  <div class="settings-row">
+                    <label for="render-font-family-select">렌더 모드 글꼴</label>
+                    <select id="render-font-family-select" bind:value={renderFontFamily} class="tab-size-select" style="width: 160px; text-align-last: center;">
+                      <option value="monospace">Monospace (고정폭)</option>
+                      <option value="notepad">기본 글꼴 (Notepad)</option>
+                    </select>
+                  </div>
                 </div>
                 
                 <div class="settings-section">
                   <h4 class="section-title">시각적 테마 색상 설정</h4>
                   
+                  <div class="settings-row color-row">
+                    <label for="color-render-bg">렌더 모드 배경색</label>
+                    <div class="color-picker-wrapper">
+                      <input id="color-render-bg" type="color" bind:value={colorRenderBg} />
+                      <input type="text" class="color-text-input" bind:value={colorRenderBg} placeholder="#000000" />
+                    </div>
+                  </div>
+
+                  <div class="settings-row color-row">
+                    <label for="color-render-text">렌더 모드 기본 글자 색상</label>
+                    <div class="color-picker-wrapper">
+                      <input id="color-render-text" type="color" bind:value={colorRenderText} />
+                      <input type="text" class="color-text-input" bind:value={colorRenderText} placeholder="#000000" />
+                    </div>
+                  </div>
+
                   <div class="settings-row color-row">
                     <label for="color-hl-code-bg">코드 백그라운드 색상</label>
                     <div class="color-picker-wrapper">
@@ -1345,7 +1402,7 @@
     color: var(--color-hl-comment);
   }
   .hl-text {
-    color: var(--text-color);
+    color: var(--color-render-text, var(--text-color));
   }
 
   .render-mode-toggle {
@@ -1566,7 +1623,7 @@
     padding-right: 10px;
     box-sizing: border-box;
     color: var(--color-gutter-text);
-    font-family: var(--font-notepad);
+    font-family: var(--font-render-family, var(--font-notepad));
   }
 
   .editor-viewport {
@@ -1599,7 +1656,7 @@
     min-width: 100%;
     width: max-content;
     white-space: pre;
-    font-family: var(--font-notepad);
+    font-family: var(--font-render-family, var(--font-notepad));
     padding: 0 12px;
     box-sizing: border-box;
     letter-spacing: normal;
@@ -1622,7 +1679,7 @@
   .line-content {
     display: inline-block;
     vertical-align: top;
-    color: var(--text-color);
+    color: var(--color-render-text, var(--text-color));
   }
 
   .editor-textarea {
@@ -1657,7 +1714,12 @@
   .render-mode .editor-textarea {
     background-color: transparent;
     color: transparent;
-    caret-color: var(--text-color);
+    caret-color: var(--color-render-text, var(--text-color));
+    font-family: var(--font-render-family, var(--font-notepad));
+  }
+
+  .render-mode .editor-viewport {
+    background-color: var(--color-render-bg, var(--bg-editor));
   }
 
   /* 설정 팝업 오버레이 */

@@ -158,7 +158,15 @@
   - **권한 오류 해결**: Tauri v2에서 프론트엔드가 창 크기/위치를 설정할 수 없던 권한 부족 문제를 해결하기 위해 `src-tauri/capabilities/default.json`에 `core:window:allow-set-size`와 `core:window:allow-set-position` 권한을 명시적으로 선언함.
   - **라벨 매핑 정합성 확보**: 창의 label이 명시되어 있지 않아 권한 규칙과 매칭되지 않던 문제를 방지하기 위해 `tauri.conf.json` 내의 윈도우 설정에 `"label": "main"` 명시.
   - **레이스 컨디션 차단**: 복원 시작 시 `isRestoring` 락이 풀리는 대기 시간을 기존 500ms에서 1000ms로 상향 조정하여 OS가 리사이즈/이동 과정에서 전달하는 초기 비동기 이벤트에 의해 복원 값이 오염되는 것을 완벽히 방지함.
-  - **불필요한 리스너 제거**: `src/routes/+page.svelte` 내에서 사용하지 않는 `listen` 이벤트 import 구문 정리.
   - **릴리스 빌드 검증**: `npm run tauri build`를 백그라운드 태스크로 재수행하여 검증 에러 없이 x64 Setup(MSI/NSIS) 독립형 패키지 최종 빌드 성공 완료.
+
+### [2026-05-22] 렌더 모드 테마 개선 및 설정창 시각적 조절 제어 확장
+- **작업자**: Antigravity
+- **상세 내용**:
+  - **렌더 모드 색상 및 폰트 변경**: 렌더 모드 활성화 시의 배경색을 더 어둡게(다크모드 기준 `#12151c`, 라이트모드 기준 `#f8fafc`) 변경하고, 기본 일반 텍스트 색상을 `#d6f6ff`(다크) 및 `#0f172a`(라이트)로 고정. 렌더 모드 내 숫자의 색상 채도를 더 진하게(`#ffd666`) 조정함.
+  - **Monospace 폰트 조작 옵션 연동**: 렌더 모드 전용 폰트 옵션(`renderFontFamily`)을 추가하여 'monospace'일 때는 고정폭 글꼴(`Consolas, Fira Code, Monaco, monospace`)을 사용하고, 'notepad'일 때는 Notepad 기본 글꼴을 사용하도록 분기 매핑 구현.
+  - **설정창 연동 및 LocalStorage 영구화**: 렌더 모드 배경색, 기본 글자색, 렌더 글꼴을 설정 모달의 '렌더 모드' 탭에 드롭다운 및 컬러 피커 폼으로 추가 배치하고, 사용자의 모든 시각적 선호도를 `localStorage`에 자동 갱신 및 마운트 시 영구 로드 처리.
+  - **동적 자간/줄 높이 실측 동기화**: 글꼴 변경 즉시 줄 높이 측정(`measureLineHeight`)이 유기적으로 재작동하여 캐럿 및 텍스트 선택(드래그) 영역이 어긋나지 않도록 `$effect` 의존성 보강 완료.
+  - **빌드 테스트 및 타입 에러 해결**: Svelte-check 통과를 위해 표준 DOM `Event` 와 Tauri `Event` 의 네이밍 충돌을 `TauriEvent` 별칭으로 우회 해결하고 빌드 완결성 확보.
 
 
