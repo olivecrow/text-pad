@@ -20,11 +20,230 @@
   let showSettings = $state<boolean>(false);
   let fontSize = $state<number>(11); // 기본 폰트 크기 11pt
 
+  // 렌더 모드 상태
+  let isRenderMode = $state<boolean>(true); // 기본값은 렌더 모드
+  let tabSize = $state<number>(4);          // 기본 들여쓰기 탭 4칸
+  let scrollTop = $state<number>(0);
+  let scrollLeft = $state<number>(0);
+  let measuredLineHeight = $state<number>(22);
+  let clientHeight = $state<number>(500);
+
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
+  let editorViewportEl = $state<HTMLDivElement | null>(null);
 
   // 반응형 상태
   let lineCount = $derived(fileContent.split(/\r?\n/).length);
   let charCount = $derived(fileContent.length);
+
+  // 구문 분석 및 토큰화 유틸리티
+  interface Token {
+    type: 'text' | 'string' | 'code' | 'number' | 'comment';
+    text: string;
+  }
+
+  function parseNumbers(text: string): Token[] {
+    const tokens: Token[] = [];
+    const numRegex = /\b\d+(?:\.\d+)?\b/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = numRegex.exec(text)) !== null) {
+      const matchIndex = match.index;
+      const matchText = match[0];
+
+      if (matchIndex > lastIndex) {
+        tokens.push({ type: 'text', text: text.substring(lastIndex, matchIndex) });
+      }
+
+      tokens.push({ type: 'number', text: matchText });
+      lastIndex = numRegex.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+      tokens.push({ type: 'text', text: text.substring(lastIndex) });
+    }
+
+    return tokens;
+  }
+
+  function tokenizeLine(line: string): Token[] {
+    const tokens: Token[] = [];
+    let i = 0;
+    const len = line.length;
+    let currentText = "";
+    let state: 'DEFAULT' | 'STRING_DOUBLE' | 'STRING_SINGLE' | 'BACKTICK' | 'COMMENT' = 'DEFAULT';
+
+    while (i < len) {
+      const char = line[i];
+      const nextChar = line[i + 1];
+
+      if (state === 'COMMENT') {
+        currentText += char;
+        i++;
+        continue;
+      }
+
+      if (state === 'DEFAULT') {
+        if ((char === '/' && nextChar === '/') || char === '#') {
+          if (currentText) {
+            tokens.push(...parseNumbers(currentText));
+            currentText = "";
+          }
+          state = 'COMMENT';
+          currentText += line.substring(i);
+          break;
+        }
+      }
+
+      if (state === 'DEFAULT') {
+        if (char === '"') {
+          if (currentText) {
+            tokens.push(...parseNumbers(currentText));
+            currentText = "";
+          }
+          state = 'STRING_DOUBLE';
+          currentText += char;
+        } else if (char === "'") {
+          if (currentText) {
+            tokens.push(...parseNumbers(currentText));
+            currentText = "";
+          }
+          state = 'STRING_SINGLE';
+          currentText += char;
+        } else if (char === '`') {
+          if (currentText) {
+            tokens.push(...parseNumbers(currentText));
+            currentText = "";
+          }
+          state = 'BACKTICK';
+          currentText += char;
+        } else {
+          currentText += char;
+        }
+        i++;
+      } else if (state === 'STRING_DOUBLE') {
+        currentText += char;
+        if (char === '\\') {
+          if (i + 1 < len) {
+            currentText += line[i + 1];
+            i++;
+          }
+        } else if (char === '"') {
+          tokens.push({ type: 'string', text: currentText });
+          currentText = "";
+          state = 'DEFAULT';
+        }
+        i++;
+      } else if (state === 'STRING_SINGLE') {
+        currentText += char;
+        if (char === '\\') {
+          if (i + 1 < len) {
+            currentText += line[i + 1];
+            i++;
+          }
+        } else if (char === "'") {
+          tokens.push({ type: 'string', text: currentText });
+          currentText = "";
+          state = 'DEFAULT';
+        }
+        i++;
+      } else if (state === 'BACKTICK') {
+        currentText += char;
+        if (char === '`') {
+          tokens.push({ type: 'code', text: currentText });
+          currentText = "";
+          state = 'DEFAULT';
+        }
+        i++;
+      }
+    }
+
+    if (currentText) {
+      if (state === 'DEFAULT') {
+        tokens.push(...parseNumbers(currentText));
+      } else if (state === 'STRING_DOUBLE' || state === 'STRING_SINGLE') {
+        tokens.push({ type: 'string', text: currentText });
+      } else if (state === 'BACKTICK') {
+        tokens.push({ type: 'code', text: currentText });
+      } else if (state === 'COMMENT') {
+        tokens.push({ type: 'comment', text: currentText });
+      }
+    }
+
+    return tokens;
+  }
+
+  interface ParsedLine {
+    id: number;
+    indentLevel: number;
+    extraIndentSpaces: number;
+    tokens: Token[];
+  }
+
+  function parseLine(lineText: string, id: number, tabSize: number): ParsedLine {
+    const match = lineText.match(/^([ \t]*)/);
+    const indentStr = match ? match[0] : "";
+    
+    let totalSpaces = 0;
+    for (let j = 0; j < indentStr.length; j++) {
+      if (indentStr[j] === '\t') {
+        totalSpaces += tabSize;
+      } else {
+        totalSpaces += 1;
+      }
+    }
+
+    const indentLevel = Math.floor(totalSpaces / tabSize);
+    const extraIndentSpaces = totalSpaces % tabSize;
+
+    return {
+      id,
+      indentLevel,
+      extraIndentSpaces,
+      tokens: tokenizeLine(lineText)
+    };
+  }
+
+  // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
+  let rawLines = $derived(fileContent.split(/\r?\n/));
+  let parsedLines = $derived(rawLines.map((lineText, idx) => parseLine(lineText, idx, tabSize)));
+
+  // 가상화 범위 계산
+  let startLine = $derived(Math.max(0, Math.floor(scrollTop / measuredLineHeight) - 8));
+  let endLine = $derived(Math.min(rawLines.length - 1, Math.floor((scrollTop + clientHeight) / measuredLineHeight) + 8));
+
+  // 줄 높이 실측 로직
+  function measureLineHeight() {
+    const testEl = document.createElement('div');
+    testEl.style.fontFamily = 'var(--font-notepad)';
+    testEl.style.fontSize = `${fontSize}pt`;
+    testEl.style.lineHeight = '1.5';
+    testEl.style.position = 'absolute';
+    testEl.style.visibility = 'hidden';
+    testEl.style.whiteSpace = 'pre';
+    testEl.innerText = 'A';
+    document.body.appendChild(testEl);
+    const rect = testEl.getBoundingClientRect();
+    measuredLineHeight = rect.height || testEl.clientHeight || 22;
+    document.body.removeChild(testEl);
+  }
+
+  // 폰트 변경 반응성
+  $effect(() => {
+    measureLineHeight();
+  });
+
+  // 뷰포트 크기 변경 관찰
+  $effect(() => {
+    if (!editorViewportEl) return;
+    const observer = new ResizeObserver((entries) => {
+      for (let entry of entries) {
+        clientHeight = entry.contentRect.height;
+      }
+    });
+    observer.observe(editorViewportEl);
+    return () => observer.disconnect();
+  });
 
   // 창 제목 동기화 (Rune Effect)
   $effect(() => {
@@ -64,6 +283,8 @@
     closeAllDropdown();
     
     // 스크롤 및 선택 영역 초기화
+    scrollTop = 0;
+    scrollLeft = 0;
     setTimeout(() => {
       if (textareaEl) {
         textareaEl.focus();
@@ -111,6 +332,8 @@
     } finally {
       isLoading = false;
       // 스크롤 및 선택 영역 0,0 초기화
+      scrollTop = 0;
+      scrollLeft = 0;
       setTimeout(() => {
         if (textareaEl) {
           textareaEl.focus();
@@ -386,6 +609,13 @@
     }
   }
 
+  // 스크롤 갱신 핸들러
+  function handleScroll(e: Event) {
+    const target = e.target as HTMLTextAreaElement;
+    scrollTop = target.scrollTop;
+    scrollLeft = target.scrollLeft;
+  }
+
   // passive: false 리스너로 등록하여 preventDefault() 오동작 차단 및 Rust 네이티브 가로 휠 이벤트 통합
   $effect(() => {
     if (!textareaEl) return;
@@ -404,6 +634,8 @@
       // OS의 delta 값(보통 120 또는 -120)을 받아 가로 스크롤에 직접 반영
       // 윈도우 OS의 가로 스크롤 한 틱 단위가 대개 120이므로, 120px 만큼 스크롤됩니다.
       textareaEl.scrollLeft += delta;
+      scrollTop = textareaEl.scrollTop;
+      scrollLeft = textareaEl.scrollLeft;
       
       // 디버그 텍스트 갱신
       wheelDebug = `Native dX: ${delta}`;
@@ -533,8 +765,17 @@
       {/if}
     </div>
 
-    <!-- 우측 설정 톱니바퀴 버튼 -->
+    <!-- 우측 설정 톱니바퀴 및 렌더 모드 토글 버튼 -->
     <div class="menu-right">
+      <button 
+        class="render-mode-toggle"
+        class:active={isRenderMode}
+        onclick={() => isRenderMode = !isRenderMode}
+        title={isRenderMode ? "원본 모드로 전환" : "렌더 모드로 전환"}
+      >
+        {isRenderMode ? "🎨" : "📝"}
+      </button>
+      
       <button 
         class="settings-trigger" 
         class:active={showSettings}
@@ -547,18 +788,59 @@
   </nav>
 
   <!-- 편집 공간 -->
-  <main class="editor-area">
-    <textarea
-      bind:this={textareaEl}
-      class="editor-textarea"
-      style="font-size: {fontSize}pt;"
-      bind:value={fileContent}
-      oninput={handleInput}
-      onkeyup={updateCursorPosition}
-      onclick={updateCursorPosition}
-      onfocus={updateCursorPosition}
-      spellcheck="false"
-    ></textarea>
+  <main class="editor-area" class:render-mode={isRenderMode}>
+    <div class="editor-container">
+      <!-- 라인 번호 Gutter -->
+      {#if isRenderMode}
+        <div class="editor-gutter" style="background-color: var(--bg-gutter);">
+          <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
+            {#each Array(endLine - startLine + 1) as _, idx}
+              {@const lineIdx = startLine + idx}
+              <div 
+                class="gutter-line-number" 
+                style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {fontSize}pt;"
+              >
+                {lineIdx + 1}
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      <!-- 에디터 영역 뷰포트 -->
+      <div 
+        class="editor-viewport" 
+        bind:this={editorViewportEl}
+      >
+        <!-- 렌더 모드 Backdrop -->
+        {#if isRenderMode}
+          <div class="editor-backdrop">
+            <div class="backdrop-scroll-container" style="transform: translate3d(-{scrollLeft}px, -{scrollTop}px, 0);">
+              {#each Array(endLine - startLine + 1) as _, idx}
+                {@const lineIdx = startLine + idx}
+                {@const line = parsedLines[lineIdx]}
+                {#if line}
+                  <div class="backdrop-line" style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; left: 0; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {fontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}<span class="hl-{token.type}">{token.text}</span>{/each}</span></div>
+                {/if}
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        <textarea
+          bind:this={textareaEl}
+          class="editor-textarea"
+          style="font-size: {fontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize};"
+          bind:value={fileContent}
+          oninput={handleInput}
+          onscroll={handleScroll}
+          onkeyup={updateCursorPosition}
+          onclick={updateCursorPosition}
+          onfocus={updateCursorPosition}
+          spellcheck="false"
+        ></textarea>
+      </div>
+    </div>
 
     <!-- 설정 창 오버레이 (Fluent Style Modal) -->
     {#if showSettings}
@@ -585,6 +867,15 @@
                 <button class="adjust-btn" onclick={() => fontSize = Math.max(6, fontSize - 1)}>-</button>
                 <button class="adjust-btn" onclick={() => fontSize = Math.min(72, fontSize + 1)}>+</button>
               </div>
+            </div>
+            
+            <div class="settings-row">
+              <label for="tab-size-select">들여쓰기 너비 (공백 개수)</label>
+              <select id="tab-size-select" bind:value={tabSize} class="tab-size-select">
+                <option value={2}>2</option>
+                <option value={4}>4 (기본값)</option>
+                <option value={8}>8</option>
+              </select>
             </div>
           </div>
         </div>
@@ -629,6 +920,16 @@
     
     --bg-modal: #ffffff;
     --bg-overlay: rgba(0, 0, 0, 0.2);
+
+    /* 렌더 모드 하이라이팅 색상 */
+    --color-hl-code-bg: rgba(0, 120, 212, 0.08);
+    --color-hl-code-text: #0078d4;
+    --color-hl-string: #a31515;
+    --color-hl-number: #098658;
+    --color-hl-comment: #008000;
+    --color-indent-guide: rgba(0, 0, 0, 0.08);
+    --color-gutter-text: #8d8d8d;
+    --bg-gutter: #f9f9f9;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -646,7 +947,69 @@
       
       --bg-modal: #2c2c2c;
       --bg-overlay: rgba(0, 0, 0, 0.4);
+
+      /* 다크모드 하이라이팅 색상 */
+      --color-hl-code-bg: rgba(86, 156, 214, 0.15);
+      --color-hl-code-text: #4fc1ff;
+      --color-hl-string: #ce9178;
+      --color-hl-number: #b5cea8;
+      --color-hl-comment: #6a9955;
+      --color-indent-guide: rgba(255, 255, 255, 0.08);
+      --color-gutter-text: #858585;
+      --bg-gutter: #1b1b1b;
     }
+  }
+
+  /* 렌더 모드 토큰 색상 스타일 */
+  .hl-code {
+    background-color: var(--color-hl-code-bg);
+    color: var(--color-hl-code-text);
+    border-radius: 2px;
+  }
+  .hl-string {
+    color: var(--color-hl-string);
+  }
+  .hl-number {
+    color: var(--color-hl-number);
+  }
+  .hl-comment {
+    color: var(--color-hl-comment);
+  }
+  .hl-text {
+    color: var(--text-color);
+  }
+
+  .render-mode-toggle {
+    background: transparent;
+    border: none;
+    color: var(--text-color);
+    font-size: 0.95rem;
+    padding: 0.2rem 0.4rem;
+    margin-right: 0.25rem;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background-color 0.1s;
+    outline: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  
+  .render-mode-toggle:hover, .render-mode-toggle.active {
+    background-color: var(--bg-menu-hover);
+  }
+
+  .tab-size-select {
+    padding: 0.2rem 0.4rem;
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-editor);
+    color: var(--text-color);
+    border-radius: 4px;
+    font-family: var(--font-ui);
+    font-size: 0.85rem;
+    outline: none;
+    width: 100px;
+    text-align: center;
   }
 
   :global(body) {
@@ -802,21 +1165,130 @@
     position: relative;
   }
 
+  .editor-container {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .editor-gutter {
+    width: 48px;
+    height: 100%;
+    overflow: hidden;
+    position: relative;
+    border-right: 1px solid var(--border-color);
+    user-select: none;
+    flex-shrink: 0;
+  }
+
+  .gutter-scroll-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  .gutter-line-number {
+    width: 100%;
+    text-align: right;
+    padding-right: 10px;
+    box-sizing: border-box;
+    color: var(--color-gutter-text);
+    font-family: var(--font-notepad);
+  }
+
+  .editor-viewport {
+    flex: 1;
+    height: 100%;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .editor-backdrop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .backdrop-scroll-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  .backdrop-line {
+    min-width: 100%;
+    width: max-content;
+    white-space: pre;
+    font-family: var(--font-notepad);
+    padding: 0 12px;
+    box-sizing: border-box;
+    letter-spacing: normal;
+    word-spacing: normal;
+    font-variant-ligatures: none;
+    font-feature-settings: "liga" 0;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeSpeed;
+  }
+
+  .guide-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background-color: var(--color-indent-guide);
+  }
+
+  .line-content {
+    display: inline-block;
+    vertical-align: top;
+    color: var(--text-color);
+  }
+
   .editor-textarea {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
     height: 100%;
     background-color: var(--bg-editor);
-    border: none;
+    border: 0;
+    margin: 0;
     outline: none;
     resize: none;
     color: var(--text-color);
     font-family: var(--font-notepad);
-    line-height: 1.5;
     padding: 8px 12px;
     box-sizing: border-box;
     overflow: auto;
     white-space: pre;
     word-wrap: normal;
+    z-index: 2;
+    letter-spacing: normal;
+    word-spacing: normal;
+    font-variant-ligatures: none;
+    font-feature-settings: "liga" 0;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeSpeed;
+  }
+
+  /* 렌더 모드 활성화 시 스타일 */
+  .render-mode .editor-textarea {
+    background-color: transparent;
+    color: transparent;
+    caret-color: var(--text-color);
   }
 
   /* 설정 팝업 오버레이 */
