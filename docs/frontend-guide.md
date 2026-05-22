@@ -112,3 +112,19 @@ export const activeDocument = derived(documentStore, $store =>
    - 렌더링 모드 내 요소 더블 클릭, 편집 입력 시 내부 AST 구조를 갱신합니다.
 4. **Stringifier**: `AST` -> `string (원시 텍스트)`
    - 수정된 구조 데이터를 텍스트로 환원합니다. 이 단계에서 공백(들여쓰기 스타일), 사용하지 않은 원시 키의 순서, 주석 등이 깨지지 않도록 정교하게 재조합해야 합니다.
+
+---
+
+## 5. 렌더 모드 텍스트 렌더링 최적화 및 폰트 설계
+
+렌더 모드에서 웹폰트가 거칠고 딱딱하게 렌더링되는 현상을 방지하기 위해 다음과 같은 설계 및 스타일 규칙을 적용합니다.
+
+1. **텍스트 안티앨리어싱 및 ClearType 최적화**:
+   - WebView2(Chromium) 렌더링 환경에서 코딩용 고정폭 폰트가 자글자글하거나 날카롭게 튀는 현상을 막기 위해 CSS `text-rendering` 속성을 `optimizeLegibility`로 설정합니다.
+   - `-webkit-font-smoothing: antialiased`는 글자를 얇고 자글자글하게 만드는 Gray-scale 안티앨리어싱을 강제하므로, 이를 배제하고 **`-webkit-font-smoothing: subpixel-antialiased;`** 및 **`-moz-osx-font-smoothing: auto;`**를 지정하여 Windows OS의 ClearType 서브픽셀 가독성 기술이 완벽히 작동하도록 합니다.
+2. **동적 줄 높이 측정 및 Gutter 정렬**:
+   - 렌더 모드 폰트가 변경되면 줄 높이 실측 로직(`measureLineHeight()`)이 즉시 반응하여 줄 높이를 갱신합니다. 이를 통해 라인 번호 Gutter, 배경 들여쓰기 가이드라인, 실제 textarea의 캐럿 및 텍스트 선택(드래그) 영역의 Y축 좌표 정밀도를 100% 동기화합니다.
+3. **가독성 폰트 두께 설정**:
+   - 힌팅 격자가 깨져 자글자글해지는 정수 미만 굵기(`450` 등) 대신, 표준 굵기인 **`font-weight: normal;`** (400) 또는 **`500`**과 같이 힌팅 데이터가 내장된 정수 굵기를 일관되게 사용하여 부드럽고 가독성 높은 윤곽선을 유지합니다. 렌더 모드 텍스트와 textarea 텍스트 양쪽에 동일하게 적용하여 자간 너비의 완전 동치성을 확보합니다.
+4. **글꼴 선택지 확장 및 웹폰트 내장**:
+   - 구글 CDN을 통해 수신하는 `JetBrains Mono` (추천), `Fira Code`, `Roboto Mono` 외에 한글/영어 고정폭 매칭이 완벽한 네이버의 `D2Coding`을 공식 웹폰트 CDN으로 추가 로드하여 사용자의 로컬 환경에 구애받지 않고 언제나 깨끗하고 아름다운 코딩 글꼴을 선택할 수 있도록 지원합니다.

@@ -46,7 +46,18 @@
   let colorIndentGuide = $state<string>('');
   let colorRenderBg = $state<string>('');
   let colorRenderText = $state<string>('');
-  let renderFontFamily = $state<string>('monospace');
+  let renderFontFamily = $state<string>('jetbrains-mono');
+  let currentRenderFontFamilyCSS = $derived(
+    renderFontFamily === 'jetbrains-mono' ? "'JetBrains Mono', 'D2Coding', 'Nanum Gothic Coding', 'Fira Code', monospace" :
+    renderFontFamily === 'fira-code' ? "'Fira Code', 'D2Coding', 'Nanum Gothic Coding', 'JetBrains Mono', monospace" :
+    renderFontFamily === 'roboto-mono' ? "'Roboto Mono', 'D2Coding', 'Nanum Gothic Coding', monospace" :
+    renderFontFamily === 'd2coding' ? "'D2Coding', 'D2coding', 'Nanum Gothic Coding', monospace" :
+    renderFontFamily === 'nanum-gothic-coding' ? "'Nanum Gothic Coding', 'D2Coding', monospace" :
+    renderFontFamily === 'cascadia-mono' ? "'Cascadia Mono', 'Cascadia Code', 'D2Coding', 'Nanum Gothic Coding', monospace" :
+    renderFontFamily === 'consolas' ? "'Consolas', 'D2Coding', 'Nanum Gothic Coding', monospace" :
+    renderFontFamily === 'notepad' ? "var(--font-notepad)" :
+    "'JetBrains Mono', 'D2Coding', 'Nanum Gothic Coding', 'Fira Code', monospace"
+  );
 
   // 설정창 드래그 이동 상태 변수
   let settingsX = $state<number>(0);
@@ -96,7 +107,7 @@
     colorIndentGuide = defaults.guide;
     colorRenderBg = defaults.renderBg;
     colorRenderText = defaults.renderText;
-    renderFontFamily = 'monospace';
+    renderFontFamily = 'jetbrains-mono';
   }
 
   // 마운트 시 localStorage Preferences 로드
@@ -123,7 +134,7 @@
     colorIndentGuide = localStorage.getItem('pref_color_indent_guide') || defaults.guide;
     colorRenderBg = localStorage.getItem('pref_color_render_bg') || defaults.renderBg;
     colorRenderText = localStorage.getItem('pref_color_render_text') || defaults.renderText;
-    renderFontFamily = localStorage.getItem('pref_render_font_family') || 'monospace';
+    renderFontFamily = localStorage.getItem('pref_render_font_family') || 'jetbrains-mono';
   });
 
   // 상태 변경 감지 자동 로컬스토리지 동기화
@@ -491,9 +502,7 @@
   function measureLineHeight() {
     if (!isBrowser) return;
     const testEl = document.createElement('div');
-    const fontFamilyVal = isRenderMode 
-      ? (renderFontFamily === 'monospace' ? 'Consolas, Fira Code, Monaco, monospace' : 'var(--font-notepad)')
-      : 'var(--font-notepad)';
+    const fontFamilyVal = isRenderMode ? currentRenderFontFamilyCSS : 'var(--font-notepad)';
     testEl.style.fontFamily = fontFamilyVal;
     testEl.style.fontSize = `${currentFontSize}pt`;
     testEl.style.lineHeight = '1.5';
@@ -963,7 +972,7 @@
   --color-indent-guide: {colorIndentGuide};
   --color-render-bg: {colorRenderBg};
   --color-render-text: {colorRenderText};
-  --font-render-family: {renderFontFamily === 'monospace' ? 'Consolas, Fira Code, Monaco, monospace' : 'var(--font-notepad)'};
+  --font-render-family: {currentRenderFontFamilyCSS};
 ">
   <!-- 메뉴바 영역 -->
   <nav class="menu-bar">
@@ -1221,8 +1230,14 @@
 
                   <div class="settings-row">
                     <label for="render-font-family-select">렌더 모드 글꼴</label>
-                    <select id="render-font-family-select" bind:value={renderFontFamily} class="tab-size-select" style="width: 160px; text-align-last: center;">
-                      <option value="monospace">Monospace (고정폭)</option>
+                    <select id="render-font-family-select" bind:value={renderFontFamily} class="tab-size-select" style="width: 195px; text-align-last: center;">
+                      <option value="jetbrains-mono">JetBrains Mono (추천)</option>
+                      <option value="d2coding">D2Coding (한글 추천)</option>
+                      <option value="nanum-gothic-coding">나눔고딕 코딩 (선명함)</option>
+                      <option value="fira-code">Fira Code (코딩 특화)</option>
+                      <option value="roboto-mono">Roboto Mono (모던함)</option>
+                      <option value="cascadia-mono">Cascadia Mono (윈도우11)</option>
+                      <option value="consolas">Consolas (기본 고정폭)</option>
                       <option value="notepad">기본 글꼴 (Notepad)</option>
                     </select>
                   </div>
@@ -1663,9 +1678,10 @@
     word-spacing: normal;
     font-variant-ligatures: none;
     font-feature-settings: "liga" 0;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    text-rendering: optimizeSpeed;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: subpixel-antialiased;
+    -moz-osx-font-smoothing: auto;
+    font-weight: normal;
   }
 
   .guide-line {
@@ -1705,9 +1721,9 @@
     word-spacing: normal;
     font-variant-ligatures: none;
     font-feature-settings: "liga" 0;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    text-rendering: optimizeSpeed;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: subpixel-antialiased;
+    -moz-osx-font-smoothing: auto;
   }
 
   /* 렌더 모드 활성화 시 스타일 */
@@ -1716,6 +1732,7 @@
     color: transparent;
     caret-color: var(--color-render-text, var(--text-color));
     font-family: var(--font-render-family, var(--font-notepad));
+    font-weight: normal;
   }
 
   .render-mode .editor-viewport {

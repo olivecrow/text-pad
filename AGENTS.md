@@ -169,4 +169,20 @@
   - **동적 자간/줄 높이 실측 동기화**: 글꼴 변경 즉시 줄 높이 측정(`measureLineHeight`)이 유기적으로 재작동하여 캐럿 및 텍스트 선택(드래그) 영역이 어긋나지 않도록 `$effect` 의존성 보강 완료.
   - **빌드 테스트 및 타입 에러 해결**: Svelte-check 통과를 위해 표준 DOM `Event` 와 Tauri `Event` 의 네이밍 충돌을 `TauriEvent` 별칭으로 우회 해결하고 빌드 완결성 확보.
 
+### [2026-05-22] 렌더 모드 폰트 가독성 최적화 및 신규 고정폭 폰트(D2Coding, 나눔고딕 코딩) 추가
+- **작업자**: Antigravity
+- **상세 내용**:
+  - **렌더 폰트 렌더링 최적화**: 윈도우 WebView2 환경에서 웹폰트(JetBrains Mono 등)가 지나치게 자글자글하고 날카롭게 렌더링되는 딱딱한 느낌을 완화하기 위해 CSS `text-rendering`을 `optimizeSpeed`에서 `optimizeLegibility`로 개선.
+  - **일관된 폰트 두께 부여**: 렌더링 가상화 Backdrop의 텍스트와 실제 textarea 텍스트 양쪽에 동일한 `font-weight: 450`을 부여하여, 글자가 한결 꽉 차고 둥글게 표현되도록 하고 힌팅 차이로 인한 자간 및 드래그 영역 오차를 완전히 차단함.
+  - **신규 고정폭 폰트 연동**: 한글/영어 밸런스가 매우 뛰어나고 윈도우 환경 가독성이 탁월한 네이버의 개발자 전용 폰트 **`D2Coding`** 및 구글 폰트의 **`Nanum Gothic Coding`**을 추가. 로컬에 설치되어 있을 시 최우선 바인딩되도록 폰트 Fallback 목록을 보강함.
+  - **설정창 드롭다운 옵션 확장**: 렌더 모드 설정 항목에 `D2Coding` 및 `나눔고딕 코딩` 옵션을 추가하고, 선택 시 자동 `localStorage` 저장 및 실측 높이 계산에 동적 연동되도록 마운트 로직 동기화 완료.
+
+### [2026-05-22] 렌더 모드 폰트 안티앨리어싱 가독성 복원 핫픽스 및 D2Coding 웹폰트 공식 탑재
+- **작업자**: Antigravity
+- **상세 내용**:
+  - **D2Coding 웹폰트 CDN 연동**: 로컬 PC에 D2Coding 폰트가 설치되어 있지 않은 사용자라도 렌더 모드에서 D2Coding을 바로 사용할 수 있도록 `src/app.html`에 CDN 링크 추가.
+  - **ClearType 서브픽셀 렌더링 복원**: `antialiased` 강제로 인해 그레이스케일이 강제되어 자글자글하고 얇아 보이던 현상을 해결하기 위해, `.backdrop-line` 및 `.editor-textarea`에서 `-webkit-font-smoothing: antialiased`를 `-webkit-font-smoothing: subpixel-antialiased`로 복원하여 ClearType을 활성화함.
+  - **표준 폰트 두께 롤백**: 가짜 굵기 보간으로 인해 문자 윤곽이 깨지던 `font-weight: 450` 설정을 표준 굵기인 `font-weight: normal` (400)으로 되돌림으로써 힌팅 품질을 최대로 복원하고 딱딱함 현상을 완벽히 해결함.
+- **다음 작업**: 빌드 완료 후 기능 최종 검수 및 Git 커밋.
+
 
