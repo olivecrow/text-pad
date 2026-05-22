@@ -132,3 +132,24 @@
   - **자간 계산 왜곡 제거**: `.hl-code` 클래스의 `padding: 0 3px; margin: 0 -3px;`가 미세한 자간 렌더링 픽셀 오차를 유발하던 것을 차단하기 위해 패딩과 마진을 `0`으로 제거하고 순수 배경색만 적용.
   - **높이/위치 물리 속성 완전 동기화**: `textarea`에 누락되어 있던 line-height 인라인 바인딩(`line-height: {measuredLineHeight}px;`)을 추가하여 Y축 정밀도 100% 확보, `.backdrop-line` 스타일에 `left: 0;` 절대좌표 기준점 명시 처리.
   - **빌드 테스트**: `npm run tauri build`를 재기동하여 컴파일 및 릴리스 바이너리 패키징 성공 확인.
+
+### [2026-05-22] 설정창 확장 및 모드별 시각적 개인화 설정 구현
+- **작업자**: Antigravity
+- **상세 내용**:
+  - **설정창 레이아웃 대대적 개편**: 기존 단일 `320px` 팝업을 좌측 네비게이션 사이드바(탭 메뉴)와 우측 메인 콘텐츠 패널로 구성된 `600px` x `400px` 크기의 확장형 모달로 개편.
+  - **폰트 크기 설정 이원화**: 원본 모드와 렌더 모드 각각의 가독성 조절을 위해 `sourceFontSize` 및 `renderFontSize`로 분할 관리하고, `currentFontSize = $derived(isRenderMode ? renderFontSize : sourceFontSize)`를 통해 텍스트 영역 및 줄 높이 측정(`measureLineHeight`)에 유기적 결합.
+  - **동적 컬러 개인화 및 인라인 CSS 바인딩**: 렌더 모드의 6가지 핵심 하이라이트 색상(백틱 코드 배경/글자, 따옴표 문자열, 숫자, 주석, 들여쓰기 가이드라인)을 Svelte 룬 상태 및 최상위 컨테이너(`.app-container`) 인라인 스타일에 CSS Custom Properties 형태로 1:1 매핑하여 실시간 화면 반영 구현.
+  - **로컬 스토리지 연동**: 사용자가 설정창에서 수정한 모든 Preferences(원본/렌더 폰트 크기, 탭 크기, 6종의 테마 색상)를 `localStorage`에 영구적으로 읽기/쓰기 처리하여 기기 기본 설정을 유지하도록 구현.
+  - **기본값 복원 지원**: 사용자가 복수 설정을 손쉽게 복구할 수 있도록 OS 시스템 다크/라이트 테마의 기본 강조 색상 목록을 감지해 롤백하는 "기본 색상으로 복원" 기능 구현.
+
+  - Svelte 타입 검사 통과(0 errors) 후 최종 릴리스 패키징(`npm run tauri build`)을 재동작시켜 빌드 정합성 확보.
+
+### [2026-05-22] 설정창 드래그 이동 및 크기 확장, 앱 윈도우 크기/위치 복원 구현
+- **작업자**: Antigravity
+- **상세 내용**:
+  - **설정창 드래그 및 크기 확대**: 설정창 모달을 마우스로 부드럽게 드래그하여 이동할 수 있도록 마우스 다운/이동/업 이벤트를 연동함. 모달의 `left`/`top` 좌표 이동이 Flexbox 정렬과 충돌하여 튀는 현상을 막기 위해 부모 오버레이인 `.settings-overlay`에서 `display: flex` 관련 스타일을 제거하고 absolute 정렬로 완전히 전환. 설정창 모달 크기를 기존 `600px` x `400px`에서 `720px` x `480px`로 확대하고, 사이드바 너비를 `180px`로 조정하여 디자인 톤앤매너 유지. 헤더 영역에 `cursor: move; user-select: none;`를 추가하여 사용성 향상.
+  - **윈도우 상태 영구 저장 및 복원**: 앱 창 크기나 위치를 사용자가 조절할 때 디스크 성능 저하를 방지하기 위해 300ms 디바운스(`setTimeout`)를 적용해 창 크기(`app_window_width`/`height`) 및 위치(`app_window_x`/`y`) 데이터를 `localStorage`에 자동 갱신하도록 구성.
+  - **Tauri 윈도우 권한 승인 및 타입 오류 핫픽스**: Tauri v2에서 프론트엔드가 창 크기와 위치를 동적으로 복원할 수 있도록 `src-tauri/capabilities/default.json`에 `core:window:default` 권한을 전격 추가함. Svelte-check 통과를 위해 `{ type: 'Physical', ... }` 객체 형태를 `@tauri-apps/api/dpi`에서 임포트한 `PhysicalSize` 및 `PhysicalPosition` 클래스 생성자로 수정하여 TypeScript 타입 에러 해결.
+  - **빌드 및 배포**: `npm run tauri build`를 재수행하여 검증 에러 없이 릴리스용 NSIS/MSI 패키지 빌드 최종 성공.
+
+

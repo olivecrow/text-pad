@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen } from "@tauri-apps/api/event";
+  import { PhysicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
 
   let filePath = $state<string | null>(null);
   let fileName = $state<string>("제목 없음");
@@ -18,10 +19,15 @@
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | null>(null);
   let showSettings = $state<boolean>(false);
-  let fontSize = $state<number>(11); // 기본 폰트 크기 11pt
-
+  let activeSettingsTab = $state<'source' | 'render'>('render'); // 기본값은 렌더 모드
+  
+  // 폰트 크기 이원화
+  let sourceFontSize = $state<number>(11);
+  let renderFontSize = $state<number>(11);
+  
   // 렌더 모드 상태
   let isRenderMode = $state<boolean>(true); // 기본값은 렌더 모드
+  let currentFontSize = $derived(isRenderMode ? renderFontSize : sourceFontSize);
   let tabSize = $state<number>(4);          // 기본 들여쓰기 탭 4칸
   let scrollTop = $state<number>(0);
   let scrollLeft = $state<number>(0);
@@ -30,6 +36,229 @@
 
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
   let editorViewportEl = $state<HTMLDivElement | null>(null);
+
+  // 렌더 모드 하이라이팅 커스텀 테마 색상 상태 변수
+  let colorHlCodeBg = $state<string>('');
+  let colorHlCodeText = $state<string>('');
+  let colorHlString = $state<string>('');
+  let colorHlNumber = $state<string>('');
+  let colorHlComment = $state<string>('');
+  let colorIndentGuide = $state<string>('');
+
+  // 설정창 드래그 이동 상태 변수
+  let settingsX = $state<number>(0);
+  let settingsY = $state<number>(0);
+  let isDraggingSettings = $state<boolean>(false);
+  let isSettingsPositioned = $state<boolean>(false);
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let initialModalX = 0;
+  let initialModalY = 0;
+
+  const isBrowser = typeof window !== 'undefined';
+
+  // 시스템 테마별 기본 강조 색상
+  function getSystemDefaultColors(isDark: boolean) {
+    return isDark ? {
+      codeBg: '#26374a',
+      codeText: '#4fc1ff',
+      string: '#ce9178',
+      number: '#b5cea8',
+      comment: '#6a9955',
+      guide: '#2c2c2c'
+    } : {
+      codeBg: '#e6f1fc',
+      codeText: '#0078d4',
+      string: '#a31515',
+      number: '#098658',
+      comment: '#008000',
+      guide: '#e5e5e5'
+    };
+  }
+
+  // 기본 색상 복원
+  function resetColorsToDefault() {
+    if (!isBrowser) return;
+    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const defaults = getSystemDefaultColors(isDark);
+    colorHlCodeBg = defaults.codeBg;
+    colorHlCodeText = defaults.codeText;
+    colorHlString = defaults.string;
+    colorHlNumber = defaults.number;
+    colorHlComment = defaults.comment;
+    colorIndentGuide = defaults.guide;
+  }
+
+  // 마운트 시 localStorage Preferences 로드
+  $effect(() => {
+    if (!isBrowser) return;
+
+    const savedSourceFontSize = localStorage.getItem('pref_source_font_size');
+    if (savedSourceFontSize) sourceFontSize = parseInt(savedSourceFontSize, 10);
+
+    const savedRenderFontSize = localStorage.getItem('pref_render_font_size');
+    if (savedRenderFontSize) renderFontSize = parseInt(savedRenderFontSize, 10);
+
+    const savedTabSize = localStorage.getItem('pref_tab_size');
+    if (savedTabSize) tabSize = parseInt(savedTabSize, 10);
+
+    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const defaults = getSystemDefaultColors(isDark);
+
+    colorHlCodeBg = localStorage.getItem('pref_color_hl_code_bg') || defaults.codeBg;
+    colorHlCodeText = localStorage.getItem('pref_color_hl_code_text') || defaults.codeText;
+    colorHlString = localStorage.getItem('pref_color_hl_string') || defaults.string;
+    colorHlNumber = localStorage.getItem('pref_color_hl_number') || defaults.number;
+    colorHlComment = localStorage.getItem('pref_color_hl_comment') || defaults.comment;
+    colorIndentGuide = localStorage.getItem('pref_color_indent_guide') || defaults.guide;
+  });
+
+  // 상태 변경 감지 자동 로컬스토리지 동기화
+  $effect(() => {
+    if (isBrowser) localStorage.setItem('pref_source_font_size', sourceFontSize.toString());
+  });
+  $effect(() => {
+    if (isBrowser) localStorage.setItem('pref_render_font_size', renderFontSize.toString());
+  });
+  $effect(() => {
+    if (isBrowser) localStorage.setItem('pref_tab_size', tabSize.toString());
+  });
+  $effect(() => {
+    if (isBrowser && colorHlCodeBg) localStorage.setItem('pref_color_hl_code_bg', colorHlCodeBg);
+  });
+  $effect(() => {
+    if (isBrowser && colorHlCodeText) localStorage.setItem('pref_color_hl_code_text', colorHlCodeText);
+  });
+  $effect(() => {
+    if (isBrowser && colorHlString) localStorage.setItem('pref_color_hl_string', colorHlString);
+  });
+  $effect(() => {
+    if (isBrowser && colorHlNumber) localStorage.setItem('pref_color_hl_number', colorHlNumber);
+  });
+  $effect(() => {
+    if (isBrowser && colorHlComment) localStorage.setItem('pref_color_hl_comment', colorHlComment);
+  });
+  $effect(() => {
+    if (isBrowser && colorIndentGuide) localStorage.setItem('pref_color_indent_guide', colorIndentGuide);
+  });
+
+  // 앱 윈도우 크기 및 위치 복원/저장 $effect
+  $effect(() => {
+    if (!isBrowser) return;
+
+    const restoreWindowState = async () => {
+      const appWindow = getCurrentWindow();
+      
+      const savedWidth = localStorage.getItem('app_window_width');
+      const savedHeight = localStorage.getItem('app_window_height');
+      if (savedWidth && savedHeight) {
+        const w = parseInt(savedWidth, 10);
+        const h = parseInt(savedHeight, 10);
+        if (w > 200 && h > 200) {
+          await appWindow.setSize(new PhysicalSize(w, h)).catch(console.error);
+        }
+      }
+
+      const savedX = localStorage.getItem('app_window_x');
+      const savedY = localStorage.getItem('app_window_y');
+      if (savedX && savedY) {
+        const x = parseInt(savedX, 10);
+        const y = parseInt(savedY, 10);
+        if (y > -2000 && x > -5000) {
+          await appWindow.setPosition(new PhysicalPosition(x, y)).catch(console.error);
+        }
+      }
+    };
+
+    restoreWindowState();
+
+    const appWindow = getCurrentWindow();
+    let resizeTimeout: any;
+    let moveTimeout: any;
+
+    let unlistenResized: (() => void) | null = null;
+    let unlistenMoved: (() => void) | null = null;
+
+    const subResized = appWindow.onResized(async () => {
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(async () => {
+        try {
+          const size = await appWindow.innerSize();
+          localStorage.setItem('app_window_width', size.width.toString());
+          localStorage.setItem('app_window_height', size.height.toString());
+        } catch (e) {
+          console.error(e);
+        }
+      }, 300);
+    }).then((unsub) => { unlistenResized = unsub; });
+
+    const subMoved = appWindow.onMoved(async () => {
+      clearTimeout(moveTimeout);
+      moveTimeout = setTimeout(async () => {
+        try {
+          const pos = await appWindow.outerPosition();
+          localStorage.setItem('app_window_x', pos.x.toString());
+          localStorage.setItem('app_window_y', pos.y.toString());
+        } catch (e) {
+          console.error(e);
+        }
+      }, 300);
+    }).then((unsub) => { unlistenMoved = unsub; });
+
+    return () => {
+      clearTimeout(resizeTimeout);
+      clearTimeout(moveTimeout);
+      subResized.then(() => { if (unlistenResized) unlistenResized(); });
+      subMoved.then(() => { if (unlistenMoved) unlistenMoved(); });
+    };
+  });
+
+  // 설정창이 열릴 때 초기 위치 지정 및 화면 클램핑
+  $effect(() => {
+    if (showSettings) {
+      if (!isSettingsPositioned) {
+        settingsX = Math.max(10, (window.innerWidth - 720) / 2);
+        settingsY = Math.max(10, (window.innerHeight - 480) / 2);
+        isSettingsPositioned = true;
+      } else {
+        if (settingsX < 0 || settingsX > window.innerWidth - 100 ||
+            settingsY < 0 || settingsY > window.innerHeight - 100) {
+          settingsX = Math.max(10, (window.innerWidth - 720) / 2);
+          settingsY = Math.max(10, (window.innerHeight - 480) / 2);
+        }
+      }
+    }
+  });
+
+  function handleSettingsDragStart(e: MouseEvent) {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('.settings-close')) return;
+
+    isDraggingSettings = true;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    initialModalX = settingsX;
+    initialModalY = settingsY;
+
+    window.addEventListener('mousemove', handleSettingsDragMove);
+    window.addEventListener('mouseup', handleSettingsDragEnd);
+    e.preventDefault();
+  }
+
+  function handleSettingsDragMove(e: MouseEvent) {
+    if (!isDraggingSettings) return;
+    const deltaX = e.clientX - dragStartX;
+    const deltaY = e.clientY - dragStartY;
+    
+    settingsX = Math.max(10, Math.min(window.innerWidth - 120, initialModalX + deltaX));
+    settingsY = Math.max(10, Math.min(window.innerHeight - 60, initialModalY + deltaY));
+  }
+
+  function handleSettingsDragEnd() {
+    isDraggingSettings = false;
+    window.removeEventListener('mousemove', handleSettingsDragMove);
+    window.removeEventListener('mouseup', handleSettingsDragEnd);
+  }
 
   // 반응형 상태
   let lineCount = $derived(fileContent.split(/\r?\n/).length);
@@ -71,7 +300,7 @@
     let i = 0;
     const len = line.length;
     let currentText = "";
-    let state: 'DEFAULT' | 'STRING_DOUBLE' | 'STRING_SINGLE' | 'BACKTICK' | 'COMMENT' = 'DEFAULT';
+    let state: string = 'DEFAULT';
 
     while (i < len) {
       const char = line[i];
@@ -216,7 +445,7 @@
   function measureLineHeight() {
     const testEl = document.createElement('div');
     testEl.style.fontFamily = 'var(--font-notepad)';
-    testEl.style.fontSize = `${fontSize}pt`;
+    testEl.style.fontSize = `${currentFontSize}pt`;
     testEl.style.lineHeight = '1.5';
     testEl.style.position = 'absolute';
     testEl.style.visibility = 'hidden';
@@ -642,7 +871,9 @@
     });
     
     return () => {
-      textareaEl.removeEventListener('wheel', onWheelNative);
+      if (textareaEl) {
+        textareaEl.removeEventListener('wheel', onWheelNative);
+      }
       unlistenPromise.then((unlisten) => unlisten());
     };
   });
@@ -670,7 +901,14 @@
 
 <svelte:window onkeydown={handleKeyDown} onclick={closeAllDropdown} />
 
-<div class="app-container">
+<div class="app-container" style="
+  --color-hl-code-bg: {colorHlCodeBg};
+  --color-hl-code-text: {colorHlCodeText};
+  --color-hl-string: {colorHlString};
+  --color-hl-number: {colorHlNumber};
+  --color-hl-comment: {colorHlComment};
+  --color-indent-guide: {colorIndentGuide};
+">
   <!-- 메뉴바 영역 -->
   <nav class="menu-bar">
     <div class="menu-left">
@@ -798,7 +1036,7 @@
               {@const lineIdx = startLine + idx}
               <div 
                 class="gutter-line-number" 
-                style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {fontSize}pt;"
+                style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt;"
               >
                 {lineIdx + 1}
               </div>
@@ -820,7 +1058,7 @@
                 {@const lineIdx = startLine + idx}
                 {@const line = parsedLines[lineIdx]}
                 {#if line}
-                  <div class="backdrop-line" style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; left: 0; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {fontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}<span class="hl-{token.type}">{token.text}</span>{/each}</span></div>
+                  <div class="backdrop-line" style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; left: 0; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}<span class="hl-{token.type}">{token.text}</span>{/each}</span></div>
                 {/if}
               {/each}
             </div>
@@ -830,7 +1068,7 @@
         <textarea
           bind:this={textareaEl}
           class="editor-textarea"
-          style="font-size: {fontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize};"
+          style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize};"
           bind:value={fileContent}
           oninput={handleInput}
           onscroll={handleScroll}
@@ -846,36 +1084,144 @@
     {#if showSettings}
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="settings-overlay" onclick={() => showSettings = false}>
-        <div class="settings-modal" onclick={(e) => e.stopPropagation()}>
-          <div class="settings-header">
+      <div class="settings-overlay" onclick={(e) => { if (e.target === e.currentTarget) showSettings = false; }}>
+        <div 
+          class="settings-modal" 
+          onclick={(e) => e.stopPropagation()}
+          style="position: absolute; left: {settingsX}px; top: {settingsY}px; margin: 0;"
+        >
+          <div class="settings-header" onmousedown={handleSettingsDragStart}>
             <h3>설정</h3>
             <button class="settings-close" onclick={() => showSettings = false}>&times;</button>
           </div>
-          <div class="settings-content">
-            <div class="settings-row">
-              <label for="font-size-input">글꼴 크기 (pt)</label>
-              <div class="size-control">
-                <input 
-                  id="font-size-input"
-                  type="number" 
-                  min="6" 
-                  max="72" 
-                  bind:value={fontSize} 
-                  class="font-size-num"
-                />
-                <button class="adjust-btn" onclick={() => fontSize = Math.max(6, fontSize - 1)}>-</button>
-                <button class="adjust-btn" onclick={() => fontSize = Math.min(72, fontSize + 1)}>+</button>
-              </div>
-            </div>
+          
+          <div class="settings-body">
+            <!-- 좌측 네비게이션 메뉴 -->
+            <aside class="settings-sidebar">
+              <button 
+                class="sidebar-item" 
+                class:active={activeSettingsTab === 'source'} 
+                onclick={() => activeSettingsTab = 'source'}
+              >
+                📝 원본 모드
+              </button>
+              <button 
+                class="sidebar-item" 
+                class:active={activeSettingsTab === 'render'} 
+                onclick={() => activeSettingsTab = 'render'}
+              >
+                🎨 렌더 모드
+              </button>
+            </aside>
             
-            <div class="settings-row">
-              <label for="tab-size-select">들여쓰기 너비 (공백 개수)</label>
-              <select id="tab-size-select" bind:value={tabSize} class="tab-size-select">
-                <option value={2}>2</option>
-                <option value={4}>4 (기본값)</option>
-                <option value={8}>8</option>
-              </select>
+            <!-- 우측 메인 콘텐츠 영역 -->
+            <div class="settings-main">
+              {#if activeSettingsTab === 'source'}
+                <div class="settings-section">
+                  <h4 class="section-title">글꼴 설정</h4>
+                  <div class="settings-row">
+                    <label for="source-font-size-input">글꼴 크기 (pt)</label>
+                    <div class="size-control">
+                      <input 
+                        id="source-font-size-input"
+                        type="number" 
+                        min="6" 
+                        max="72" 
+                        bind:value={sourceFontSize} 
+                        class="font-size-num"
+                      />
+                      <button class="adjust-btn" onclick={() => sourceFontSize = Math.max(6, sourceFontSize - 1)}>-</button>
+                      <button class="adjust-btn" onclick={() => sourceFontSize = Math.min(72, sourceFontSize + 1)}>+</button>
+                    </div>
+                  </div>
+                </div>
+              {:else if activeSettingsTab === 'render'}
+                <div class="settings-section">
+                  <h4 class="section-title">화면 및 글꼴</h4>
+                  <div class="settings-row">
+                    <label for="render-font-size-input">글꼴 크기 (pt)</label>
+                    <div class="size-control">
+                      <input 
+                        id="render-font-size-input"
+                        type="number" 
+                        min="6" 
+                        max="72" 
+                        bind:value={renderFontSize} 
+                        class="font-size-num"
+                      />
+                      <button class="adjust-btn" onclick={() => renderFontSize = Math.max(6, renderFontSize - 1)}>-</button>
+                      <button class="adjust-btn" onclick={() => renderFontSize = Math.min(72, renderFontSize + 1)}>+</button>
+                    </div>
+                  </div>
+                  
+                  <div class="settings-row">
+                    <label for="tab-size-select">들여쓰기 너비 (공백 개수)</label>
+                    <select id="tab-size-select" bind:value={tabSize} class="tab-size-select">
+                      <option value={2}>2</option>
+                      <option value={4}>4 (기본값)</option>
+                      <option value={8}>8</option>
+                    </select>
+                  </div>
+                </div>
+                
+                <div class="settings-section">
+                  <h4 class="section-title">시각적 테마 색상 설정</h4>
+                  
+                  <div class="settings-row color-row">
+                    <label for="color-hl-code-bg">코드 백그라운드 색상</label>
+                    <div class="color-picker-wrapper">
+                      <input id="color-hl-code-bg" type="color" bind:value={colorHlCodeBg} />
+                      <input type="text" class="color-text-input" bind:value={colorHlCodeBg} placeholder="#000000" />
+                    </div>
+                  </div>
+                  
+                  <div class="settings-row color-row">
+                    <label for="color-hl-code-text">코드 글자 색상</label>
+                    <div class="color-picker-wrapper">
+                      <input id="color-hl-code-text" type="color" bind:value={colorHlCodeText} />
+                      <input type="text" class="color-text-input" bind:value={colorHlCodeText} placeholder="#000000" />
+                    </div>
+                  </div>
+                  
+                  <div class="settings-row color-row">
+                    <label for="color-hl-string">문자열 색상 ('...', "...")</label>
+                    <div class="color-picker-wrapper">
+                      <input id="color-hl-string" type="color" bind:value={colorHlString} />
+                      <input type="text" class="color-text-input" bind:value={colorHlString} placeholder="#000000" />
+                    </div>
+                  </div>
+                  
+                  <div class="settings-row color-row">
+                    <label for="color-hl-number">숫자 색상 (0-9)</label>
+                    <div class="color-picker-wrapper">
+                      <input id="color-hl-number" type="color" bind:value={colorHlNumber} />
+                      <input type="text" class="color-text-input" bind:value={colorHlNumber} placeholder="#000000" />
+                    </div>
+                  </div>
+                  
+                  <div class="settings-row color-row">
+                    <label for="color-hl-comment">주석 색상 (//, #)</label>
+                    <div class="color-picker-wrapper">
+                      <input id="color-hl-comment" type="color" bind:value={colorHlComment} />
+                      <input type="text" class="color-text-input" bind:value={colorHlComment} placeholder="#000000" />
+                    </div>
+                  </div>
+                  
+                  <div class="settings-row color-row">
+                    <label for="color-indent-guide">들여쓰기 가이드라인 색상</label>
+                    <div class="color-picker-wrapper">
+                      <input id="color-indent-guide" type="color" bind:value={colorIndentGuide} />
+                      <input type="text" class="color-text-input" bind:value={colorIndentGuide} placeholder="#000000" />
+                    </div>
+                  </div>
+                  
+                  <div class="settings-action-row">
+                    <button class="reset-colors-btn" onclick={resetColorsToDefault}>
+                      기본 색상으로 복원
+                    </button>
+                  </div>
+                </div>
+              {/if}
             </div>
           </div>
         </div>
@@ -1299,9 +1645,6 @@
     width: 100%;
     height: 100%;
     background-color: var(--bg-overlay);
-    display: flex;
-    justify-content: center;
-    align-items: center;
     z-index: 30;
   }
 
@@ -1310,9 +1653,11 @@
     border: 1px solid var(--border-color);
     border-radius: 8px;
     box-shadow: var(--shadow-menu);
-    width: 320px;
-    padding: 1rem;
-    box-sizing: border-box;
+    width: 720px;
+    height: 480px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     animation: fadeIn 0.15s ease-out;
   }
 
@@ -1320,9 +1665,11 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 1rem;
+    padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--border-color);
-    padding-bottom: 0.5rem;
+    background-color: var(--bg-window);
+    cursor: move;
+    user-select: none;
   }
 
   .settings-header h3 {
@@ -1344,10 +1691,78 @@
     color: var(--text-color);
   }
 
-  .settings-content {
+  .settings-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .settings-sidebar {
+    width: 180px;
+    background-color: var(--bg-window);
+    border-right: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    padding: 0.5rem 0;
+    gap: 2px;
+    user-select: none;
+    flex-shrink: 0;
+  }
+
+  .sidebar-item {
+    background: transparent;
+    border: none;
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 0.85rem;
+    padding: 0.6rem 1rem;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.1s, color 0.1s;
+    outline: none;
+    border-left: 3px solid transparent;
+  }
+
+  .sidebar-item:hover {
+    background-color: var(--bg-menu-hover);
+  }
+
+  .sidebar-item.active {
+    background-color: var(--bg-menu-active);
+    font-weight: 600;
+    border-left-color: var(--accent-color);
+  }
+
+  .settings-main {
+    flex: 1;
+    padding: 1rem 1.25rem;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    background-color: var(--bg-editor);
+  }
+
+  .settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 1rem;
+  }
+
+  .settings-section:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+
+  .section-title {
+    margin: 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent-color);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
   }
 
   .settings-row {
@@ -1355,6 +1770,63 @@
     justify-content: space-between;
     align-items: center;
     font-size: 0.85rem;
+    min-height: 28px;
+  }
+
+  .color-picker-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .color-picker-wrapper input[type="color"] {
+    border: 1px solid var(--border-color);
+    padding: 0;
+    width: 28px;
+    height: 28px;
+    cursor: pointer;
+    border-radius: 4px;
+    background: none;
+  }
+
+  .color-text-input {
+    width: 80px;
+    padding: 0.25rem 0.4rem;
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-editor);
+    color: var(--text-color);
+    border-radius: 4px;
+    font-family: Consolas, monospace;
+    font-size: 0.8rem;
+    outline: none;
+    text-transform: uppercase;
+  }
+
+  .color-text-input:focus {
+    border-color: var(--accent-color);
+  }
+
+  .settings-action-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.5rem;
+  }
+
+  .reset-colors-btn {
+    background-color: var(--bg-window);
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+    border-radius: 4px;
+    padding: 0.4rem 0.8rem;
+    font-family: var(--font-ui);
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: background-color 0.1s;
+    outline: none;
+  }
+
+  .reset-colors-btn:hover {
+    background-color: var(--bg-menu-hover);
   }
 
   .size-control {
