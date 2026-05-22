@@ -2,7 +2,6 @@
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { listen } from "@tauri-apps/api/event";
   import { PhysicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
 
   let filePath = $state<string | null>(null);
@@ -146,32 +145,7 @@
   $effect(() => {
     if (!isBrowser) return;
 
-    const restoreWindowState = async () => {
-      const appWindow = getCurrentWindow();
-      
-      const savedWidth = localStorage.getItem('app_window_width');
-      const savedHeight = localStorage.getItem('app_window_height');
-      if (savedWidth && savedHeight) {
-        const w = parseInt(savedWidth, 10);
-        const h = parseInt(savedHeight, 10);
-        if (w > 200 && h > 200) {
-          await appWindow.setSize(new PhysicalSize(w, h)).catch(console.error);
-        }
-      }
-
-      const savedX = localStorage.getItem('app_window_x');
-      const savedY = localStorage.getItem('app_window_y');
-      if (savedX && savedY) {
-        const x = parseInt(savedX, 10);
-        const y = parseInt(savedY, 10);
-        if (y > -2000 && x > -5000) {
-          await appWindow.setPosition(new PhysicalPosition(x, y)).catch(console.error);
-        }
-      }
-    };
-
-    restoreWindowState();
-
+    let isRestoring = true;
     const appWindow = getCurrentWindow();
     let resizeTimeout: any;
     let moveTimeout: any;
@@ -179,28 +153,77 @@
     let unlistenResized: (() => void) | null = null;
     let unlistenMoved: (() => void) | null = null;
 
-    const subResized = appWindow.onResized(async () => {
+    const restoreWindowState = async () => {
+      try {
+        const savedWidth = localStorage.getItem('app_window_width');
+        const savedHeight = localStorage.getItem('app_window_height');
+        const savedX = localStorage.getItem('app_window_x');
+        const savedY = localStorage.getItem('app_window_y');
+
+        console.log(`[WindowState] Loaded stored values: size=${savedWidth}x${savedHeight}, pos=${savedX},${savedY}`);
+
+        if (savedWidth && savedHeight) {
+          const w = parseInt(savedWidth, 10);
+          const h = parseInt(savedHeight, 10);
+          if (w > 200 && h > 200) {
+            await appWindow.setSize(new PhysicalSize(w, h));
+            console.log(`[WindowState] Restored size to ${w}x${h}`);
+          }
+        }
+
+        if (savedX && savedY) {
+          const x = parseInt(savedX, 10);
+          const y = parseInt(savedY, 10);
+          if (y > -2000 && x > -5000) {
+            await appWindow.setPosition(new PhysicalPosition(x, y));
+            console.log(`[WindowState] Restored position to ${x},${y}`);
+          }
+        }
+      } catch (e) {
+        console.error('[WindowState] Restore error:', e);
+      } finally {
+        // 복원 조작 완료 후 1000ms 뒤에 저장 기능 활성화 (이벤트 덮어쓰기 방지)
+        setTimeout(() => {
+          isRestoring = false;
+          console.log('[WindowState] Restoration unlock - save enabled.');
+        }, 1000);
+      }
+    };
+
+    restoreWindowState();
+
+    const subResized = appWindow.onResized((event) => {
+      if (isRestoring) {
+        console.log('[WindowState] Skip saving size during restoration');
+        return;
+      }
       clearTimeout(resizeTimeout);
-      resizeTimeout = setTimeout(async () => {
+      resizeTimeout = setTimeout(() => {
         try {
-          const size = await appWindow.innerSize();
+          const size = event.payload; // PhysicalSize
+          console.log('[WindowState] Save size:', size.width, size.height);
           localStorage.setItem('app_window_width', size.width.toString());
           localStorage.setItem('app_window_height', size.height.toString());
         } catch (e) {
-          console.error(e);
+          console.error('[WindowState] Save size error:', e);
         }
       }, 300);
     }).then((unsub) => { unlistenResized = unsub; });
 
-    const subMoved = appWindow.onMoved(async () => {
+    const subMoved = appWindow.onMoved((event) => {
+      if (isRestoring) {
+        console.log('[WindowState] Skip saving position during restoration');
+        return;
+      }
       clearTimeout(moveTimeout);
-      moveTimeout = setTimeout(async () => {
+      moveTimeout = setTimeout(() => {
         try {
-          const pos = await appWindow.outerPosition();
+          const pos = event.payload; // PhysicalPosition
+          console.log('[WindowState] Save position:', pos.x, pos.y);
           localStorage.setItem('app_window_x', pos.x.toString());
           localStorage.setItem('app_window_y', pos.y.toString());
         } catch (e) {
-          console.error(e);
+          console.error('[WindowState] Save position error:', e);
         }
       }, 300);
     }).then((unsub) => { unlistenMoved = unsub; });

@@ -152,4 +152,13 @@
   - **Tauri 윈도우 권한 승인 및 타입 오류 핫픽스**: Tauri v2에서 프론트엔드가 창 크기와 위치를 동적으로 복원할 수 있도록 `src-tauri/capabilities/default.json`에 `core:window:default` 권한을 전격 추가함. Svelte-check 통과를 위해 `{ type: 'Physical', ... }` 객체 형태를 `@tauri-apps/api/dpi`에서 임포트한 `PhysicalSize` 및 `PhysicalPosition` 클래스 생성자로 수정하여 TypeScript 타입 에러 해결.
   - **빌드 및 배포**: `npm run tauri build`를 재수행하여 검증 에러 없이 릴리스용 NSIS/MSI 패키지 빌드 최종 성공.
 
+### [2026-05-22] 윈도우 크기 및 위치 복원 기능 오류 해결 (Tauri v2 권한 명시 및 스타트업 락 강화)
+- **작업자**: Antigravity
+- **상세 내용**:
+  - **권한 오류 해결**: Tauri v2에서 프론트엔드가 창 크기/위치를 설정할 수 없던 권한 부족 문제를 해결하기 위해 `src-tauri/capabilities/default.json`에 `core:window:allow-set-size`와 `core:window:allow-set-position` 권한을 명시적으로 선언함.
+  - **라벨 매핑 정합성 확보**: 창의 label이 명시되어 있지 않아 권한 규칙과 매칭되지 않던 문제를 방지하기 위해 `tauri.conf.json` 내의 윈도우 설정에 `"label": "main"` 명시.
+  - **레이스 컨디션 차단**: 복원 시작 시 `isRestoring` 락이 풀리는 대기 시간을 기존 500ms에서 1000ms로 상향 조정하여 OS가 리사이즈/이동 과정에서 전달하는 초기 비동기 이벤트에 의해 복원 값이 오염되는 것을 완벽히 방지함.
+  - **불필요한 리스너 제거**: `src/routes/+page.svelte` 내에서 사용하지 않는 `listen` 이벤트 import 구문 정리.
+  - **릴리스 빌드 검증**: `npm run tauri build`를 백그라운드 태스크로 재수행하여 검증 에러 없이 x64 Setup(MSI/NSIS) 독립형 패키지 최종 빌드 성공 완료.
+
 
