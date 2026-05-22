@@ -2,6 +2,7 @@
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { listen } from "@tauri-apps/api/event";
 
   let filePath = $state<string | null>(null);
   let fileName = $state<string>("제목 없음");
@@ -364,13 +365,18 @@
     closeAllDropdown();
   }
 
+  let wheelDebug = $state<string>("N/A");
+
   // 마우스 가로 휠 및 Shift + 마우스 세로 휠 가로 스크롤 지원
   function handleWheel(e: WheelEvent) {
     if (!textareaEl) return;
     
-    // deltaX가 존재하면 가로 휠 입력이 있는 것임
+    wheelDebug = `dX:${e.deltaX.toFixed(0)}, dY:${e.deltaY.toFixed(0)}, shift:${e.shiftKey}`;
+    
+    // deltaX가 존재하면 가로 휠 입력이 있는 것임 (macOS 및 일반 브라우저 환경 등)
     if (e.deltaX !== 0) {
-      textareaEl.scrollLeft += e.deltaX;
+      // 일반 브라우저 환경에서 가로 휠 동작 시 스크롤 속도를 보정하기 위해 배율(x3) 적용
+      textareaEl.scrollLeft += e.deltaX * 3;
       e.preventDefault();
     } 
     // Shift 키를 누르고 세로 휠을 돌릴 때 가로 스크롤 매핑
@@ -379,6 +385,35 @@
       e.preventDefault();
     }
   }
+
+  // passive: false 리스너로 등록하여 preventDefault() 오동작 차단 및 Rust 네이티브 가로 휠 이벤트 통합
+  $effect(() => {
+    if (!textareaEl) return;
+    
+    const onWheelNative = (e: WheelEvent) => {
+      handleWheel(e);
+    };
+
+    textareaEl.addEventListener('wheel', onWheelNative, { passive: false });
+    
+    // Windows WebView2에서는 가로 휠 조작 시 브라우저 내 wheel 이벤트의 deltaX가 아예 0이 되는 버그가 있습니다.
+    // 이를 우회하기 위해 Rust 백엔드에서 WM_MOUSEHWHEEL 메시지를 후킹하여 가로 휠 델타를 직접 수신받습니다.
+    const unlistenPromise = listen<number>("native-horizontal-wheel", (event) => {
+      if (!textareaEl) return;
+      const delta = event.payload;
+      // OS의 delta 값(보통 120 또는 -120)을 받아 가로 스크롤에 직접 반영
+      // 윈도우 OS의 가로 스크롤 한 틱 단위가 대개 120이므로, 120px 만큼 스크롤됩니다.
+      textareaEl.scrollLeft += delta;
+      
+      // 디버그 텍스트 갱신
+      wheelDebug = `Native dX: ${delta}`;
+    });
+    
+    return () => {
+      textareaEl.removeEventListener('wheel', onWheelNative);
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  });
 
   // 글로벌 키보드 단축키 감지
   function handleKeyDown(e: KeyboardEvent) {
@@ -522,7 +557,6 @@
       onkeyup={updateCursorPosition}
       onclick={updateCursorPosition}
       onfocus={updateCursorPosition}
-      onwheel={handleWheel}
       spellcheck="false"
     ></textarea>
 
@@ -566,6 +600,7 @@
       {/if}
     </div>
     <div class="status-right">
+      <span class="status-item">Wheel: {wheelDebug}</span>
       <span class="status-item">Ln {cursorLine}, Col {cursorCol}</span>
       <span class="status-item">100%</span>
       <span class="status-item">Windows (CRLF)</span>
@@ -779,7 +814,7 @@
     line-height: 1.5;
     padding: 8px 12px;
     box-sizing: border-box;
-    overflow-y: scroll;
+    overflow: auto;
     white-space: pre;
     word-wrap: normal;
   }

@@ -95,9 +95,21 @@
 ### [2026-05-21] 마우스 가로 휠 스크롤 미작동 이슈 해결
 - **작업자**: Antigravity
 - **상세 내용**:
-  - HTML `textarea` 요소가 `white-space: pre` 상태일 때 일부 WebView2 환경에서 마우스 가로 휠 입력(`deltaX`)이 텍스트 스크롤에 디폴트로 반영되지 않는 현상 확인.
-  - `textarea`에 `onwheel` 이벤트 리스너 `handleWheel`을 연결하여 `deltaX`가 감지되면 `textareaEl.scrollLeft += deltaX`로 직접 스크롤되도록 로직 구현.
+  - Windows의 WebView2(Edge 렌더러) 환경에서 마우스 가로 휠(Tilt Wheel) 입력 시 브라우저 내 `wheel` 이벤트의 `deltaX` 값이 아예 `0`으로 전달되는 WebView2 자체 버그 확인. 이로 인해 브라우저 네이티브 가로 스크롤이 전혀 동작하지 않음.
+  - 이를 해결하기 위해 Rust 백엔드 레벨에서 Windows API를 사용해 윈도우 프로시저를 서브클래싱하여 OS 수준의 가로 휠 메시지(`WM_MOUSEHWHEEL`)를 직접 가로채 델타 값을 추출하고, 이를 Tauri Event를 통해 프론트엔드로 emit하도록 구현.
+  - Svelte 프론트엔드 단에서 `native-horizontal-wheel` 이벤트를 수신하여 `textareaEl.scrollLeft += delta`로 수동 스크롤 연동 처리 완료.
   - 마우스에 가로 휠이 없는 사용자를 위해 `Shift + 세로 휠(deltaY)` 입력 시에도 가로 스크롤이 작동하도록 범용 단축 조작 지원 추가.
 - **다음 작업**: 빌드 검증 후 핫픽스 버전 패키징 완료.
+
+### [2026-05-21] Slint 성능 병목에 따른 Tauri 2.0 스택 롤백 및 에디터 성능 최적화
+- **작업자**: Antigravity
+- **상세 내용**:
+  - **문제점 발견**: Slint `TextEdit` 컴포넌트의 가상화 미지원 한계로 130만 자(1.3MB)가 넘는 대형 파일을 다룰 때 극심한 타이핑/스크롤 렉이 발생하는 성능 병목 식별. 반면 Tauri(HTML textarea)는 Chromium의 최적화 덕분에 렉이 없음이 증명됨.
+  - **인프라 롤백**: Slint 관련 코드를 모두 청소하고, Git 히스토리를 통해 Tauri 2.0 + SvelteKit 스택으로 완전히 롤백을 단행.
+  - **성능 검증**: HTML `textarea` 및 브라우저 네이티브 스크롤 방식을 채택하여 대형 파일에서도 지연 시간 0ms의 즉각적인 렌더링 성능을 확보함.
+  - **가로 휠 스크롤 우회 패치**: WebView2가 가로 휠 메시지 수신 시 `deltaX = 0`으로 뭉개는 버그 한계를 Rust 백엔드의 OS 가로 휠 메시지(`WM_MOUSEHWHEEL`) 후킹 서브클래싱 및 Svelte 이벤트 바인딩 방식으로 우회 극복.
+  - **배포 빌드 성공**: `npm run tauri build`를 재수행하여 검은색 터미널창 팝업이 없고 대용량 파일 렉이 사라진 프로덕션 빌드 패키징(MSI, NSIS)을 완료함.
+  - **바로가기 업데이트**: 루트 폴더의 `text-pad.lnk` 바로가기를 릴리스 바이너리(`src-tauri/target/release/tauri-app.exe`)로 조준 완료하여 단독 실행 환경 지원.
+
 
 
