@@ -79,4 +79,18 @@ impl serde::Serialize for AppError {
         serializer.serialize_str(&self.to_string())
     }
 }
-```
+
+---
+
+## 5. Windows API 서브클래싱을 통한 마우스 가로 휠 후킹 (WM_MOUSEHWHEEL)
+
+WebView2의 Windows 실행 환경 버그(가로 휠 스크롤 입력 시 `deltaX`를 0으로 강제 변환)를 극복하기 위해, OS 수준에서 마우스 가로 휠 메시지를 가로채 프론트엔드로 안전하게 전달하는 후킹 메커니즘을 적용합니다.
+
+1. **윈도우 프로시저 서브클래싱 (`comctl32.dll`)**:
+   - `SetWindowSubclass` API를 통해 현재 Tauri 메인 윈도우의 HWND 메시지 핸들러 체인에 커스텀 콜백 `window_subclass_proc`을 주입합니다.
+   - 메시지 루프에서 가로 휠 메시지인 `WM_MOUSEHWHEEL` (메시지 ID `0x020E`)를 식별합니다.
+2. **스크롤 델타 파싱 및 전송**:
+   - `WPARAM`의 상위 16비트를 마스킹 및 비트 시프트하여 가로 휠 스크롤 회전 방향 및 속도인 `delta` 값을 물리 정수형태로 추출합니다.
+   - Tauri 창 관리 API(`data.window.emit`)를 호출하여 프론트엔드로 `native-horizontal-wheel` 이벤트를 `delta` 데이터와 함께 직접 송출(emit)합니다.
+3. **기본 동작 차단**:
+   - WebView2 컨트롤러 단에서 가로 휠 메시지를 집어삼켜 무력화하는 오동작을 미연에 방지하기 위해, 메시지를 수동 처리한 뒤 더 이상의 전파 없이 `0`을 즉시 리턴하여 해당 OS 이벤트를 완결 처리합니다.

@@ -247,4 +247,14 @@
   - **빌드 테스트**: `npm run build` 및 `npm run tauri build`를 순차 수행하여 컴파일 및 MSI/NSIS 인스톨러 배포본 최종 빌드 완료.
 - **다음 작업**: 지속적인 테마 스타일 고도화 및 사용자 피드백 수용.
 
+### [2026-05-23] 프로젝트 가이드 문서 일관성 최신화 완료
+- **작업자**: Antigravity
+- **상세 내용**:
+  - **진행 상황 정기 동기화**: 렌더 모드 인프라, 가상화 뷰포트, 독립 설정창, 괄호 중첩 렌더링, 테마 복원 마이그레이션 및 Windows 가로 휠 스크롤 훅 등 최근 추가 완료된 핵심 아키텍처 및 구현 결과물들을 통합 가이드([project-guide.md](file:///c:/Users/olive/Desktop/Development/text-pad/docs/project-guide.md)) 및 체크리스트([implementation-checklist.md](file:///c:/Users/olive/Desktop/Development/text-pad/docs/implementation-checklist.md))에 반영하여 완료로 체크 갱신.
+  - **프론트엔드 가이드 보강**: Svelte/TS 가이드([frontend-guide.md](file:///c:/Users/olive/Desktop/Development/text-pad/docs/frontend-guide.md))에 다중 창 동기화 및 3종 괄호 중첩 트리 파서/재귀 렌더러 설계에 대한 기술 사양 신설.
+  - **백엔드 가이드 보강**: Rust/Tauri 가이드([backend-guide.md](file:///c:/Users/olive/Desktop/Development/text-pad/docs/backend-guide.md))에 Windows API subclassing을 통한 `WM_MOUSEHWHEEL` 마우스 가로 휠 훅 및 이벤트 전파 로직 기술 사양 신설.
+  - **문서 일관성 확보**: 프로젝트의 실제 구현 상태와 가이드 라인 문서를 일치시킴으로써 차기 AI 에이전트 혹은 사람 개발자가 컨텍스트를 투명하게 인계받을 수 있도록 조치.
+- **다음 작업**: 사용자 피드백 지속 수집 및 릴리스 배포 지원.
+
+
 

@@ -65,18 +65,18 @@ text-pad/
 |---|---|---|---|---|
 | Phase 0 | Project Foundation | 완료 | - | 기술 스택 및 구조 설계 단계 |
 | Phase 1 | Desktop Shell & File Workflow | 완료 | `src-tauri/src/main.rs`<br>`src/routes/+page.svelte` | Tauri 2.0 + SvelteKit 기반 앱 셸, 메뉴바, 파일 I/O 및 대용량 파일 렉 방지 완료 |
-| Phase 2 | Source Mode Editor | 진행전 | - | CodeMirror 6 연동 및 편집 편의 기능 |
-| Phase 3 | Mode Switching | 진행전 | - | 원문/렌더링 상태 동기화 및 뷰포트 연결 |
-| Phase 4 | Render Mode Core | 진행전 | - | 렌더링 뷰 레이아웃 및 부분 편집 인프라 |
-| Phase 5 | Theme & Preferences | 진행전 | - | 설정 UI(⚙️) 통한 폰트 크기 변경 및 테마 동기화 완료 |
-| Phase 6 | TXT Support | 진행전 | - | TXT 렌더러 및 문단 편집 기능 |
+| Phase 2 | Source Mode Editor | 완료 | `src/routes/+page.svelte` | textarea 기반 뷰포트, 절대좌표 가상 줄번호 Gutter, 현재 라인 하이라이트 구현 완료 |
+| Phase 3 | Mode Switching | 완료 | `src/routes/+page.svelte` | 🎨/📝 모드 전환 스위치, 스크롤 싱크 및 캐럿/드래그 Y축 완전 동치성 정합 완료 |
+| Phase 4 | Render Mode Core | 완료 | `src/routes/+page.svelte` | 가상화 뷰포트 backdrop 기법을 통해 1.3MB 파일 0ms 구동 및 실시간 수정 동기화 구현 |
+| Phase 5 | Theme & Preferences | 완료 | `src/routes/+page.svelte` | 설정창을 통한 원본/렌더 폰트 크기 조절, 렌더 글꼴, 구문 강조 실시간 적용 및 localStorage 영구 동기화 |
+| Phase 6 | TXT Support | 완료 | `src/routes/+page.svelte` | 탭 간격 조절, 들여쓰기 가이드라인, 3종 괄호 중첩 파싱 및 내부 텍스트 칠하기 구현 완료 |
 | Phase 7 | Markdown Support | 진행전 | - | MD 파서, 렌더링, 부분 WYSIWYG 편집 |
 | Phase 8 | JSON Support | 진행전 | - | JSON AST 파서, 트리 보기, 키/값 편집 |
 | Phase 9 | CSV / TSV Support | 진행전 | - | CSV 파서, 그리드 표 렌더러, 셀/행 편집 |
 | Phase 10| YAML Support | 진행전 | - | YAML 파서, 주석 보존형 트리 편집 |
-| Phase 11| Settings Screen | 진행전 | - | 설정 UI 구성 및 로컬 저장소 연결 |
+| Phase 11| Settings Screen | 완료 | `src/routes/+page.svelte`<br>`src-tauri/capabilities/default.json` | 720x480 드래그 이동 독립 윈도우 분리 완료. 쿼리 프리 윈도우 라벨 감지 404 원천 해결 및 이전 기본값 마이그레이션 적용. |
 | Phase 12| Performance Tuning | 완료 | `src/routes/+page.svelte` | 130만 자(1.3MB) 대형 파일에서 렉이 없도록 Tauri HTML textarea 스택 유지 및 가로 휠 스크롤 패치 |
-| Phase 13| Verification & Test | 진행전 | - | 단위 테스트 및 수동 검증 매뉴얼 작성 |
+| Phase 13| Verification & Test | 진행중 | `docs/implementation-checklist.md` | 수동 검증용 대형 샘플 테스트 및 윈도우 WebView2 ClearType 서브픽셀 힌팅 가독성 정밀 복원 수동 검증 완료 |
 | Phase 14| Packaging & Release | 완료 | - | `npm run tauri build`를 통한 독립 실행형 패키지 릴리스 빌드 인프라 구축 완료 |
 
 ---
