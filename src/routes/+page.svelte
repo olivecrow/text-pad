@@ -4,6 +4,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { PhysicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
   import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
+  import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
   let filePath = $state<string | null>(null);
   let fileName = $state<string>("제목 없음");
@@ -46,8 +47,19 @@
   let colorIndentGuide = $state<string>('');
   let colorRenderBg = $state<string>('');
   let colorRenderText = $state<string>('');
-  let renderFontFamily = $state<string>('jetbrains-mono');
+
+  // 괄호 하이라이팅 커스텀 테마 색상 상태 변수
+  let colorHlParen = $state<string>('');
+  let colorHlBracket = $state<string>('');
+  let colorHlBrace = $state<string>('');
+
+  // 설정창이 독립 윈도우로 떴는지 감지하는 상태
+  let isSettingsWindow = $state<boolean>(false);
+  let isWindowRestored = $state<boolean>(false);
+
+  let renderFontFamily = $state<string>('nanum-gothic');
   let currentRenderFontFamilyCSS = $derived(
+    renderFontFamily === 'nanum-gothic' ? "'Nanum Gothic', 'NanumGothic', 'Malgun Gothic', sans-serif" :
     renderFontFamily === 'jetbrains-mono' ? "'JetBrains Mono', 'D2Coding', 'Nanum Gothic Coding', 'Fira Code', monospace" :
     renderFontFamily === 'fira-code' ? "'Fira Code', 'D2Coding', 'Nanum Gothic Coding', 'JetBrains Mono', monospace" :
     renderFontFamily === 'roboto-mono' ? "'Roboto Mono', 'D2Coding', 'Nanum Gothic Coding', monospace" :
@@ -56,7 +68,7 @@
     renderFontFamily === 'cascadia-mono' ? "'Cascadia Mono', 'Cascadia Code', 'D2Coding', 'Nanum Gothic Coding', monospace" :
     renderFontFamily === 'consolas' ? "'Consolas', 'D2Coding', 'Nanum Gothic Coding', monospace" :
     renderFontFamily === 'notepad' ? "var(--font-notepad)" :
-    "'JetBrains Mono', 'D2Coding', 'Nanum Gothic Coding', 'Fira Code', monospace"
+    "'Nanum Gothic', 'NanumGothic', 'Malgun Gothic', sans-serif"
   );
 
   // 설정창 드래그 이동 상태 변수
@@ -74,14 +86,17 @@
   // 시스템 테마별 기본 강조 색상
   function getSystemDefaultColors(isDark: boolean) {
     return isDark ? {
-      renderBg: '#12151c',
-      renderText: '#d6f6ff',
+      renderBg: '#0a0a0b',
+      renderText: '#d6eaf0',
       codeBg: '#1e293b',
       codeText: '#38bdf8',
-      string: '#fb7185',
-      number: '#ffd666',
+      string: '#F3AF82',
+      number: '#dffe8b',
       comment: '#64748b',
-      guide: '#334155'
+      guide: '#334155',
+      paren: '#ECA7BC',
+      bracket: '#C87EBA',
+      brace: '#CD81E9'
     } : {
       renderBg: '#f8fafc',
       renderText: '#0f172a',
@@ -90,7 +105,10 @@
       string: '#b91c1c',
       number: '#d97706',
       comment: '#475569',
-      guide: '#cbd5e1'
+      guide: '#cbd5e1',
+      paren: '#a57800',
+      bracket: '#b31c62',
+      brace: '#097a70'
     };
   }
 
@@ -107,7 +125,10 @@
     colorIndentGuide = defaults.guide;
     colorRenderBg = defaults.renderBg;
     colorRenderText = defaults.renderText;
-    renderFontFamily = 'jetbrains-mono';
+    colorHlParen = defaults.paren;
+    colorHlBracket = defaults.bracket;
+    colorHlBrace = defaults.brace;
+    renderFontFamily = 'nanum-gothic';
   }
 
   // 마운트 시 localStorage Preferences 로드
@@ -126,15 +147,35 @@
     const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
     const defaults = getSystemDefaultColors(isDark);
 
+    // 구버전 기본 다크모드 색상 마이그레이션 감지용
+    const oldDefaults = {
+      string: '#fb7185',
+      paren: '#ffd700',
+      bracket: '#da70d6',
+      brace: '#17aeae'
+    };
+
     colorHlCodeBg = localStorage.getItem('pref_color_hl_code_bg') || defaults.codeBg;
     colorHlCodeText = localStorage.getItem('pref_color_hl_code_text') || defaults.codeText;
-    colorHlString = localStorage.getItem('pref_color_hl_string') || defaults.string;
+
+    const savedString = localStorage.getItem('pref_color_hl_string');
+    colorHlString = (!savedString || savedString === oldDefaults.string) ? defaults.string : savedString;
+
     colorHlNumber = localStorage.getItem('pref_color_hl_number') || defaults.number;
     colorHlComment = localStorage.getItem('pref_color_hl_comment') || defaults.comment;
     colorIndentGuide = localStorage.getItem('pref_color_indent_guide') || defaults.guide;
     colorRenderBg = localStorage.getItem('pref_color_render_bg') || defaults.renderBg;
     colorRenderText = localStorage.getItem('pref_color_render_text') || defaults.renderText;
-    renderFontFamily = localStorage.getItem('pref_render_font_family') || 'jetbrains-mono';
+    renderFontFamily = localStorage.getItem('pref_render_font_family') || 'nanum-gothic';
+
+    const savedParen = localStorage.getItem('pref_color_hl_paren');
+    colorHlParen = (!savedParen || savedParen === oldDefaults.paren) ? defaults.paren : savedParen;
+
+    const savedBracket = localStorage.getItem('pref_color_hl_bracket');
+    colorHlBracket = (!savedBracket || savedBracket === oldDefaults.bracket) ? defaults.bracket : savedBracket;
+
+    const savedBrace = localStorage.getItem('pref_color_hl_brace');
+    colorHlBrace = (!savedBrace || savedBrace === oldDefaults.brace) ? defaults.brace : savedBrace;
   });
 
   // 상태 변경 감지 자동 로컬스토리지 동기화
@@ -174,6 +215,53 @@
   $effect(() => {
     if (isBrowser && renderFontFamily) localStorage.setItem('pref_render_font_family', renderFontFamily);
   });
+  $effect(() => {
+    if (isBrowser && colorHlParen) localStorage.setItem('pref_color_hl_paren', colorHlParen);
+  });
+  $effect(() => {
+    if (isBrowser && colorHlBracket) localStorage.setItem('pref_color_hl_bracket', colorHlBracket);
+  });
+  $effect(() => {
+    if (isBrowser && colorHlBrace) localStorage.setItem('pref_color_hl_brace', colorHlBrace);
+  });
+
+  // 마운트 시 독립 설정창 감지
+  $effect(() => {
+    if (!isBrowser) return;
+    const label = getCurrentWindow().label;
+    isSettingsWindow = label === 'settings';
+    if (isSettingsWindow) {
+      activeSettingsTab = 'render';
+    }
+  });
+
+  // storage 변경 감지 핸들러 (창 간 실시간 동기화)
+  function handleStorageChange(e: StorageEvent) {
+    if (!e.key) return;
+    if (e.key === 'pref_source_font_size' && e.newValue) sourceFontSize = parseInt(e.newValue, 10);
+    if (e.key === 'pref_render_font_size' && e.newValue) renderFontSize = parseInt(e.newValue, 10);
+    if (e.key === 'pref_tab_size' && e.newValue) tabSize = parseInt(e.newValue, 10);
+    if (e.key === 'pref_color_hl_code_bg' && e.newValue) colorHlCodeBg = e.newValue;
+    if (e.key === 'pref_color_hl_code_text' && e.newValue) colorHlCodeText = e.newValue;
+    if (e.key === 'pref_color_hl_string' && e.newValue) colorHlString = e.newValue;
+    if (e.key === 'pref_color_hl_number' && e.newValue) colorHlNumber = e.newValue;
+    if (e.key === 'pref_color_hl_comment' && e.newValue) colorHlComment = e.newValue;
+    if (e.key === 'pref_color_indent_guide' && e.newValue) colorIndentGuide = e.newValue;
+    if (e.key === 'pref_color_render_bg' && e.newValue) colorRenderBg = e.newValue;
+    if (e.key === 'pref_color_render_text' && e.newValue) colorRenderText = e.newValue;
+    if (e.key === 'pref_render_font_family' && e.newValue) renderFontFamily = e.newValue;
+    if (e.key === 'pref_color_hl_paren' && e.newValue) colorHlParen = e.newValue;
+    if (e.key === 'pref_color_hl_bracket' && e.newValue) colorHlBracket = e.newValue;
+    if (e.key === 'pref_color_hl_brace' && e.newValue) colorHlBrace = e.newValue;
+  }
+
+  $effect(() => {
+    if (!isBrowser) return;
+    window.addEventListener('storage', handleStorageChange);
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  });
 
   // 앱 윈도우 크기 및 위치 복원/저장 $effect
   $effect(() => {
@@ -189,6 +277,12 @@
 
     const restoreWindowState = async () => {
       try {
+        const label = appWindow.label;
+        if (label !== 'main') {
+          console.log(`[WindowState] Skip restore for window: ${label}`);
+          return;
+        }
+
         const savedWidth = localStorage.getItem('app_window_width');
         const savedHeight = localStorage.getItem('app_window_height');
         const savedX = localStorage.getItem('app_window_x');
@@ -216,19 +310,22 @@
       } catch (e) {
         console.error('[WindowState] Restore error:', e);
       } finally {
-        // 복원 조작 완료 후 1000ms 뒤에 저장 기능 활성화 (이벤트 덮어쓰기 방지)
+        // 복원 완료 후 윈도우 노출 (기동 껌벅임 완벽 해소)
+        if (appWindow.label === 'main') {
+          await appWindow.show().catch(() => {});
+        }
+        isWindowRestored = true;
         setTimeout(() => {
           isRestoring = false;
           console.log('[WindowState] Restoration unlock - save enabled.');
-        }, 1000);
+        }, 500);
       }
     };
 
     restoreWindowState();
 
     const subResized = appWindow.onResized((event) => {
-      if (isRestoring) {
-        console.log('[WindowState] Skip saving size during restoration');
+      if (isRestoring || appWindow.label !== 'main') {
         return;
       }
       clearTimeout(resizeTimeout);
@@ -245,8 +342,7 @@
     }).then((unsub) => { unlistenResized = unsub; });
 
     const subMoved = appWindow.onMoved((event) => {
-      if (isRestoring) {
-        console.log('[WindowState] Skip saving position during restoration');
+      if (isRestoring || appWindow.label !== 'main') {
         return;
       }
       clearTimeout(moveTimeout);
@@ -321,10 +417,10 @@
   let lineCount = $derived(fileContent.split(/\r?\n/).length);
   let charCount = $derived(fileContent.length);
 
-  // 구문 분석 및 토큰화 유틸리티
   interface Token {
-    type: 'text' | 'string' | 'code' | 'number' | 'comment';
-    text: string;
+    type: 'text' | 'string' | 'code' | 'number' | 'comment' | 'paren' | 'bracket' | 'brace';
+    text?: string;
+    children?: Token[];
   }
 
   function parseNumbers(text: string): Token[] {
@@ -352,111 +448,177 @@
     return tokens;
   }
 
+  function processNumbersInTree(tokens: Token[]) {
+    for (let j = 0; j < tokens.length; j++) {
+      const token = tokens[j];
+      if (token.type === 'text' && token.text) {
+        const parsed = parseNumbers(token.text);
+        if (parsed.length > 1 || (parsed.length === 1 && parsed[0].type === 'number')) {
+          tokens.splice(j, 1, ...parsed);
+          j += parsed.length - 1;
+        }
+      } else if (token.children && token.children.length > 0) {
+        processNumbersInTree(token.children);
+      }
+    }
+  }
+
   function tokenizeLine(line: string): Token[] {
-    const tokens: Token[] = [];
+    const root: Token = { type: 'text', children: [] };
+    const stack: { token: Token; openChar?: string }[] = [{ token: root }];
+
     let i = 0;
     const len = line.length;
-    let currentText = "";
-    let state: string = 'DEFAULT';
+
+    function getTop() {
+      return stack[stack.length - 1];
+    }
+
+    function addChar(char: string) {
+      const top = getTop().token;
+      if (!top.children) top.children = [];
+      const lastChild = top.children[top.children.length - 1];
+      if (lastChild && lastChild.type === 'text') {
+        lastChild.text = (lastChild.text || '') + char;
+      } else {
+        top.children.push({ type: 'text', text: char });
+      }
+    }
+
+    function pushContainer(type: Token['type'], openChar: string) {
+      const top = getTop().token;
+      if (!top.children) top.children = [];
+      
+      const newContainer: Token = { type, children: [] };
+      top.children.push(newContainer);
+      stack.push({ token: newContainer, openChar });
+      
+      newContainer.children = [{ type: 'text', text: openChar }];
+    }
+
+    function popToContainer(openChar: string): boolean {
+      let targetIdx = -1;
+      for (let j = stack.length - 1; j > 0; j--) {
+        if (stack[j].openChar === openChar) {
+          targetIdx = j;
+          break;
+        }
+      }
+      if (targetIdx !== -1) {
+        stack.splice(targetIdx + 1);
+        return true;
+      }
+      return false;
+    }
+
+    function isInStringOrCode(): boolean {
+      for (let j = stack.length - 1; j > 0; j--) {
+        const type = stack[j].token.type;
+        if (type === 'string' || type === 'code') {
+          return true;
+        }
+      }
+      return false;
+    }
 
     while (i < len) {
       const char = line[i];
       const nextChar = line[i + 1];
+      const top = getTop();
 
-      if (state === 'COMMENT') {
-        currentText += char;
-        i++;
-        continue;
-      }
+      const inString = isInStringOrCode();
 
-      if (state === 'DEFAULT') {
+      // 1. 주석 처리 (문자열 바깥에서만 가능)
+      if (!inString) {
         if ((char === '/' && nextChar === '/') || char === '#') {
-          if (currentText) {
-            tokens.push(...parseNumbers(currentText));
-            currentText = "";
-          }
-          state = 'COMMENT';
-          currentText += line.substring(i);
+          const commentText = line.substring(i);
+          const topToken = top.token;
+          if (!topToken.children) topToken.children = [];
+          topToken.children.push({ type: 'comment', text: commentText });
+          i = len;
           break;
         }
       }
 
-      if (state === 'DEFAULT') {
-        if (char === '"') {
-          if (currentText) {
-            tokens.push(...parseNumbers(currentText));
-            currentText = "";
-          }
-          state = 'STRING_DOUBLE';
-          currentText += char;
-        } else if (char === "'") {
-          if (currentText) {
-            tokens.push(...parseNumbers(currentText));
-            currentText = "";
-          }
-          state = 'STRING_SINGLE';
-          currentText += char;
-        } else if (char === '`') {
-          if (currentText) {
-            tokens.push(...parseNumbers(currentText));
-            currentText = "";
-          }
-          state = 'BACKTICK';
-          currentText += char;
+      // 2. 이스케이프 처리 (문자열 안에서만 가능)
+      if (inString && char === '\\') {
+        addChar(char);
+        if (i + 1 < len) {
+          addChar(line[i + 1]);
+          i += 2;
         } else {
-          currentText += char;
+          i++;
         }
-        i++;
-      } else if (state === 'STRING_DOUBLE') {
-        currentText += char;
-        if (char === '\\') {
-          if (i + 1 < len) {
-            currentText += line[i + 1];
-            i++;
+        continue;
+      }
+
+      // 3. 따옴표 처리 (", ', `)
+      if (char === '"' || char === "'" || char === '`') {
+        let targetIdx = -1;
+        for (let j = stack.length - 1; j > 0; j--) {
+          if (stack[j].openChar === char) {
+            targetIdx = j;
+            break;
           }
-        } else if (char === '"') {
-          tokens.push({ type: 'string', text: currentText });
-          currentText = "";
-          state = 'DEFAULT';
+        }
+
+        if (targetIdx !== -1) {
+          stack.splice(targetIdx + 1);
+          addChar(char);
+          stack.pop();
+          i++;
+        } else {
+          const type = char === '`' ? 'code' : 'string';
+          pushContainer(type, char);
+          i++;
+        }
+        continue;
+      }
+
+      // 4. 괄호 및 일반 문자 처리
+      if (char === '(') {
+        pushContainer('paren', char);
+        i++;
+      } else if (char === '[') {
+        pushContainer('bracket', char);
+        i++;
+      } else if (char === '{') {
+        pushContainer('brace', char);
+        i++;
+      } else if (char === ')') {
+        if (popToContainer('(')) {
+          addChar(char);
+          stack.pop();
+        } else {
+          addChar(char);
         }
         i++;
-      } else if (state === 'STRING_SINGLE') {
-        currentText += char;
-        if (char === '\\') {
-          if (i + 1 < len) {
-            currentText += line[i + 1];
-            i++;
-          }
-        } else if (char === "'") {
-          tokens.push({ type: 'string', text: currentText });
-          currentText = "";
-          state = 'DEFAULT';
+      } else if (char === ']') {
+        if (popToContainer('[')) {
+          addChar(char);
+          stack.pop();
+        } else {
+          addChar(char);
         }
         i++;
-      } else if (state === 'BACKTICK') {
-        currentText += char;
-        if (char === '`') {
-          tokens.push({ type: 'code', text: currentText });
-          currentText = "";
-          state = 'DEFAULT';
+      } else if (char === '}') {
+        if (popToContainer('{')) {
+          addChar(char);
+          stack.pop();
+        } else {
+          addChar(char);
         }
+        i++;
+      } else {
+        addChar(char);
         i++;
       }
     }
 
-    if (currentText) {
-      if (state === 'DEFAULT') {
-        tokens.push(...parseNumbers(currentText));
-      } else if (state === 'STRING_DOUBLE' || state === 'STRING_SINGLE') {
-        tokens.push({ type: 'string', text: currentText });
-      } else if (state === 'BACKTICK') {
-        tokens.push({ type: 'code', text: currentText });
-      } else if (state === 'COMMENT') {
-        tokens.push({ type: 'comment', text: currentText });
-      }
-    }
+    const finalTokens = root.children || [];
+    processNumbersInTree(finalTokens);
 
-    return tokens;
+    return finalTokens;
   }
 
   interface ParsedLine {
@@ -716,6 +878,32 @@
     getCurrentWindow().close().catch(() => {});
   }
 
+  // 설정 창 열기 (독립 윈도우)
+  async function handleSettingsTrigger(e: MouseEvent) {
+    e.stopPropagation();
+    try {
+      const win = await WebviewWindow.getByLabel('settings');
+      if (win) {
+        await win.show();
+        await win.setFocus();
+      } else {
+        // 404 에러 방지를 위해 현재 실행 중인 윈도우의 Origin(루트 경로)을 그대로 설정창의 엔트리 포인트로 사용합니다.
+        // 설정창 감지는 URL 파라미터 대신 Tauri의 고유 윈도우 Label('settings')을 이용하므로 쿼리 스트링이 불필요합니다.
+        const settingsUrl = isBrowser ? window.location.origin + '/' : '/';
+
+        new WebviewWindow('settings', {
+          url: settingsUrl,
+          title: '설정',
+          width: 800,
+          height: 580,
+          resizable: true
+        });
+      }
+    } catch (err) {
+      console.error('Failed to open settings window:', err);
+    }
+  }
+
   // 메뉴 제어
   function toggleDropdown(menu: 'file' | 'edit', event: MouseEvent) {
     event.stopPropagation();
@@ -963,383 +1151,417 @@
 
 <svelte:window onkeydown={handleKeyDown} onclick={closeAllDropdown} />
 
-<div class="app-container" style="
-  --color-hl-code-bg: {colorHlCodeBg};
-  --color-hl-code-text: {colorHlCodeText};
-  --color-hl-string: {colorHlString};
-  --color-hl-number: {colorHlNumber};
-  --color-hl-comment: {colorHlComment};
-  --color-indent-guide: {colorIndentGuide};
-  --color-render-bg: {colorRenderBg};
-  --color-render-text: {colorRenderText};
-  --font-render-family: {currentRenderFontFamilyCSS};
-">
-  <!-- 메뉴바 영역 -->
-  <nav class="menu-bar">
-    <div class="menu-left">
-      <div class="menu-item-container">
+{#snippet renderToken(token: Token)}{#if token.children && token.children.length > 0}<span class="hl-{token.type}">{#each token.children as child}{@render renderToken(child)}{/each}</span>{:else}<span class="hl-{token.type}">{token.text || ''}</span>{/if}{/snippet}
+
+{#if isSettingsWindow}
+  <div class="settings-window-container" style="
+    --color-hl-code-bg: {colorHlCodeBg};
+    --color-hl-code-text: {colorHlCodeText};
+    --color-hl-string: {colorHlString};
+    --color-hl-number: {colorHlNumber};
+    --color-hl-comment: {colorHlComment};
+    --color-indent-guide: {colorIndentGuide};
+    --color-render-bg: {colorRenderBg};
+    --color-render-text: {colorRenderText};
+    --font-render-family: {currentRenderFontFamilyCSS};
+    --color-hl-paren: {colorHlParen};
+    --color-hl-bracket: {colorHlBracket};
+    --color-hl-brace: {colorHlBrace};
+  ">
+    <div class="settings-body window-mode">
+      <!-- 좌측 네비게이션 메뉴 -->
+      <aside class="settings-sidebar">
         <button 
-          class="menu-trigger" 
-          class:active={openDropdown === 'file'}
-          onclick={(e) => toggleDropdown('file', e)}
-          onmouseenter={() => handleMouseEnter('file')}
+          class="sidebar-item" 
+          class:active={activeSettingsTab === 'source'} 
+          onclick={() => activeSettingsTab = 'source'}
         >
-          파일(F)
+          📝 원본 모드
         </button>
-        {#if openDropdown === 'file'}
-          <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
-            <button class="dropdown-item" onclick={handleNewFile}>
-              <span class="item-label">새 파일</span>
-              <span class="shortcut-label">Ctrl+N</span>
-            </button>
-            <button class="dropdown-item" onclick={handleOpenFile}>
-              <span class="item-label">열기...</span>
-              <span class="shortcut-label">Ctrl+O</span>
-            </button>
-            <button class="dropdown-item" onclick={handleSaveFile}>
-              <span class="item-label">저장</span>
-              <span class="shortcut-label">Ctrl+S</span>
-            </button>
-            <button class="dropdown-item" onclick={handleSaveAsFile}>
-              <span class="item-label">다른 이름으로 저장...</span>
-              <span class="shortcut-label">Ctrl+Shift+S</span>
-            </button>
-            <div class="menu-divider"></div>
-            <button class="dropdown-item" onclick={handleExit}>
-              <span class="item-label">끝내기</span>
-              <span class="shortcut-label">Alt+F4</span>
-            </button>
-          </div>
-        {/if}
-      </div>
-
-      <div class="menu-item-container">
         <button 
-          class="menu-trigger" 
-          class:active={openDropdown === 'edit'}
-          onclick={(e) => toggleDropdown('edit', e)}
-          onmouseenter={() => handleMouseEnter('edit')}
+          class="sidebar-item" 
+          class:active={activeSettingsTab === 'render'} 
+          onclick={() => activeSettingsTab = 'render'}
         >
-          편집(E)
+          🎨 렌더 모드
         </button>
-        {#if openDropdown === 'edit'}
-          <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
-            <button class="dropdown-item" onclick={handleUndo}>
-              <span class="item-label">실행 취소</span>
-              <span class="shortcut-label">Ctrl+Z</span>
-            </button>
-            <button class="dropdown-item" onclick={handleRedo}>
-              <span class="item-label">다시 실행</span>
-              <span class="shortcut-label">Ctrl+Y</span>
-            </button>
-            <div class="menu-divider"></div>
-            <button class="dropdown-item" onclick={handleCut} disabled={!fileContent}>
-              <span class="item-label">잘라내기</span>
-              <span class="shortcut-label">Ctrl+X</span>
-            </button>
-            <button class="dropdown-item" onclick={handleCopy} disabled={!fileContent}>
-              <span class="item-label">복사</span>
-              <span class="shortcut-label">Ctrl+C</span>
-            </button>
-            <button class="dropdown-item" onclick={handlePaste}>
-              <span class="item-label">붙여넣기</span>
-              <span class="shortcut-label">Ctrl+V</span>
-            </button>
-            <button class="dropdown-item" onclick={handleDelete} disabled={!fileContent}>
-              <span class="item-label">삭제</span>
-              <span class="shortcut-label">Del</span>
-            </button>
-            <div class="menu-divider"></div>
-            <button class="dropdown-item" onclick={handleSelectAll}>
-              <span class="item-label">모두 선택</span>
-              <span class="shortcut-label">Ctrl+A</span>
-            </button>
-            <button class="dropdown-item" onclick={insertDateTime}>
-              <span class="item-label">시간/날짜</span>
-              <span class="shortcut-label">F5</span>
-            </button>
-          </div>
-        {/if}
-      </div>
-
-      <!-- 에러 표시 간소화 -->
-      {#if errorMsg}
-        <div class="menu-error-indicator" title={errorMsg}>⚠️ {errorMsg}</div>
-      {/if}
-    </div>
-
-    <!-- 우측 설정 톱니바퀴 및 렌더 모드 토글 버튼 -->
-    <div class="menu-right">
-      <button 
-        class="render-mode-toggle"
-        class:active={isRenderMode}
-        onclick={() => isRenderMode = !isRenderMode}
-        title={isRenderMode ? "원본 모드로 전환" : "렌더 모드로 전환"}
-      >
-        {isRenderMode ? "🎨" : "📝"}
-      </button>
+      </aside>
       
-      <button 
-        class="settings-trigger" 
-        class:active={showSettings}
-        onclick={(e) => { e.stopPropagation(); showSettings = !showSettings; }} 
-        title="설정"
-      >
-        ⚙️
-      </button>
-    </div>
-  </nav>
-
-  <!-- 편집 공간 -->
-  <main class="editor-area" class:render-mode={isRenderMode}>
-    <div class="editor-container">
-      <!-- 라인 번호 Gutter -->
-      {#if isRenderMode}
-        <div class="editor-gutter" style="background-color: var(--color-render-bg); border-right: 1px solid var(--border-color);">
-          <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
-            {#each Array(endLine - startLine + 1) as _, idx}
-              {@const lineIdx = startLine + idx}
-              <div 
-                class="gutter-line-number" 
-                style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt;"
-              >
-                {lineIdx + 1}
+      <!-- 우측 메인 콘텐츠 영역 -->
+      <div class="settings-main">
+        {#if activeSettingsTab === 'source'}
+          <div class="settings-section">
+            <h4 class="section-title">글꼴 설정</h4>
+            <div class="settings-row">
+              <label for="source-font-size-input-window">글꼴 크기 (pt)</label>
+              <div class="size-control">
+                <input 
+                  id="source-font-size-input-window"
+                  type="number" 
+                  min="6" 
+                  max="72" 
+                  bind:value={sourceFontSize} 
+                  class="font-size-num"
+                />
+                <button class="adjust-btn" onclick={() => sourceFontSize = Math.max(6, sourceFontSize - 1)}>-</button>
+                <button class="adjust-btn" onclick={() => sourceFontSize = Math.min(72, sourceFontSize + 1)}>+</button>
               </div>
-            {/each}
+            </div>
           </div>
-        </div>
-      {/if}
+        {:else if activeSettingsTab === 'render'}
+          <div class="settings-section">
+            <h4 class="section-title">화면 및 글꼴</h4>
+            <div class="settings-row">
+              <label for="render-font-size-input-window">글꼴 크기 (pt)</label>
+              <div class="size-control">
+                <input 
+                  id="render-font-size-input-window"
+                  type="number" 
+                  min="6" 
+                  max="72" 
+                  bind:value={renderFontSize} 
+                  class="font-size-num"
+                />
+                <button class="adjust-btn" onclick={() => renderFontSize = Math.max(6, renderFontSize - 1)}>-</button>
+                <button class="adjust-btn" onclick={() => renderFontSize = Math.min(72, renderFontSize + 1)}>+</button>
+              </div>
+            </div>
+            
+            <div class="settings-row">
+              <label for="tab-size-select-window">들여쓰기 너비 (공백 개수)</label>
+              <select id="tab-size-select-window" bind:value={tabSize} class="tab-size-select">
+                <option value={2}>2</option>
+                <option value={4}>4 (기본값)</option>
+                <option value={8}>8</option>
+              </select>
+            </div>
 
-      <!-- 에디터 영역 뷰포트 -->
-      <div 
-        class="editor-viewport" 
-        bind:this={editorViewportEl}
-      >
-        <!-- 렌더 모드 Backdrop -->
+            <div class="settings-row">
+              <label for="render-font-family-select-window">렌더 모드 글꼴</label>
+              <select id="render-font-family-select-window" bind:value={renderFontFamily} class="tab-size-select" style="width: 195px; text-align-last: center;">
+                <optgroup label="기본형">
+                  <option value="nanum-gothic">나눔고딕 (기본값)</option>
+                  <option value="notepad">기본 글꼴 (Notepad)</option>
+                </optgroup>
+                <optgroup label="고정폭(Monospace) 글꼴">
+                  <option value="jetbrains-mono">JetBrains Mono (추천)</option>
+                  <option value="d2coding">D2Coding (한글 추천)</option>
+                  <option value="nanum-gothic-coding">나눔고딕 코딩 (선명함)</option>
+                  <option value="fira-code">Fira Code (코딩 특화)</option>
+                  <option value="roboto-mono">Roboto Mono (모던함)</option>
+                  <option value="cascadia-mono">Cascadia Mono (윈도우11)</option>
+                  <option value="consolas">Consolas (기본 고정폭)</option>
+                </optgroup>
+              </select>
+            </div>
+          </div>
+          
+          <div class="settings-section">
+            <h4 class="section-title">시각적 테마 색상 설정</h4>
+            
+            <div class="settings-row color-row">
+              <label for="color-render-bg-window">렌더 모드 배경색</label>
+              <div class="color-picker-wrapper">
+                <input id="color-render-bg-window" type="color" bind:value={colorRenderBg} />
+                <input type="text" class="color-text-input" bind:value={colorRenderBg} placeholder="#000000" />
+              </div>
+            </div>
+
+            <div class="settings-row color-row">
+              <label for="color-render-text-window">렌더 모드 기본 글자 색상</label>
+              <div class="color-picker-wrapper">
+                <input id="color-render-text-window" type="color" bind:value={colorRenderText} />
+                <input type="text" class="color-text-input" bind:value={colorRenderText} placeholder="#000000" />
+              </div>
+            </div>
+
+            <div class="settings-row color-row">
+              <label for="color-hl-code-bg-window">코드 백그라운드 색상</label>
+              <div class="color-picker-wrapper">
+                <input id="color-hl-code-bg-window" type="color" bind:value={colorHlCodeBg} />
+                <input type="text" class="color-text-input" bind:value={colorHlCodeBg} placeholder="#000000" />
+              </div>
+            </div>
+            
+            <div class="settings-row color-row">
+              <label for="color-hl-code-text-window">코드 글자 색상</label>
+              <div class="color-picker-wrapper">
+                <input id="color-hl-code-text-window" type="color" bind:value={colorHlCodeText} />
+                <input type="text" class="color-text-input" bind:value={colorHlCodeText} placeholder="#000000" />
+              </div>
+            </div>
+            
+            <div class="settings-row color-row">
+              <label for="color-hl-string-window">문자열 색상 ('...', "...")</label>
+              <div class="color-picker-wrapper">
+                <input id="color-hl-string-window" type="color" bind:value={colorHlString} />
+                <input type="text" class="color-text-input" bind:value={colorHlString} placeholder="#000000" />
+              </div>
+            </div>
+            
+            <div class="settings-row color-row">
+              <label for="color-hl-number-window">숫자 색상 (0-9)</label>
+              <div class="color-picker-wrapper">
+                <input id="color-hl-number-window" type="color" bind:value={colorHlNumber} />
+                <input type="text" class="color-text-input" bind:value={colorHlNumber} placeholder="#000000" />
+              </div>
+            </div>
+            
+            <div class="settings-row color-row">
+              <label for="color-hl-comment-window">주석 색상 (//, #)</label>
+              <div class="color-picker-wrapper">
+                <input id="color-hl-comment-window" type="color" bind:value={colorHlComment} />
+                <input type="text" class="color-text-input" bind:value={colorHlComment} placeholder="#000000" />
+              </div>
+            </div>
+
+            <!-- 소대중괄호 색상 추가 -->
+            <div class="settings-row color-row">
+              <label for="color-hl-paren-window">소괄호 색상 ( )</label>
+              <div class="color-picker-wrapper">
+                <input id="color-hl-paren-window" type="color" bind:value={colorHlParen} />
+                <input type="text" class="color-text-input" bind:value={colorHlParen} placeholder="#000000" />
+              </div>
+            </div>
+
+            <div class="settings-row color-row">
+              <label for="color-hl-bracket-window">대괄호 색상 [ ]</label>
+              <div class="color-picker-wrapper">
+                <input id="color-hl-bracket-window" type="color" bind:value={colorHlBracket} />
+                <input type="text" class="color-text-input" bind:value={colorHlBracket} placeholder="#000000" />
+              </div>
+            </div>
+
+            <div class="settings-row color-row">
+              <label for="color-hl-brace-window">중괄호 색상 &#123; &#125;</label>
+              <div class="color-picker-wrapper">
+                <input id="color-hl-brace-window" type="color" bind:value={colorHlBrace} />
+                <input type="text" class="color-text-input" bind:value={colorHlBrace} placeholder="#000000" />
+              </div>
+            </div>
+            
+            <div class="settings-row color-row">
+              <label for="color-indent-guide-window">들여쓰기 가이드라인 색상</label>
+              <div class="color-picker-wrapper">
+                <input id="color-indent-guide-window" type="color" bind:value={colorIndentGuide} />
+                <input type="text" class="color-text-input" bind:value={colorIndentGuide} placeholder="#000000" />
+              </div>
+            </div>
+            
+            <div class="settings-action-row">
+              <button class="reset-colors-btn" onclick={resetColorsToDefault}>
+                기본 색상으로 복원
+              </button>
+            </div>
+          </div>
+        {/if}
+      </div>
+    </div>
+  </div>
+{:else}
+  <div class="app-container" style="
+    --color-hl-code-bg: {colorHlCodeBg};
+    --color-hl-code-text: {colorHlCodeText};
+    --color-hl-string: {colorHlString};
+    --color-hl-number: {colorHlNumber};
+    --color-hl-comment: {colorHlComment};
+    --color-indent-guide: {colorIndentGuide};
+    --color-render-bg: {colorRenderBg};
+    --color-render-text: {colorRenderText};
+    --font-render-family: {currentRenderFontFamilyCSS};
+    --color-hl-paren: {colorHlParen};
+    --color-hl-bracket: {colorHlBracket};
+    --color-hl-brace: {colorHlBrace};
+    opacity: {!isBrowser || isWindowRestored ? 1 : 0};
+    transition: opacity 0.15s ease-in-out;
+  ">
+    <!-- 메뉴바 영역 -->
+    <nav class="menu-bar">
+      <div class="menu-left">
+        <div class="menu-item-container">
+          <button 
+            class="menu-trigger" 
+            class:active={openDropdown === 'file'}
+            onclick={(e) => toggleDropdown('file', e)}
+            onmouseenter={() => handleMouseEnter('file')}
+          >
+            파일(F)
+          </button>
+          {#if openDropdown === 'file'}
+            <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
+              <button class="dropdown-item" onclick={handleNewFile}>
+                <span class="item-label">새 파일</span>
+                <span class="shortcut-label">Ctrl+N</span>
+              </button>
+              <button class="dropdown-item" onclick={handleOpenFile}>
+                <span class="item-label">열기...</span>
+                <span class="shortcut-label">Ctrl+O</span>
+              </button>
+              <button class="dropdown-item" onclick={handleSaveFile}>
+                <span class="item-label">저장</span>
+                <span class="shortcut-label">Ctrl+S</span>
+              </button>
+              <button class="dropdown-item" onclick={handleSaveAsFile}>
+                <span class="item-label">다른 이름으로 저장...</span>
+                <span class="shortcut-label">Ctrl+Shift+S</span>
+              </button>
+              <div class="menu-divider"></div>
+              <button class="dropdown-item" onclick={handleExit}>
+                <span class="item-label">끝내기</span>
+                <span class="shortcut-label">Alt+F4</span>
+              </button>
+            </div>
+          {/if}
+        </div>
+
+        <div class="menu-item-container">
+          <button 
+            class="menu-trigger" 
+            class:active={openDropdown === 'edit'}
+            onclick={(e) => toggleDropdown('edit', e)}
+            onmouseenter={() => handleMouseEnter('edit')}
+          >
+            편집(E)
+          </button>
+          {#if openDropdown === 'edit'}
+            <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
+              <button class="dropdown-item" onclick={handleUndo}>
+                <span class="item-label">실행 취소</span>
+                <span class="shortcut-label">Ctrl+Z</span>
+              </button>
+              <button class="dropdown-item" onclick={handleRedo}>
+                <span class="item-label">다시 실행</span>
+                <span class="shortcut-label">Ctrl+Y</span>
+              </button>
+              <div class="menu-divider"></div>
+              <button class="dropdown-item" onclick={handleCut} disabled={!fileContent}>
+                <span class="item-label">잘라내기</span>
+                <span class="shortcut-label">Ctrl+X</span>
+              </button>
+              <button class="dropdown-item" onclick={handleCopy} disabled={!fileContent}>
+                <span class="item-label">복사</span>
+                <span class="shortcut-label">Ctrl+C</span>
+              </button>
+              <button class="dropdown-item" onclick={handlePaste}>
+                <span class="item-label">붙여넣기</span>
+                <span class="shortcut-label">Ctrl+V</span>
+              </button>
+              <button class="dropdown-item" onclick={handleDelete} disabled={!fileContent}>
+                <span class="item-label">삭제</span>
+                <span class="shortcut-label">Del</span>
+              </button>
+              <div class="menu-divider"></div>
+              <button class="dropdown-item" onclick={handleSelectAll}>
+                <span class="item-label">모두 선택</span>
+                <span class="shortcut-label">Ctrl+A</span>
+              </button>
+              <button class="dropdown-item" onclick={insertDateTime}>
+                <span class="item-label">시간/날짜</span>
+                <span class="shortcut-label">F5</span>
+              </button>
+            </div>
+          {/if}
+        </div>
+
+        <!-- 에러 표시 간소화 -->
+        {#if errorMsg}
+          <div class="menu-error-indicator" title={errorMsg}>⚠️ {errorMsg}</div>
+        {/if}
+      </div>
+
+      <!-- 우측 설정 톱니바퀴 및 렌더 모드 토글 버튼 -->
+      <div class="menu-right">
+        <button 
+          class="render-mode-toggle"
+          class:active={isRenderMode}
+          onclick={() => isRenderMode = !isRenderMode}
+          title={isRenderMode ? "원본 모드로 전환" : "렌더 모드로 전환"}
+        >
+          {isRenderMode ? "🎨" : "📝"}
+        </button>
+        
+        <button 
+          class="settings-trigger" 
+          onclick={handleSettingsTrigger} 
+          title="설정"
+        >
+          ⚙️
+        </button>
+      </div>
+    </nav>
+
+    <!-- 편집 공간 -->
+    <main class="editor-area" class:render-mode={isRenderMode}>
+      <div class="editor-container">
+        <!-- 라인 번호 Gutter -->
         {#if isRenderMode}
-          <div class="editor-backdrop">
-            <div class="backdrop-scroll-container" style="transform: translate3d(-{scrollLeft}px, -{scrollTop}px, 0);">
+          <div class="editor-gutter" style="background-color: var(--color-render-bg); border-right: 1px solid var(--border-color);">
+            <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
               {#each Array(endLine - startLine + 1) as _, idx}
                 {@const lineIdx = startLine + idx}
-                {@const line = parsedLines[lineIdx]}
-                {#if line}
-                  <div class="backdrop-line" style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; left: 0; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}<span class="hl-{token.type}">{token.text}</span>{/each}</span></div>
-                {/if}
+                <div 
+                  class="gutter-line-number" 
+                  style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt;"
+                >
+                  {lineIdx + 1}
+                </div>
               {/each}
             </div>
           </div>
         {/if}
 
-        <textarea
-          bind:this={textareaEl}
-          class="editor-textarea"
-          style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize};"
-          bind:value={fileContent}
-          oninput={handleInput}
-          onscroll={handleScroll}
-          onkeyup={updateCursorPosition}
-          onclick={updateCursorPosition}
-          onfocus={updateCursorPosition}
-          spellcheck="false"
-        ></textarea>
-      </div>
-    </div>
-
-    <!-- 설정 창 오버레이 (Fluent Style Modal) -->
-    {#if showSettings}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="settings-overlay" onclick={(e) => { if (e.target === e.currentTarget) showSettings = false; }}>
+        <!-- 에디터 영역 뷰포트 -->
         <div 
-          class="settings-modal" 
-          onclick={(e) => e.stopPropagation()}
-          style="position: absolute; left: {settingsX}px; top: {settingsY}px; margin: 0;"
+          class="editor-viewport" 
+          bind:this={editorViewportEl}
         >
-          <div class="settings-header" onmousedown={handleSettingsDragStart}>
-            <h3>설정</h3>
-            <button class="settings-close" onclick={() => showSettings = false}>&times;</button>
-          </div>
-          
-          <div class="settings-body">
-            <!-- 좌측 네비게이션 메뉴 -->
-            <aside class="settings-sidebar">
-              <button 
-                class="sidebar-item" 
-                class:active={activeSettingsTab === 'source'} 
-                onclick={() => activeSettingsTab = 'source'}
-              >
-                📝 원본 모드
-              </button>
-              <button 
-                class="sidebar-item" 
-                class:active={activeSettingsTab === 'render'} 
-                onclick={() => activeSettingsTab = 'render'}
-              >
-                🎨 렌더 모드
-              </button>
-            </aside>
-            
-            <!-- 우측 메인 콘텐츠 영역 -->
-            <div class="settings-main">
-              {#if activeSettingsTab === 'source'}
-                <div class="settings-section">
-                  <h4 class="section-title">글꼴 설정</h4>
-                  <div class="settings-row">
-                    <label for="source-font-size-input">글꼴 크기 (pt)</label>
-                    <div class="size-control">
-                      <input 
-                        id="source-font-size-input"
-                        type="number" 
-                        min="6" 
-                        max="72" 
-                        bind:value={sourceFontSize} 
-                        class="font-size-num"
-                      />
-                      <button class="adjust-btn" onclick={() => sourceFontSize = Math.max(6, sourceFontSize - 1)}>-</button>
-                      <button class="adjust-btn" onclick={() => sourceFontSize = Math.min(72, sourceFontSize + 1)}>+</button>
-                    </div>
-                  </div>
-                </div>
-              {:else if activeSettingsTab === 'render'}
-                <div class="settings-section">
-                  <h4 class="section-title">화면 및 글꼴</h4>
-                  <div class="settings-row">
-                    <label for="render-font-size-input">글꼴 크기 (pt)</label>
-                    <div class="size-control">
-                      <input 
-                        id="render-font-size-input"
-                        type="number" 
-                        min="6" 
-                        max="72" 
-                        bind:value={renderFontSize} 
-                        class="font-size-num"
-                      />
-                      <button class="adjust-btn" onclick={() => renderFontSize = Math.max(6, renderFontSize - 1)}>-</button>
-                      <button class="adjust-btn" onclick={() => renderFontSize = Math.min(72, renderFontSize + 1)}>+</button>
-                    </div>
-                  </div>
-                  
-                  <div class="settings-row">
-                    <label for="tab-size-select">들여쓰기 너비 (공백 개수)</label>
-                    <select id="tab-size-select" bind:value={tabSize} class="tab-size-select">
-                      <option value={2}>2</option>
-                      <option value={4}>4 (기본값)</option>
-                      <option value={8}>8</option>
-                    </select>
-                  </div>
-
-                  <div class="settings-row">
-                    <label for="render-font-family-select">렌더 모드 글꼴</label>
-                    <select id="render-font-family-select" bind:value={renderFontFamily} class="tab-size-select" style="width: 195px; text-align-last: center;">
-                      <option value="jetbrains-mono">JetBrains Mono (추천)</option>
-                      <option value="d2coding">D2Coding (한글 추천)</option>
-                      <option value="nanum-gothic-coding">나눔고딕 코딩 (선명함)</option>
-                      <option value="fira-code">Fira Code (코딩 특화)</option>
-                      <option value="roboto-mono">Roboto Mono (모던함)</option>
-                      <option value="cascadia-mono">Cascadia Mono (윈도우11)</option>
-                      <option value="consolas">Consolas (기본 고정폭)</option>
-                      <option value="notepad">기본 글꼴 (Notepad)</option>
-                    </select>
-                  </div>
-                </div>
-                
-                <div class="settings-section">
-                  <h4 class="section-title">시각적 테마 색상 설정</h4>
-                  
-                  <div class="settings-row color-row">
-                    <label for="color-render-bg">렌더 모드 배경색</label>
-                    <div class="color-picker-wrapper">
-                      <input id="color-render-bg" type="color" bind:value={colorRenderBg} />
-                      <input type="text" class="color-text-input" bind:value={colorRenderBg} placeholder="#000000" />
-                    </div>
-                  </div>
-
-                  <div class="settings-row color-row">
-                    <label for="color-render-text">렌더 모드 기본 글자 색상</label>
-                    <div class="color-picker-wrapper">
-                      <input id="color-render-text" type="color" bind:value={colorRenderText} />
-                      <input type="text" class="color-text-input" bind:value={colorRenderText} placeholder="#000000" />
-                    </div>
-                  </div>
-
-                  <div class="settings-row color-row">
-                    <label for="color-hl-code-bg">코드 백그라운드 색상</label>
-                    <div class="color-picker-wrapper">
-                      <input id="color-hl-code-bg" type="color" bind:value={colorHlCodeBg} />
-                      <input type="text" class="color-text-input" bind:value={colorHlCodeBg} placeholder="#000000" />
-                    </div>
-                  </div>
-                  
-                  <div class="settings-row color-row">
-                    <label for="color-hl-code-text">코드 글자 색상</label>
-                    <div class="color-picker-wrapper">
-                      <input id="color-hl-code-text" type="color" bind:value={colorHlCodeText} />
-                      <input type="text" class="color-text-input" bind:value={colorHlCodeText} placeholder="#000000" />
-                    </div>
-                  </div>
-                  
-                  <div class="settings-row color-row">
-                    <label for="color-hl-string">문자열 색상 ('...', "...")</label>
-                    <div class="color-picker-wrapper">
-                      <input id="color-hl-string" type="color" bind:value={colorHlString} />
-                      <input type="text" class="color-text-input" bind:value={colorHlString} placeholder="#000000" />
-                    </div>
-                  </div>
-                  
-                  <div class="settings-row color-row">
-                    <label for="color-hl-number">숫자 색상 (0-9)</label>
-                    <div class="color-picker-wrapper">
-                      <input id="color-hl-number" type="color" bind:value={colorHlNumber} />
-                      <input type="text" class="color-text-input" bind:value={colorHlNumber} placeholder="#000000" />
-                    </div>
-                  </div>
-                  
-                  <div class="settings-row color-row">
-                    <label for="color-hl-comment">주석 색상 (//, #)</label>
-                    <div class="color-picker-wrapper">
-                      <input id="color-hl-comment" type="color" bind:value={colorHlComment} />
-                      <input type="text" class="color-text-input" bind:value={colorHlComment} placeholder="#000000" />
-                    </div>
-                  </div>
-                  
-                  <div class="settings-row color-row">
-                    <label for="color-indent-guide">들여쓰기 가이드라인 색상</label>
-                    <div class="color-picker-wrapper">
-                      <input id="color-indent-guide" type="color" bind:value={colorIndentGuide} />
-                      <input type="text" class="color-text-input" bind:value={colorIndentGuide} placeholder="#000000" />
-                    </div>
-                  </div>
-                  
-                  <div class="settings-action-row">
-                    <button class="reset-colors-btn" onclick={resetColorsToDefault}>
-                      기본 색상으로 복원
-                    </button>
-                  </div>
-                </div>
-              {/if}
+          <!-- 렌더 모드 Backdrop -->
+          {#if isRenderMode}
+            <div class="editor-backdrop">
+              <div class="backdrop-scroll-container" style="transform: translate3d(-{scrollLeft}px, -{scrollTop}px, 0);">
+                {#each Array(endLine - startLine + 1) as _, idx}
+                  {@const lineIdx = startLine + idx}
+                  {@const line = parsedLines[lineIdx]}
+                  {#if line}
+                    <div class="backdrop-line" style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; left: 0; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
+                  {/if}
+                {/each}
+              </div>
             </div>
-          </div>
+          {/if}
+
+          <textarea
+            bind:this={textareaEl}
+            class="editor-textarea"
+            style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize};"
+            bind:value={fileContent}
+            oninput={handleInput}
+            onscroll={handleScroll}
+            onkeyup={updateCursorPosition}
+            onclick={updateCursorPosition}
+            onfocus={updateCursorPosition}
+            spellcheck="false"
+          ></textarea>
         </div>
       </div>
-    {/if}
-  </main>
+    </main>
 
-  <!-- 하단 상태 표시줄 -->
-  <footer class="status-bar">
-    <div class="status-left">
-      {#if filePath}
-        <span class="file-path" title={filePath}>{filePath}</span>
-      {/if}
-    </div>
-    <div class="status-right">
-      <span class="status-item">Wheel: {wheelDebug}</span>
-      <span class="status-item">Ln {cursorLine}, Col {cursorCol}</span>
-      <span class="status-item">100%</span>
-      <span class="status-item">Windows (CRLF)</span>
-      <span class="status-item">UTF-8</span>
-    </div>
-  </footer>
-</div>
+    <!-- 하단 상태 표시줄 -->
+    <footer class="status-bar">
+      <div class="status-left">
+        {#if filePath}
+          <span class="file-path" title={filePath}>{filePath}</span>
+        {/if}
+      </div>
+      <div class="status-right">
+        <span class="status-item">Ln {cursorLine}, Col {cursorCol}</span>
+        <span class="status-item">100%</span>
+        <span class="status-item">Windows (CRLF)</span>
+        <span class="status-item">UTF-8</span>
+      </div>
+    </footer>
+  </div>
+{/if}
 
 <style>
   :global(:root) {
@@ -1402,22 +1624,31 @@
   }
 
   /* 렌더 모드 토큰 색상 스타일 */
-  .hl-code {
+  :global(.hl-code) {
     background-color: var(--color-hl-code-bg);
     color: var(--color-hl-code-text);
     border-radius: 2px;
   }
-  .hl-string {
+  :global(.hl-string) {
     color: var(--color-hl-string);
   }
-  .hl-number {
+  :global(.hl-number) {
     color: var(--color-hl-number);
   }
-  .hl-comment {
+  :global(.hl-comment) {
     color: var(--color-hl-comment);
   }
-  .hl-text {
-    color: var(--color-render-text, var(--text-color));
+  :global(.hl-text) {
+    color: inherit;
+  }
+  :global(.hl-paren) {
+    color: var(--color-hl-paren);
+  }
+  :global(.hl-bracket) {
+    color: var(--color-hl-bracket);
+  }
+  :global(.hl-brace) {
+    color: var(--color-hl-brace);
   }
 
   .render-mode-toggle {
@@ -1793,9 +2024,24 @@
     color: var(--text-color);
   }
 
+  .settings-window-container {
+    display: flex;
+    flex-direction: column;
+    width: 100vw;
+    height: 100vh;
+    box-sizing: border-box;
+    background-color: var(--bg-editor);
+  }
+
   .settings-body {
     display: flex;
     flex: 1;
+    overflow: hidden;
+  }
+
+  .settings-body.window-mode {
+    width: 100%;
+    height: 100%;
     overflow: hidden;
   }
 
