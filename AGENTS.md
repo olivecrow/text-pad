@@ -254,7 +254,16 @@
   - **프론트엔드 가이드 보강**: Svelte/TS 가이드([frontend-guide.md](file:///c:/Users/olive/Desktop/Development/text-pad/docs/frontend-guide.md))에 다중 창 동기화 및 3종 괄호 중첩 트리 파서/재귀 렌더러 설계에 대한 기술 사양 신설.
   - **백엔드 가이드 보강**: Rust/Tauri 가이드([backend-guide.md](file:///c:/Users/olive/Desktop/Development/text-pad/docs/backend-guide.md))에 Windows API subclassing을 통한 `WM_MOUSEHWHEEL` 마우스 가로 휠 훅 및 이벤트 전파 로직 기술 사양 신설.
   - **문서 일관성 확보**: 프로젝트의 실제 구현 상태와 가이드 라인 문서를 일치시킴으로써 차기 AI 에이전트 혹은 사람 개발자가 컨텍스트를 투명하게 인계받을 수 있도록 조치.
-- **다음 작업**: 사용자 피드백 지속 수집 및 릴리스 배포 지원.
+- **다음 작업**: 앱 초기 기동 시 윈도우 상태 복원 최적화 빌드 완료 및 릴리스 검증.
+
+### [2026-05-23] 앱 초기 기동 시 윈도우 크기/위치 복원 속도 최적화 (tauri-plugin-window-state 도입)
+- **작업자**: Antigravity
+- **상세 내용**:
+  - **병목 진단**: 기존 프론트엔드(`+page.svelte`)에서 IPC를 통해 비동기식으로 `setSize`, `setPosition`을 호출하는 흐름은 껌벅임 방지용 강제 락 대기(`setTimeout` 500ms~1000ms) 및 웹뷰 기동 딜레이를 유발하는 핵심 병목 지점이었음을 확인.
+  - **백엔드 이관**: Tauri 공식 플러그인인 `tauri-plugin-window-state`를 백엔드에 추가하여, OS 윈도우 창이 최종 노출되기 전에 네이티브 레벨에서 윈도우 크기와 위치를 즉각 복원하도록 구조 개선.
+  - **프론트엔드 정리**: 프론트엔드의 `localStorage` 기반 수동 윈도우 복원/저장 로직, 복원 완료 대기용 페이드인(`opacity: 0 -> 1` 및 150ms transition) 처리, DPI 관련 API 임포트 등을 전면 제거하여 기동 직후 입력 렉과 락 딜레이를 `0ms`로 최적화.
+  - **빌드 검증**: `svelte-check` (0 errors), `cargo check` 및 `npm run tauri build`를 순차 수행하여 컴파일 안정성 및 배포 정합성 확보.
+- **다음 작업**: 최적화 빌드 동작 수동 검증 및 사용자 최종 인수 피드백 수렴.
 
 
 

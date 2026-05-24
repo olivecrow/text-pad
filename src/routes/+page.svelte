@@ -2,7 +2,6 @@
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { PhysicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
   import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
@@ -55,7 +54,6 @@
 
   // 설정창이 독립 윈도우로 떴는지 감지하는 상태
   let isSettingsWindow = $state<boolean>(false);
-  let isWindowRestored = $state<boolean>(false);
 
   let renderFontFamily = $state<string>('nanum-gothic');
   let currentRenderFontFamilyCSS = $derived(
@@ -263,108 +261,7 @@
     };
   });
 
-  // 앱 윈도우 크기 및 위치 복원/저장 $effect
-  $effect(() => {
-    if (!isBrowser) return;
 
-    let isRestoring = true;
-    const appWindow = getCurrentWindow();
-    let resizeTimeout: any;
-    let moveTimeout: any;
-
-    let unlistenResized: (() => void) | null = null;
-    let unlistenMoved: (() => void) | null = null;
-
-    const restoreWindowState = async () => {
-      try {
-        const label = appWindow.label;
-        if (label !== 'main') {
-          console.log(`[WindowState] Skip restore for window: ${label}`);
-          return;
-        }
-
-        const savedWidth = localStorage.getItem('app_window_width');
-        const savedHeight = localStorage.getItem('app_window_height');
-        const savedX = localStorage.getItem('app_window_x');
-        const savedY = localStorage.getItem('app_window_y');
-
-        console.log(`[WindowState] Loaded stored values: size=${savedWidth}x${savedHeight}, pos=${savedX},${savedY}`);
-
-        if (savedWidth && savedHeight) {
-          const w = parseInt(savedWidth, 10);
-          const h = parseInt(savedHeight, 10);
-          if (w > 200 && h > 200) {
-            await appWindow.setSize(new PhysicalSize(w, h));
-            console.log(`[WindowState] Restored size to ${w}x${h}`);
-          }
-        }
-
-        if (savedX && savedY) {
-          const x = parseInt(savedX, 10);
-          const y = parseInt(savedY, 10);
-          if (y > -2000 && x > -5000) {
-            await appWindow.setPosition(new PhysicalPosition(x, y));
-            console.log(`[WindowState] Restored position to ${x},${y}`);
-          }
-        }
-      } catch (e) {
-        console.error('[WindowState] Restore error:', e);
-      } finally {
-        // 복원 완료 후 윈도우 노출 (기동 껌벅임 완벽 해소)
-        if (appWindow.label === 'main') {
-          await appWindow.show().catch(() => {});
-        }
-        isWindowRestored = true;
-        setTimeout(() => {
-          isRestoring = false;
-          console.log('[WindowState] Restoration unlock - save enabled.');
-        }, 500);
-      }
-    };
-
-    restoreWindowState();
-
-    const subResized = appWindow.onResized((event) => {
-      if (isRestoring || appWindow.label !== 'main') {
-        return;
-      }
-      clearTimeout(resizeTimeout);
-      resizeTimeout = setTimeout(() => {
-        try {
-          const size = event.payload; // PhysicalSize
-          console.log('[WindowState] Save size:', size.width, size.height);
-          localStorage.setItem('app_window_width', size.width.toString());
-          localStorage.setItem('app_window_height', size.height.toString());
-        } catch (e) {
-          console.error('[WindowState] Save size error:', e);
-        }
-      }, 300);
-    }).then((unsub) => { unlistenResized = unsub; });
-
-    const subMoved = appWindow.onMoved((event) => {
-      if (isRestoring || appWindow.label !== 'main') {
-        return;
-      }
-      clearTimeout(moveTimeout);
-      moveTimeout = setTimeout(() => {
-        try {
-          const pos = event.payload; // PhysicalPosition
-          console.log('[WindowState] Save position:', pos.x, pos.y);
-          localStorage.setItem('app_window_x', pos.x.toString());
-          localStorage.setItem('app_window_y', pos.y.toString());
-        } catch (e) {
-          console.error('[WindowState] Save position error:', e);
-        }
-      }, 300);
-    }).then((unsub) => { unlistenMoved = unsub; });
-
-    return () => {
-      clearTimeout(resizeTimeout);
-      clearTimeout(moveTimeout);
-      subResized.then(() => { if (unlistenResized) unlistenResized(); });
-      subMoved.then(() => { if (unlistenMoved) unlistenMoved(); });
-    };
-  });
 
   // 설정창이 열릴 때 초기 위치 지정 및 화면 클램핑
   $effect(() => {
@@ -1372,8 +1269,6 @@
     --color-hl-paren: {colorHlParen};
     --color-hl-bracket: {colorHlBracket};
     --color-hl-brace: {colorHlBrace};
-    opacity: {!isBrowser || isWindowRestored ? 1 : 0};
-    transition: opacity 0.15s ease-in-out;
   ">
     <!-- 메뉴바 영역 -->
     <nav class="menu-bar">
