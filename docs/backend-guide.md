@@ -1,96 +1,59 @@
-# text-pad 백엔드 개발 가이드 (Rust / Tauri)
+# text-pad 백엔드 가이드
 
-이 문서는 `text-pad` 프로젝트의 Rust 백엔드 및 Tauri 관련 설계 방향과 구현 규칙을 정의하는 AI 참조용 가이드라인입니다.
+백엔드는 Rust와 Tauri 2로 구성되며, 로컬 파일 입출력과 운영체제 창 동작을 담당한다.
 
----
+## 현재 진입점
 
-## 1. 백엔드 역할 및 핵심 원칙
-Rust 백엔드는 운영체제(OS)와의 상호작용 및 보안 경계를 관리하는 안전한 실행 계층입니다.
-1. **Zero Panics**: 프로덕션 빌드에서 백엔드는 절대 패닉(Panic) 상태로 강제 종료되지 않아야 합니다. `unwrap()`, `expect()` 사용을 철저히 금지하며, `?` 연산자와 `Result`/`Option` 타입을 이용해 우아하게 예외를 전파합니다.
-2. **Strict Directory Sandbox**: 사용자가 명시적으로 열거나 저장하도록 요청한 경로 및 지정된 워크스페이스 외부의 경로에 대한 파일 읽기/쓰기는 사전 검증하여 접근을 차단합니다.
-3. **Encoding & Line-ending Preservation**: 백엔드는 파일 입출력 시 텍스트 인코딩(UTF-8 기본, 필요 시 인코딩 감지)과 줄바꿈(LF / CRLF) 포맷을 파악하고 보존해야 합니다.
+- `src-tauri/src/main.rs`: 애플리케이션 실행 진입점.
+- `src-tauri/src/lib.rs`: Tauri 빌더, 명령 등록, 플러그인 설정, Windows 가로 휠 처리.
+- `src-tauri/capabilities/default.json`: 프론트엔드 명령 권한.
+- `src-tauri/tauri.conf.json`: 창 설정과 빌드 설정.
 
----
+## Tauri 명령
 
-## 2. 모듈 구성 및 파일 역할 (src-tauri/src/)
+- `read_file_content(path: String) -> Result<String, String>`
+  - 지정한 파일을 UTF-8 문자열로 읽는다.
+  - 실패하면 에러 문자열을 반환한다.
+- `write_file_content(path: String, content: String) -> Result<(), String>`
+  - 지정한 파일에 문자열을 저장한다.
+  - 실패하면 에러 문자열을 반환한다.
 
-```
-src-tauri/src/
-├── main.rs             # Tauri 빌더 초기화, 이벤트 루프, App 실행 진입점
-├── menu.rs             # 시스템 메뉴바 및 단축키 바인딩 정의
-├── commands/           # IPC 커맨드 핸들러
-│   ├── mod.rs          # 커맨드 등록 및 export
-│   ├── file_io.rs      # 파일 Open, Save, Safe-Write 기능
-│   └── watch.rs        # 파일 변경 감지 (Notify 크레이트 연동)
-└── security/           # 보안 관리 모듈
-    ├── mod.rs
-    └── sandbox.rs      # 경로 Canonicalization 및 화이트리스트 검증
-```
+새 파일 입출력 기능을 추가할 때는 사용자가 선택한 경로만 다루고, 실패를 `Result`로 반환한다.
 
----
+## 창과 권한
 
-## 3. IPC 커맨드 프로토콜 및 데이터 규격
+접근 제어 목록(ACL)은 프론트엔드가 호출할 수 있는 Tauri 명령을 제한하는 보안 설정이다.
 
-모든 백엔드 IPC 커맨드는 프론트엔드가 명확히 해석할 수 있도록 규격화된 JSON 직렬화 응답을 반환합니다.
+- 설정창은 `tauri.conf.json`에서 `label: "settings"`와 `visible: false`로 사전 생성한다.
+- 설정 버튼은 기존 `settings` 창을 찾아 `show()`와 `setFocus()`를 호출한다.
+- 설정창 닫기 요청은 창을 파괴하지 않고 `hide()`로 숨긴다.
+- 따라서 `src-tauri/capabilities/default.json`에는 최소한 다음 권한이 필요하다.
+  - `core:window:allow-show`
+  - `core:window:allow-set-focus`
+  - `core:window:allow-hide`
+  - `core:window:allow-destroy`
+  - `core:window:allow-close`
 
-### 3.1 파일 읽기 (`open_file`)
-- **요청 매개변수**: `{ file_path: String }`
-- **반환 Payload (JSON)**:
-  ```rust
-  #[derive(serde::Serialize)]
-  pub struct FilePayload {
-      pub file_path: String,
-      pub file_name: String,
-      pub content: String,
-      pub line_ending: String, // "LF" | "CRLF"
-      pub is_readonly: bool,
-  }
-  ```
+`tauri-plugin-window-state`는 메인 창만 복원해야 하므로 `settings` 창은 denylist에 둔다.
 
-### 3.2 파일 저장 (`save_file`)
-- **요청 매개변수**: `{ file_path: String, content: String, line_ending: String }`
-- **보안 검증**: 대상 디렉토리에 쓰기 권한이 있는지, 파일명이 올바른지 검증한 후 임시 파일(`.tmp`)에 우선 쓴 다음, 쓰기가 성공하면 원본 파일과 원자적(Atomic)으로 교체하여 쓰기 오류 시 원본 파일 파손을 방지합니다.
+## Windows 가로 휠 처리
 
-### 3.3 파일 실시간 감지 (`watch_file` / `unwatch_file`)
-- 외부 에디터가 파일을 변경했을 때 발생하는 경합을 해결하기 위해, `notify` 크레이트를 활용하여 지정 파일의 변경을 모니터링하고 프론트엔드에 Tauri Event(`file-changed`)를 발생시킵니다.
+Windows WebView2는 일부 마우스 가로 휠 입력을 브라우저 `wheel` 이벤트의 `deltaX = 0`으로 전달한다.
+이를 보정하기 위해 백엔드는 `WM_MOUSEHWHEEL` 메시지를 받아 `native-horizontal-wheel` 이벤트로 프론트엔드에 전달한다.
 
----
+이 코드를 수정할 때는 다음을 지킨다.
 
-## 4. 백엔드 에러 핸들링 표준
+- Windows 전용 코드는 `#[cfg(target_os = "windows")]` 안에 둔다.
+- 메시지 처리 실패가 앱 종료로 이어지지 않게 한다.
+- 메인 창에만 훅을 연결한다.
 
-백엔드에서 발생하는 모든 에러는 `Result<T, AppError>`의 형태를 지녀야 하며, `AppError`는 직렬화 가능한 에러 메시지와 에러 코드를 포함해야 합니다.
+## Rust 기준
 
-```rust
-#[derive(Debug, thiserror::Error)]
-pub enum AppError {
-    #[error("보안 검증 실패: 허용되지 않은 경로 {0}")]
-    PathSecurityError(String),
-    #[error("파일 읽기 실패: {0}")]
-    IoError(#[from] std::io::Error),
-    #[error("잘못된 인코딩 형식")]
-    EncodingError,
-}
+- 새 코드에서 `unwrap()`과 `expect()`를 사용하지 않는다.
+- 운영체제, 파일 시스템, 창 제어 실패는 `Result`나 조용한 무시 중 하나를 명확히 선택한다.
+- 사용자 파일을 저장할 때는 원문 손상을 막는 방식으로 확장한다.
 
-impl serde::Serialize for AppError {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
+## 검증
 
----
-
-## 5. Windows API 서브클래싱을 통한 마우스 가로 휠 후킹 (WM_MOUSEHWHEEL)
-
-WebView2의 Windows 실행 환경 버그(가로 휠 스크롤 입력 시 `deltaX`를 0으로 강제 변환)를 극복하기 위해, OS 수준에서 마우스 가로 휠 메시지를 가로채 프론트엔드로 안전하게 전달하는 후킹 메커니즘을 적용합니다.
-
-1. **윈도우 프로시저 서브클래싱 (`comctl32.dll`)**:
-   - `SetWindowSubclass` API를 통해 현재 Tauri 메인 윈도우의 HWND 메시지 핸들러 체인에 커스텀 콜백 `window_subclass_proc`을 주입합니다.
-   - 메시지 루프에서 가로 휠 메시지인 `WM_MOUSEHWHEEL` (메시지 ID `0x020E`)를 식별합니다.
-2. **스크롤 델타 파싱 및 전송**:
-   - `WPARAM`의 상위 16비트를 마스킹 및 비트 시프트하여 가로 휠 스크롤 회전 방향 및 속도인 `delta` 값을 물리 정수형태로 추출합니다.
-   - Tauri 창 관리 API(`data.window.emit`)를 호출하여 프론트엔드로 `native-horizontal-wheel` 이벤트를 `delta` 데이터와 함께 직접 송출(emit)합니다.
-3. **기본 동작 차단**:
-   - WebView2 컨트롤러 단에서 가로 휠 메시지를 집어삼켜 무력화하는 오동작을 미연에 방지하기 위해, 메시지를 수동 처리한 뒤 더 이상의 전파 없이 `0`을 즉시 리턴하여 해당 OS 이벤트를 완결 처리합니다.
+- 백엔드 또는 Tauri 설정 변경 후: `npm run tauri build`
+- 프론트엔드와 함께 바뀐 경우: `npm run check` 후 `npm run tauri build`
