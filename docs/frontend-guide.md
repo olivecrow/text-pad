@@ -8,7 +8,7 @@
 - `src/app.html`: 앱 HTML 껍데기와 웹폰트 로드.
 - `src/routes/+layout.ts`: 정적 빌드 설정.
 
-큰 기능을 추가할 때는 `+page.svelte`에 계속 쌓지 말고, 안정된 단위부터 `src/lib/` 아래로 분리한다.
+큰 기능을 추가할 때는 `+page.svelte`에 계속 쌓지 말고, 안정된 단위부터 `src/lib/` 아래로 분리한다. 현재는 이전 설정 모달용 상태와 스타일이 일부 남아 있으므로, 다음 구조 정리 때 제거 대상이다.
 
 ## 주요 상태
 
@@ -30,10 +30,11 @@
 - 사용자가 입력한 공백, 탭, 줄바꿈을 임의로 바꾸지 않는다.
 - 긴 줄과 큰 파일에서 입력 지연이 생기지 않게 한다.
 - 파일을 새로 열면 스크롤 위치를 처음으로 되돌린다.
+- 세부 파일 흐름은 `docs/features/file-workflow.md`를 기준으로 한다.
 
 ## 렌더 모드
 
-렌더 모드는 `textarea` 위에 구문 강조용 backdrop을 겹쳐 표시한다. 실제 편집 기준은 계속 `fileContent`다.
+렌더 모드는 `textarea` 위에 구문 강조용 배경 레이어를 겹쳐 표시한다. 실제 편집 기준은 계속 `fileContent`다.
 
 현재 렌더 모드는 다음을 제공한다.
 
@@ -45,9 +46,10 @@
 
 렌더 모드 변경 시 지킬 기준:
 
-- backdrop과 `textarea`의 글꼴, 글자 크기, 줄 높이, 탭 크기를 항상 맞춘다.
+- 배경 레이어와 `textarea`의 글꼴, 글자 크기, 줄 높이, 탭 크기를 항상 맞춘다.
 - Svelte 템플릿의 불필요한 공백이 화면 글자 폭을 바꾸지 않게 한다.
 - 렌더 색상은 CSS 변수로만 주입한다.
+- 세부 표시 계약은 `docs/features/render-mode.md`를 기준으로 한다.
 
 ## 설정창
 
@@ -61,6 +63,8 @@
 4. 메인 창이 종료될 때 설정창은 `destroy()`로 정리한다.
 
 이 흐름에는 `src-tauri/capabilities/default.json`의 창 보이기, 초점 이동, 숨기기 권한이 필요하다.
+
+세부 창 계약은 `docs/features/settings-window.md`, 설정 저장 계약은 `docs/features/theme-preferences.md`를 기준으로 한다.
 
 ## UI 기준
 

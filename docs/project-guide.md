@@ -2,6 +2,8 @@
 
 `text-pad`는 로컬 텍스트 파일을 원문 기준으로 보존하면서 읽기 좋은 렌더 모드를 제공하는 Tauri 데스크톱 편집기다.
 
+Tauri는 Rust 백엔드와 웹 프론트엔드를 데스크톱 앱으로 묶는 프레임워크이고, SvelteKit은 화면을 구성하는 프론트엔드 프레임워크다.
+
 ## 현재 구조
 
 ```mermaid
@@ -9,7 +11,7 @@ graph TD
     File["로컬 파일"] <-->|"읽기/쓰기"| Backend["Rust + Tauri 백엔드"]
     Backend <-->|"명령 호출"| Frontend["SvelteKit 프론트엔드"]
     Frontend --> Source["원문 모드 textarea"]
-    Frontend --> Render["렌더 모드 backdrop"]
+    Frontend --> Render["렌더 모드 배경 레이어"]
     Frontend --> Settings["독립 설정창"]
 ```
 
@@ -19,13 +21,18 @@ graph TD
 - `src-tauri/src/lib.rs`: 파일 읽기/쓰기 명령, Windows 가로 휠 처리, Tauri 플러그인 설정.
 - `src-tauri/capabilities/default.json`: 프론트엔드가 호출할 수 있는 Tauri 명령 권한.
 - `src-tauri/tauri.conf.json`: 메인 창과 설정창 정의.
+- `package.json`: SvelteKit, Tauri, Lucide 아이콘 의존성과 실행 명령.
 - `docs/backend-guide.md`: 백엔드 계약.
 - `docs/frontend-guide.md`: 프론트엔드 계약.
+- `docs/features/file-workflow.md`: 파일 열기와 저장 흐름.
+- `docs/features/render-mode.md`: 렌더 모드 표시 계약.
+- `docs/features/settings-window.md`: 독립 설정창 계약.
+- `docs/features/theme-preferences.md`: 테마와 사용자 설정 저장 계약.
 - `docs/implementation-checklist.md`: 남은 기능과 완료 기준.
 
 ## 현재 기능 범위
 
-- `.txt` 파일 열기와 저장.
+- 여러 텍스트 계열 확장자 열기와 `.txt` 중심 저장.
 - 원문 모드 편집.
 - 렌더 모드 구문 강조, 들여쓰기 가이드, 줄 번호, 가상화된 화면 렌더링.
 - 라이트/다크 테마, 렌더 색상, 글꼴, 글자 크기, 탭 크기 설정.
@@ -36,6 +43,10 @@ graph TD
 ## 아직 제품 범위로 남은 기능
 
 - 검색, 바꾸기, 특정 줄 이동의 완성도 개선.
+- 저장 대화상자의 확장자 필터를 열기 대화상자와 맞추기.
+- 앱 표시 이름과 번들 실행 파일 이름을 `text-pad`로 정리.
+- `src/routes/+page.svelte`에 남은 이전 설정 모달 상태와 CSS 정리.
+- 사용하지 않는 Rust 예제 명령 정리.
 - Markdown 렌더링과 제한적 편집.
 - JSON 트리 보기와 값 편집.
 - CSV/TSV 표 보기와 셀 편집.

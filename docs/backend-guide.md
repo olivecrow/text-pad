@@ -8,6 +8,7 @@
 - `src-tauri/src/lib.rs`: Tauri 빌더, 명령 등록, 플러그인 설정, Windows 가로 휠 처리.
 - `src-tauri/capabilities/default.json`: 프론트엔드 명령 권한.
 - `src-tauri/tauri.conf.json`: 창 설정과 빌드 설정.
+- `src-tauri/Cargo.toml`: Rust 의존성과 Tauri 플러그인 의존성.
 
 ## Tauri 명령
 
@@ -19,6 +20,8 @@
   - 실패하면 에러 문자열을 반환한다.
 
 새 파일 입출력 기능을 추가할 때는 사용자가 선택한 경로만 다루고, 실패를 `Result`로 반환한다.
+
+현재 `greet` 예제 명령은 제품 기능에서 사용하지 않는다. 다음 백엔드 정리 때 명령 등록과 함수 정의를 함께 제거한다.
 
 ## 창과 권한
 
@@ -50,6 +53,7 @@ Windows WebView2는 일부 마우스 가로 휠 입력을 브라우저 `wheel` �
 ## Rust 기준
 
 - 새 코드에서 `unwrap()`과 `expect()`를 사용하지 않는다.
+- 기존 Tauri 실행 마지막의 `.expect("error while running tauri application")`는 생성 코드 경계에 남아 있다. 새 명령, 훅, 파일 처리 로직으로 같은 방식을 확장하지 않는다.
 - 운영체제, 파일 시스템, 창 제어 실패는 `Result`나 조용한 무시 중 하나를 명확히 선택한다.
 - 사용자 파일을 저장할 때는 원문 손상을 막는 방식으로 확장한다.
 

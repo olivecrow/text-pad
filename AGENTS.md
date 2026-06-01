@@ -14,6 +14,7 @@
 - `docs/project-guide.md`: 전체 구조, 현재 기능 범위, 주요 명령.
 - `docs/backend-guide.md`: Rust/Tauri 백엔드 계약, 권한, 검증 기준.
 - `docs/frontend-guide.md`: SvelteKit 프론트엔드 구조, 설정창, 렌더 모드 기준.
+- `docs/features/`: 파일 처리, 렌더 모드, 설정창, 테마 설정처럼 기능별 세부 계약.
 - `docs/implementation-checklist.md`: 남은 기능과 완료 기준.
 
 문서는 현재 구현과 앞으로 지켜야 할 계약만 유지한다. 변경 내역은 Git 차이로 확인한다.

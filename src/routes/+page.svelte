@@ -1,6 +1,7 @@
 <script lang="ts">
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { invoke } from "@tauri-apps/api/core";
+  import { PhysicalPosition } from "@tauri-apps/api/dpi";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -20,6 +21,7 @@
   let openDropdown = $state<'file' | 'edit' | null>(null);
   let showSettings = $state<boolean>(false);
   let activeSettingsTab = $state<'source' | 'render'>('render'); // 기본값은 렌더 모드
+  let hasCenteredSettingsWindowThisSession = false;
   
   // 폰트 크기 이원화
   let sourceFontSize = $state<number>(11);
@@ -776,27 +778,67 @@
   }
 
   // 설정 창 열기 (독립 윈도우)
+  async function centerSettingsWindowOverMain(settingsWindow: WebviewWindow) {
+    const mainWindow = getCurrentWindow();
+    const [mainPosition, mainSize, settingsSize] = await Promise.all([
+      mainWindow.outerPosition(),
+      mainWindow.outerSize(),
+      settingsWindow.outerSize()
+    ]);
+
+    const x = Math.round(mainPosition.x + (mainSize.width - settingsSize.width) / 2);
+    const y = Math.round(mainPosition.y + (mainSize.height - settingsSize.height) / 2);
+    await settingsWindow.setPosition(new PhysicalPosition(x, y));
+  }
+
+  async function centerSettingsWindowOnFirstOpen(settingsWindow: WebviewWindow) {
+    if (hasCenteredSettingsWindowThisSession) return;
+
+    try {
+      await centerSettingsWindowOverMain(settingsWindow);
+      hasCenteredSettingsWindowThisSession = true;
+    } catch (err) {
+      console.warn('Failed to center settings window:', err);
+    }
+  }
+
   async function handleSettingsTrigger(e: MouseEvent) {
     e.stopPropagation();
     try {
       const win = await WebviewWindow.getByLabel('settings');
       if (win) {
+        await centerSettingsWindowOnFirstOpen(win);
         await win.show();
         await win.setFocus();
       } else {
-        // 404 에러 방지를 위해 현재 실행 중인 윈도우의 Origin(루트 경로)을 그대로 설정창의 엔트리 포인트로 사용합니다.
-        // 설정창 감지는 URL 파라미터 대신 Tauri의 고유 윈도우 Label('settings')을 이용하므로 쿼리 스트링이 불필요합니다.
         const settingsUrl = isBrowser ? window.location.origin + '/' : '/';
 
-        new WebviewWindow('settings', {
+        const settingsWin = new WebviewWindow('settings', {
           url: settingsUrl,
           title: '설정',
           width: 800,
           height: 580,
-          resizable: true
+          resizable: true,
+          visible: false
+        });
+        settingsWin.once('tauri://created', async () => {
+          try {
+            await centerSettingsWindowOnFirstOpen(settingsWin);
+            await settingsWin.show();
+            await settingsWin.setFocus();
+          } catch (err) {
+            console.error('Failed to show settings window:', err);
+          }
+        });
+        settingsWin.once('tauri://error', (event) => {
+          console.error('Failed to create settings window:', event.payload);
         });
       }
-    } catch (err) {
+    } catch (err: any) {
+      try {
+        const { message: showMsg } = await import("@tauri-apps/plugin-dialog");
+        await showMsg(`Error: ${err.message || err}`);
+      } catch {}
       console.error('Failed to open settings window:', err);
     }
   }
