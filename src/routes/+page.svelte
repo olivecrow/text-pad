@@ -5,6 +5,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+  import { tokenizeLine, type Token } from "$lib/render-tokenizer";
 
   let filePath = $state<string | null>(null);
   let fileName = $state<string>("제목 없음");
@@ -316,210 +317,6 @@
   // 반응형 상태
   let lineCount = $derived(fileContent.split(/\r?\n/).length);
   let charCount = $derived(fileContent.length);
-
-  interface Token {
-    type: 'text' | 'string' | 'code' | 'number' | 'comment' | 'paren' | 'bracket' | 'brace';
-    text?: string;
-    children?: Token[];
-  }
-
-  function parseNumbers(text: string): Token[] {
-    const tokens: Token[] = [];
-    const numRegex = /\b\d+(?:\.\d+)?\b/g;
-    let lastIndex = 0;
-    let match;
-
-    while ((match = numRegex.exec(text)) !== null) {
-      const matchIndex = match.index;
-      const matchText = match[0];
-
-      if (matchIndex > lastIndex) {
-        tokens.push({ type: 'text', text: text.substring(lastIndex, matchIndex) });
-      }
-
-      tokens.push({ type: 'number', text: matchText });
-      lastIndex = numRegex.lastIndex;
-    }
-
-    if (lastIndex < text.length) {
-      tokens.push({ type: 'text', text: text.substring(lastIndex) });
-    }
-
-    return tokens;
-  }
-
-  function processNumbersInTree(tokens: Token[]) {
-    for (let j = 0; j < tokens.length; j++) {
-      const token = tokens[j];
-      if (token.type === 'text' && token.text) {
-        const parsed = parseNumbers(token.text);
-        if (parsed.length > 1 || (parsed.length === 1 && parsed[0].type === 'number')) {
-          tokens.splice(j, 1, ...parsed);
-          j += parsed.length - 1;
-        }
-      } else if (token.children && token.children.length > 0) {
-        processNumbersInTree(token.children);
-      }
-    }
-  }
-
-  function tokenizeLine(line: string): Token[] {
-    const root: Token = { type: 'text', children: [] };
-    const stack: { token: Token; openChar?: string }[] = [{ token: root }];
-
-    let i = 0;
-    const len = line.length;
-
-    function getTop() {
-      return stack[stack.length - 1];
-    }
-
-    function addChar(char: string) {
-      const top = getTop().token;
-      if (!top.children) top.children = [];
-      const lastChild = top.children[top.children.length - 1];
-      if (lastChild && lastChild.type === 'text') {
-        lastChild.text = (lastChild.text || '') + char;
-      } else {
-        top.children.push({ type: 'text', text: char });
-      }
-    }
-
-    function pushContainer(type: Token['type'], openChar: string) {
-      const top = getTop().token;
-      if (!top.children) top.children = [];
-      
-      const newContainer: Token = { type, children: [] };
-      top.children.push(newContainer);
-      stack.push({ token: newContainer, openChar });
-      
-      newContainer.children = [{ type: 'text', text: openChar }];
-    }
-
-    function popToContainer(openChar: string): boolean {
-      let targetIdx = -1;
-      for (let j = stack.length - 1; j > 0; j--) {
-        if (stack[j].openChar === openChar) {
-          targetIdx = j;
-          break;
-        }
-      }
-      if (targetIdx !== -1) {
-        stack.splice(targetIdx + 1);
-        return true;
-      }
-      return false;
-    }
-
-    function isInStringOrCode(): boolean {
-      for (let j = stack.length - 1; j > 0; j--) {
-        const type = stack[j].token.type;
-        if (type === 'string' || type === 'code') {
-          return true;
-        }
-      }
-      return false;
-    }
-
-    while (i < len) {
-      const char = line[i];
-      const nextChar = line[i + 1];
-      const top = getTop();
-
-      const inString = isInStringOrCode();
-
-      // 1. 주석 처리 (문자열 바깥에서만 가능)
-      if (!inString) {
-        if ((char === '/' && nextChar === '/') || char === '#') {
-          const commentText = line.substring(i);
-          const topToken = top.token;
-          if (!topToken.children) topToken.children = [];
-          topToken.children.push({ type: 'comment', text: commentText });
-          i = len;
-          break;
-        }
-      }
-
-      // 2. 이스케이프 처리 (문자열 안에서만 가능)
-      if (inString && char === '\\') {
-        addChar(char);
-        if (i + 1 < len) {
-          addChar(line[i + 1]);
-          i += 2;
-        } else {
-          i++;
-        }
-        continue;
-      }
-
-      // 3. 따옴표 처리 (", ', `)
-      if (char === '"' || char === "'" || char === '`') {
-        let targetIdx = -1;
-        for (let j = stack.length - 1; j > 0; j--) {
-          if (stack[j].openChar === char) {
-            targetIdx = j;
-            break;
-          }
-        }
-
-        if (targetIdx !== -1) {
-          stack.splice(targetIdx + 1);
-          addChar(char);
-          stack.pop();
-          i++;
-        } else {
-          const type = char === '`' ? 'code' : 'string';
-          pushContainer(type, char);
-          i++;
-        }
-        continue;
-      }
-
-      // 4. 괄호 및 일반 문자 처리
-      if (char === '(') {
-        pushContainer('paren', char);
-        i++;
-      } else if (char === '[') {
-        pushContainer('bracket', char);
-        i++;
-      } else if (char === '{') {
-        pushContainer('brace', char);
-        i++;
-      } else if (char === ')') {
-        if (popToContainer('(')) {
-          addChar(char);
-          stack.pop();
-        } else {
-          addChar(char);
-        }
-        i++;
-      } else if (char === ']') {
-        if (popToContainer('[')) {
-          addChar(char);
-          stack.pop();
-        } else {
-          addChar(char);
-        }
-        i++;
-      } else if (char === '}') {
-        if (popToContainer('{')) {
-          addChar(char);
-          stack.pop();
-        } else {
-          addChar(char);
-        }
-        i++;
-      } else {
-        addChar(char);
-        i++;
-      }
-    }
-
-    const finalTokens = root.children || [];
-    processNumbersInTree(finalTokens);
-
-    return finalTokens;
-  }
 
   interface ParsedLine {
     id: number;
@@ -1094,11 +891,21 @@
       insertDateTime();
     }
   }
+  const depthColorCount = 5;
+
+  function getTokenClass(token: Token): string {
+    const classes = [`hl-${token.type}`];
+    if (token.depth !== undefined) {
+      classes.push(`hl-depth-${token.depth % depthColorCount}`);
+    }
+    return classes.join(' ');
+  }
+
 </script>
 
 <svelte:window onkeydown={handleKeyDown} onclick={closeAllDropdown} />
 
-{#snippet renderToken(token: Token)}{#if token.children && token.children.length > 0}<span class="hl-{token.type}">{#each token.children as child}{@render renderToken(child)}{/each}</span>{:else}<span class="hl-{token.type}">{token.text || ''}</span>{/if}{/snippet}
+{#snippet renderToken(token: Token)}{#if token.children && token.children.length > 0}<span class={getTokenClass(token)}>{#each token.children as child}{@render renderToken(child)}{/each}</span>{:else}<span class={getTokenClass(token)}>{token.text || ''}</span>{/if}{/snippet}
 
 {#if isSettingsWindow}
   <div class="settings-window-container" style="
@@ -1594,6 +1401,21 @@
   }
   :global(.hl-brace) {
     color: var(--color-hl-brace);
+  }
+  :global(.hl-depth-0) {
+    color: var(--color-hl-paren);
+  }
+  :global(.hl-depth-1) {
+    color: var(--color-hl-bracket);
+  }
+  :global(.hl-depth-2) {
+    color: var(--color-hl-brace);
+  }
+  :global(.hl-depth-3) {
+    color: var(--color-hl-string);
+  }
+  :global(.hl-depth-4) {
+    color: var(--color-hl-code-text);
   }
 
   .render-mode-toggle {
