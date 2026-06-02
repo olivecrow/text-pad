@@ -4,8 +4,8 @@
 
 ## 창 구성
 
-- `tauri.conf.json`에는 `main` 창과 `settings` 창이 정의되어 있다.
-- `settings` 창은 `visible: false`로 시작한다.
+- `tauri.conf.json`에는 시작 성능을 위해 `main` 창만 정의한다.
+- `settings` 창은 앱 시작 때 만들지 않고, 설정 버튼을 처음 눌렀을 때 동적으로 만든다.
 - 프론트엔드는 현재 창의 라벨이 `settings`인지 확인해 설정창 전용 화면을 렌더링한다.
 - 창 상태 복원 플러그인은 메인 창만 대상으로 하며, `settings` 창은 복원 대상에서 제외한다.
 
@@ -28,6 +28,7 @@
 
 - `core:window:allow-show`
 - `core:window:allow-set-focus`
+- `core:window:allow-set-title`
 - `core:window:allow-hide`
 - `core:window:allow-set-position`
 - `core:window:allow-destroy`

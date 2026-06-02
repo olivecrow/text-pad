@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { open, save } from "@tauri-apps/plugin-dialog";
+  import { message, open, save } from "@tauri-apps/plugin-dialog";
   import { invoke } from "@tauri-apps/api/core";
   import { PhysicalPosition } from "@tauri-apps/api/dpi";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -12,6 +12,7 @@
   let isDirty = $state<boolean>(false);
   let isLoading = $state<boolean>(false);
   let errorMsg = $state<string | null>(null);
+  let hasFocusedEditorOnStartup = false;
 
   // 커서 상태 추적
   let cursorLine = $state<number>(1);
@@ -597,6 +598,14 @@
     return () => observer.disconnect();
   });
 
+  $effect(() => {
+    if (!textareaEl || isSettingsWindow || hasFocusedEditorOnStartup) return;
+    requestAnimationFrame(() => {
+      textareaEl?.focus({ preventScroll: true });
+      hasFocusedEditorOnStartup = true;
+    });
+  });
+
   // 창 제목 동기화 (Rune Effect)
   $effect(() => {
     const appWindow = getCurrentWindow();
@@ -836,8 +845,7 @@
       }
     } catch (err: any) {
       try {
-        const { message: showMsg } = await import("@tauri-apps/plugin-dialog");
-        await showMsg(`Error: ${err.message || err}`);
+        await message(`Error: ${err.message || err}`);
       } catch {}
       console.error('Failed to open settings window:', err);
     }
