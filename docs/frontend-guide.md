@@ -12,8 +12,9 @@
 
 ## 주요 상태
 
+- `tabs`, `activeTabId`: 열린 파일 탭 목록과 현재 활성 탭 식별자.
 - `fileContent`: 저장 기준이 되는 원문 텍스트.
-- `filePath`, `fileName`, `isDirty`: 파일 경로, 표시 이름, 변경 여부.
+- `filePath`, `fileName`, `isDirty`: 활성 탭의 파일 경로, 표시 이름, 변경 여부. 파일 경로가 없는 새 탭은 첫 줄을 표시 이름으로 쓴다.
 - `isRenderMode`: 원문 모드와 렌더 모드 전환 상태.
 - `sourceFontSize`, `renderFontSize`, `tabSize`: 편집기 표시 설정.
 - `themeMode`, `currentTheme`, `lightColors`, `darkColors`: 테마와 렌더 색상 설정.
@@ -29,7 +30,8 @@
 
 - 사용자가 입력한 공백, 탭, 줄바꿈을 임의로 바꾸지 않는다.
 - 긴 줄과 큰 파일에서 입력 지연이 생기지 않게 한다.
-- 파일을 새로 열면 스크롤 위치를 처음으로 되돌린다.
+- 파일을 새로 열면 새 탭이나 깨끗한 빈 탭에서 스크롤 위치를 처음으로 둔다.
+- 탭을 전환할 때 활성 탭의 원문, 선택 영역, 스크롤 위치를 먼저 저장하고 새 탭 상태를 복원한다.
 - 세부 파일 흐름은 `docs/features/file-workflow.md`를 기준으로 한다.
 
 ## 렌더 모드
@@ -63,7 +65,7 @@
 1. `WebviewWindow.getByLabel("settings")`로 기존 창을 찾는다.
 2. 찾은 창에 `show()`와 `setFocus()`를 호출한다.
 3. 설정창의 닫기 요청은 `hide()`로 처리한다.
-4. 메인 창 닫기 요청은 변경 사항 저장 여부를 먼저 확인한다.
+4. 메인 창 닫기 요청은 열린 탭의 변경 사항 저장 여부를 먼저 확인한다.
 5. 메인 창 종료가 확정되면 설정창은 `destroy()`로 정리한다.
 
 이 흐름에는 `src-tauri/capabilities/default.json`의 창 보이기, 초점 이동, 숨기기 권한이 필요하다.

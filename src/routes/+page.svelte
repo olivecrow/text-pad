@@ -5,7 +5,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { FileCode2, PaintRoller, Settings, Sun, Moon } from "@lucide/svelte";
+  import { FileCode2, PaintRoller, Settings, Sun, Moon, Plus, X } from "@lucide/svelte";
   import {
     getCommentSyntaxForPath,
     tokenizeLineWithState,
@@ -15,10 +15,87 @@
   } from "$lib/render-tokenizer";
   import { untrack } from "svelte";
 
-  let filePath = $state<string | null>(null);
-  let fileName = $state<string>("제목 없음");
-  let fileContent = $state<string>("");
-  let isDirty = $state<boolean>(false);
+  interface EditorTab {
+    id: string;
+    filePath: string | null;
+    fileName: string;
+    fileContent: string;
+    isDirty: boolean;
+    scrollTop: number;
+    scrollLeft: number;
+    selectionStart: number;
+    selectionEnd: number;
+    cursorLine: number;
+    cursorCol: number;
+    caretOffset: number;
+  }
+
+  let nextTabId = 1;
+  let nextUntitledNumber = 1;
+  const untitledFileName = "제목 없음";
+  const invalidFileNameCharsPattern = /[<>:"/\\|?*\x00-\x1F]/g;
+
+  function getFileNameFromPath(path: string): string {
+    const parts = path.split(/[/\\]/);
+    return parts[parts.length - 1] || path;
+  }
+
+  function getNextUntitledFileName(): string {
+    const name = nextUntitledNumber === 1 ? untitledFileName : `${untitledFileName} ${nextUntitledNumber}`;
+    nextUntitledNumber += 1;
+    return name;
+  }
+
+  function getFirstLineTitle(content: string): string {
+    const firstLine = content.split(/\r?\n/, 1)[0]?.trim() ?? "";
+    return firstLine || untitledFileName;
+  }
+
+  function getDisplayFileName(tab: Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent'>): string {
+    return tab.filePath ? tab.fileName : getFirstLineTitle(tab.fileContent);
+  }
+
+  function getUnsavedFileNameFromContent(content: string): string {
+    const fileNameBase = getFirstLineTitle(content)
+      .replace(invalidFileNameCharsPattern, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/[. ]+$/g, "") || untitledFileName;
+
+    return /\.[^./\\]+$/.test(fileNameBase) ? fileNameBase : `${fileNameBase}.txt`;
+  }
+
+  function getSuggestedSaveFileName(tab: EditorTab): string {
+    return tab.filePath ? tab.fileName : getUnsavedFileNameFromContent(tab.fileContent);
+  }
+
+  function createEditorTab(options: Partial<Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent' | 'isDirty'>> = {}): EditorTab {
+    const nextFileContent = options.fileContent ?? "";
+    const nextFilePath = options.filePath ?? null;
+    return {
+      id: `tab-${nextTabId++}`,
+      filePath: nextFilePath,
+      fileName: options.fileName ?? (nextFilePath ? getFileNameFromPath(nextFilePath) : getNextUntitledFileName()),
+      fileContent: nextFileContent,
+      isDirty: options.isDirty ?? false,
+      scrollTop: 0,
+      scrollLeft: 0,
+      selectionStart: 0,
+      selectionEnd: 0,
+      cursorLine: 1,
+      cursorCol: 1,
+      caretOffset: 0
+    };
+  }
+
+  const initialTab = createEditorTab();
+  let tabs = $state<EditorTab[]>([initialTab]);
+  let activeTabId = $state<string>(initialTab.id);
+
+  let filePath = $state<string | null>(initialTab.filePath);
+  let fileName = $state<string>(initialTab.fileName);
+  let fileContent = $state<string>(initialTab.fileContent);
+  let isDirty = $state<boolean>(initialTab.isDirty);
   let isLoading = $state<boolean>(false);
   let errorMsg = $state<string | null>(null);
   let isHandlingCloseRequest = false;
@@ -158,6 +235,139 @@
     no: "저장 안 함",
     cancel: "취소"
   };
+
+  function getActiveTabIndex(): number {
+    return tabs.findIndex((tab) => tab.id === activeTabId);
+  }
+
+  function getActiveTab(): EditorTab | null {
+    const activeIndex = getActiveTabIndex();
+    return activeIndex === -1 ? null : tabs[activeIndex];
+  }
+
+  function updateTabById(tabId: string, updates: Partial<EditorTab>) {
+    tabs = tabs.map((tab) => tab.id === tabId ? { ...tab, ...updates } : tab);
+  }
+
+  function syncActiveTabState() {
+    const activeTab = getActiveTab();
+    if (!activeTab) return;
+
+    const nextFileName = filePath ? fileName : getFirstLineTitle(fileContent);
+    fileName = nextFileName;
+
+    updateTabById(activeTab.id, {
+      filePath,
+      fileName: nextFileName,
+      fileContent,
+      isDirty,
+      scrollTop,
+      scrollLeft,
+      selectionStart: textareaEl?.selectionStart ?? activeTab.selectionStart,
+      selectionEnd: textareaEl?.selectionEnd ?? activeTab.selectionEnd,
+      cursorLine,
+      cursorCol,
+      caretOffset
+    });
+  }
+
+  function restoreEditorView(tab: EditorTab) {
+    scrollTop = tab.scrollTop;
+    scrollLeft = tab.scrollLeft;
+    cursorLine = tab.cursorLine;
+    cursorCol = tab.cursorCol;
+    caretOffset = tab.caretOffset;
+    editorCursorStyle = 'text';
+    clearInlineColorPickerState();
+
+    requestAnimationFrame(() => {
+      if (!textareaEl) return;
+      const selectionStart = Math.min(tab.selectionStart, fileContent.length);
+      const selectionEnd = Math.min(tab.selectionEnd, fileContent.length);
+
+      textareaEl.focus({ preventScroll: true });
+      textareaEl.selectionStart = selectionStart;
+      textareaEl.selectionEnd = selectionEnd;
+      textareaEl.scrollTop = tab.scrollTop;
+      textareaEl.scrollLeft = tab.scrollLeft;
+      updateCursorPosition();
+    });
+  }
+
+  function loadTabIntoEditor(tab: EditorTab) {
+    activeTabId = tab.id;
+    filePath = tab.filePath;
+    fileName = getDisplayFileName(tab);
+    fileContent = tab.fileContent;
+    isDirty = tab.isDirty;
+    errorMsg = null;
+    restoreEditorView(tab);
+  }
+
+  function activateTab(tabId: string) {
+    if (tabId === activeTabId) return;
+    syncActiveTabState();
+    const nextTab = tabs.find((tab) => tab.id === tabId);
+    if (!nextTab) return;
+    closeAllDropdown();
+    loadTabIntoEditor(nextTab);
+  }
+
+  function addTab(tab: EditorTab) {
+    syncActiveTabState();
+    tabs = [...tabs, tab];
+    closeAllDropdown();
+    loadTabIntoEditor(tab);
+  }
+
+  function handleAddTab() {
+    addTab(createEditorTab());
+  }
+
+  function isCleanUntitledTab(tab: EditorTab): boolean {
+    return !tab.filePath && !tab.isDirty && tab.fileContent.length === 0;
+  }
+
+  function replaceActiveTabWith(tab: EditorTab) {
+    syncActiveTabState();
+    const activeIndex = getActiveTabIndex();
+    if (activeIndex === -1) {
+      addTab(tab);
+      return;
+    }
+
+    const activeId = tabs[activeIndex].id;
+    const nextTab = { ...tab, id: activeId };
+    tabs = tabs.map((item) => item.id === activeId ? nextTab : item);
+    loadTabIntoEditor(nextTab);
+  }
+
+  function closeTabWithoutPrompt(tabId: string) {
+    const closingIndex = tabs.findIndex((tab) => tab.id === tabId);
+    if (closingIndex === -1) return;
+
+    if (tabs.length === 1) {
+      const blankTab = createEditorTab();
+      tabs = [blankTab];
+      loadTabIntoEditor(blankTab);
+      return;
+    }
+
+    const nextTabs = tabs.filter((tab) => tab.id !== tabId);
+    tabs = nextTabs;
+
+    if (activeTabId === tabId) {
+      const nextIndex = Math.min(closingIndex, nextTabs.length - 1);
+      loadTabIntoEditor(nextTabs[nextIndex]);
+    }
+  }
+
+  async function handleCloseTab(tabId: string, event?: MouseEvent) {
+    event?.stopPropagation();
+    const canClose = await confirmCloseTab(tabId);
+    if (!canClose) return;
+    closeTabWithoutPrompt(tabId);
+  }
 
   function hasTauriRuntime(): boolean {
     if (!isBrowser) return false;
@@ -309,14 +519,31 @@
   });
 
   async function shouldCloseMainWindow(): Promise<boolean> {
-    const dirty = untrack(() => isDirty);
-    if (!dirty) return true;
+    syncActiveTabState();
+    const dirtyTabs = untrack(() => tabs.filter((tab) => tab.isDirty));
+    if (dirtyTabs.length === 0) return true;
 
+    for (const tab of dirtyTabs) {
+      const canCloseTab = await confirmCloseTab(tab.id);
+      if (!canCloseTab) return false;
+    }
+
+    return true;
+  }
+
+  async function confirmCloseTab(tabId: string): Promise<boolean> {
+    syncActiveTabState();
+    const tab = tabs.find((item) => item.id === tabId);
+    if (!tab || !tab.isDirty) return true;
+
+    if (activeTabId !== tabId) {
+      activateTab(tabId);
+    }
     closeAllDropdown();
 
     let result: string;
     try {
-      result = await message("변경 내용을 저장하시겠습니까?", {
+      result = await message(`'${getDisplayFileName(tab)}'의 변경 내용을 저장하시겠습니까?`, {
         title: "저장 확인",
         kind: "warning",
         buttons: closeSaveButtons
@@ -327,7 +554,7 @@
     }
 
     if (result === closeSaveButtons.yes || result === "Yes") {
-      return runSaveOperation(saveCurrentFile);
+      return runSaveOperation(() => saveTabFile(tabId));
     }
 
     if (result === closeSaveButtons.no || result === "No") {
@@ -351,23 +578,40 @@
     }
   }
 
-  function applySavedPath(targetPath: string) {
-    filePath = targetPath;
-    const parts = targetPath.split(/[/\\]/);
-    fileName = parts[parts.length - 1] || targetPath;
-    isDirty = false;
+  function applySavedPath(tabId: string, targetPath: string) {
+    const nextFileName = getFileNameFromPath(targetPath);
+    updateTabById(tabId, {
+      filePath: targetPath,
+      fileName: nextFileName,
+      isDirty: false
+    });
+
+    if (tabId === activeTabId) {
+      filePath = targetPath;
+      fileName = nextFileName;
+      isDirty = false;
+    }
   }
 
-  async function writeCurrentContent(targetPath: string) {
-    await invoke("write_file_content", { path: targetPath, content: fileContent });
-    applySavedPath(targetPath);
+  async function writeTabContent(tabId: string, targetPath: string) {
+    syncActiveTabState();
+    const tab = tabs.find((item) => item.id === tabId);
+    if (!tab) return;
+
+    await invoke("write_file_content", { path: targetPath, content: tab.fileContent });
+    applySavedPath(tabId, targetPath);
   }
 
-  async function saveCurrentFile(): Promise<boolean> {
-    let targetPath = filePath;
+  async function saveTabFile(tabId: string): Promise<boolean> {
+    syncActiveTabState();
+    const tab = tabs.find((item) => item.id === tabId);
+    if (!tab) return false;
+
+    let targetPath = tab.filePath;
 
     if (!targetPath) {
       const selected = await save({
+        defaultPath: getSuggestedSaveFileName(tab),
         filters: textSaveFilters
       });
       if (!selected) {
@@ -376,19 +620,28 @@
       targetPath = selected;
     }
 
-    await writeCurrentContent(targetPath);
+    await writeTabContent(tabId, targetPath);
     return true;
   }
 
+  async function saveCurrentFile(): Promise<boolean> {
+    return saveTabFile(activeTabId);
+  }
+
   async function saveCurrentFileAs(): Promise<boolean> {
+    syncActiveTabState();
+    const tab = getActiveTab();
+    if (!tab) return false;
+
     const selected = await save({
+      defaultPath: getSuggestedSaveFileName(tab),
       filters: textSaveFilters
     });
     if (!selected) {
       return false;
     }
 
-    await writeCurrentContent(selected);
+    await writeTabContent(activeTabId, selected);
     return true;
   }
 
@@ -706,55 +959,41 @@
     cursorLine = linesBefore.length;
     cursorCol = linesBefore[linesBefore.length - 1].length + 1;
     updateEditorCaretColor(pos);
+    updateTabById(activeTabId, {
+      cursorLine,
+      cursorCol,
+      caretOffset,
+      selectionStart: textareaEl.selectionStart,
+      selectionEnd: textareaEl.selectionEnd
+    });
   }
 
   // 변경 감지
   function handleInput(event: Event) {
     fileContent = (event.target as HTMLTextAreaElement).value;
+    fileName = filePath ? fileName : getFirstLineTitle(fileContent);
     isDirty = true;
     errorMsg = null;
     updateCursorPosition();
     reconcileInlineColorPickerState();
+    updateTabById(activeTabId, {
+      fileName,
+      fileContent,
+      isDirty: true
+    });
   }
 
-  // 새 파일 생성
+  // 새 탭 생성
   function handleNewFile() {
-    if (isDirty) {
-      const confirmDiscard = confirm("저장되지 않은 변경 사항이 있습니다. 무시하고 새 파일을 만드시겠습니까?");
-      if (!confirmDiscard) return;
-    }
-    filePath = null;
-    fileName = "제목 없음";
-    fileContent = "";
-    isDirty = false;
-    errorMsg = null;
-    clearInlineColorPickerState();
-    closeAllDropdown();
-
-    // 스크롤 및 선택 영역 초기화
-    scrollTop = 0;
-    scrollLeft = 0;
-    setTimeout(() => {
-      if (textareaEl) {
-        textareaEl.focus();
-        textareaEl.selectionStart = textareaEl.selectionEnd = 0;
-        textareaEl.scrollTop = 0;
-        textareaEl.scrollLeft = 0;
-        updateCursorPosition();
-      }
-    }, 50);
+    handleAddTab();
   }
 
   // 파일 열기
   async function handleOpenFile() {
-    if (isDirty) {
-      const confirmDiscard = confirm("저장되지 않은 변경 사항이 있습니다. 무시하고 다른 파일을 여시겠습니까?");
-      if (!confirmDiscard) return;
-    }
-
     try {
       isLoading = true;
       errorMsg = null;
+      syncActiveTabState();
       closeAllDropdown();
       const selected = await open({
         multiple: false,
@@ -768,31 +1007,25 @@
       });
 
       if (selected && typeof selected === "string") {
-        filePath = selected;
-        const parts = selected.split(/[/\\]/);
-        fileName = parts[parts.length - 1] || selected;
-
         const content = await invoke<string>("read_file_content", { path: selected });
-        fileContent = content;
-        isDirty = false;
-        clearInlineColorPickerState();
+        const openedTab = createEditorTab({
+          filePath: selected,
+          fileName: getFileNameFromPath(selected),
+          fileContent: content,
+          isDirty: false
+        });
+        const activeTab = getActiveTab();
+
+        if (activeTab && isCleanUntitledTab(activeTab)) {
+          replaceActiveTabWith(openedTab);
+        } else {
+          addTab(openedTab);
+        }
       }
     } catch (err: any) {
       errorMsg = typeof err === "string" ? err : err.message || String(err);
     } finally {
       isLoading = false;
-      // 스크롤 및 선택 영역 0,0 초기화
-      scrollTop = 0;
-      scrollLeft = 0;
-      setTimeout(() => {
-        if (textareaEl) {
-          textareaEl.focus();
-          textareaEl.selectionStart = textareaEl.selectionEnd = 0;
-          textareaEl.scrollTop = 0;
-          textareaEl.scrollLeft = 0;
-          updateCursorPosition();
-        }
-      }, 50);
     }
   }
 
@@ -916,6 +1149,7 @@
     fileContent = before + formatted + after;
     isDirty = true;
     reconcileInlineColorPickerState();
+    syncActiveTabState();
 
     closeAllDropdown();
 
@@ -960,6 +1194,7 @@
     fileContent = before + after;
     isDirty = true;
     reconcileInlineColorPickerState();
+    syncActiveTabState();
 
     closeAllDropdown();
     setTimeout(() => {
@@ -994,6 +1229,7 @@
       fileContent = before + text + after;
       isDirty = true;
       reconcileInlineColorPickerState();
+      syncActiveTabState();
 
       closeAllDropdown();
       setTimeout(() => {
@@ -1025,6 +1261,7 @@
     }
     isDirty = true;
     reconcileInlineColorPickerState();
+    syncActiveTabState();
 
     closeAllDropdown();
     setTimeout(() => {
@@ -1057,11 +1294,15 @@
     if (e.deltaX !== 0) {
       // 일반 브라우저 환경에서 가로 휠 동작 시 스크롤 속도를 보정하기 위해 배율(x3) 적용
       textareaEl.scrollLeft += e.deltaX * 3;
+      scrollLeft = textareaEl.scrollLeft;
+      updateTabById(activeTabId, { scrollLeft });
       e.preventDefault();
     }
     // Shift 키를 누르고 세로 휠을 돌릴 때 가로 스크롤 매핑
     else if (e.shiftKey && e.deltaY !== 0) {
       textareaEl.scrollLeft += e.deltaY;
+      scrollLeft = textareaEl.scrollLeft;
+      updateTabById(activeTabId, { scrollLeft });
       e.preventDefault();
     }
   }
@@ -1071,6 +1312,7 @@
     const target = e.target as HTMLTextAreaElement;
     scrollTop = target.scrollTop;
     scrollLeft = target.scrollLeft;
+    updateTabById(activeTabId, { scrollTop, scrollLeft });
   }
 
   // passive: false 리스너로 등록하여 preventDefault() 오동작 차단 및 Rust 네이티브 가로 휠 이벤트 통합
@@ -1094,6 +1336,7 @@
           textareaEl.scrollLeft += delta;
           scrollTop = textareaEl.scrollTop;
           scrollLeft = textareaEl.scrollLeft;
+          updateTabById(activeTabId, { scrollTop, scrollLeft });
 
           // 디버그 텍스트 갱신
           wheelDebug = `Native dX: ${delta}`;
@@ -1122,6 +1365,9 @@
     } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 's') {
       e.preventDefault();
       handleSaveAsFile();
+    } else if (e.ctrlKey && e.key.toLowerCase() === 'w') {
+      e.preventDefault();
+      handleCloseTab(activeTabId);
     } else if (e.key === 'F5') {
       e.preventDefault();
       insertDateTime();
@@ -1359,6 +1605,7 @@
     pendingInlineColorReplacement = { start, end: start + nextValue.length };
     isDirty = true;
     updateEditorCaretColor(caretOffset);
+    syncActiveTabState();
 
     requestAnimationFrame(() => {
       if (!textareaEl) return;
@@ -1618,6 +1865,47 @@
     --color-hl-bracket: {activeColors.bracket};
     --color-hl-brace: {activeColors.brace};
   ">
+    <!-- 탭 바 영역 -->
+    <div class="tab-bar">
+      <div class="tab-list" role="tablist" aria-label="열린 파일 탭">
+        {#each tabs as tab (tab.id)}
+          <div class="tab-item" class:active={tab.id === activeTabId} class:dirty={tab.isDirty}>
+            <button
+              type="button"
+              class="tab-select"
+              role="tab"
+              aria-selected={tab.id === activeTabId}
+              title={tab.filePath || getDisplayFileName(tab)}
+              onclick={() => activateTab(tab.id)}
+            >
+              {#if tab.isDirty}
+                <span class="tab-dirty-dot" aria-hidden="true"></span>
+              {/if}
+              <span class="tab-title">{getDisplayFileName(tab)}</span>
+            </button>
+            <button
+              type="button"
+              class="tab-close-btn"
+              aria-label={`${getDisplayFileName(tab)} 탭 닫기`}
+              title="탭 닫기"
+              onclick={(event) => handleCloseTab(tab.id, event)}
+            >
+              <X size={14} aria-hidden="true" />
+            </button>
+          </div>
+        {/each}
+      </div>
+      <button
+        type="button"
+        class="tab-add-btn"
+        aria-label="새 탭"
+        title="새 탭"
+        onclick={handleAddTab}
+      >
+        <Plus size={16} aria-hidden="true" />
+      </button>
+    </div>
+
     <!-- 메뉴바 영역 -->
     <nav class="menu-bar">
       <div class="menu-left">
@@ -1633,7 +1921,7 @@
           {#if openDropdown === 'file'}
             <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
               <button class="dropdown-item" onclick={handleNewFile}>
-                <span class="item-label">새 파일</span>
+                <span class="item-label">새 탭</span>
                 <span class="shortcut-label">Ctrl+N</span>
               </button>
               <button class="dropdown-item" onclick={handleOpenFile}>
@@ -1856,6 +2144,11 @@
     --text-muted: #5f5f5f;
     --accent-color: #0078d4;
     --shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+    --bg-tab-strip: #ececec;
+    --bg-tab-active: #ffffff;
+    --bg-tab-hover: #f8f8f8;
+    --bg-tab-button-hover: #e1e1e1;
+    --tab-border-color: #d9d9d9;
 
     --bg-modal: #ffffff;
     --bg-overlay: rgba(0, 0, 0, 0.2);
@@ -1882,6 +2175,11 @@
     --text-muted: #9f9f9f;
     --accent-color: #0078d4;
     --shadow-menu: 0 4px 16px rgba(0, 0, 0, 0.25), 0 2px 4px rgba(0, 0, 0, 0.15);
+    --bg-tab-strip: #181818;
+    --bg-tab-active: #242424;
+    --bg-tab-hover: #202020;
+    --bg-tab-button-hover: #333333;
+    --tab-border-color: #303030;
 
     --bg-modal: #2c2c2c;
     --bg-overlay: rgba(0, 0, 0, 0.4);
@@ -2028,6 +2326,127 @@
     height: 100vh;
     width: 100vw;
     box-sizing: border-box;
+  }
+
+  /* 탭 바 디자인 */
+  .tab-bar {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 38px;
+    padding: 5px 8px 0;
+    background-color: var(--bg-tab-strip);
+    border-bottom: 1px solid var(--border-color);
+    box-sizing: border-box;
+    user-select: none;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .tab-list {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    flex: 0 1 auto;
+    max-width: calc(100% - 34px);
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+
+  .tab-item {
+    display: flex;
+    align-items: center;
+    flex: 0 1 252px;
+    min-width: 150px;
+    max-width: 272px;
+    height: 32px;
+    color: var(--text-color);
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 7px 7px 0 0;
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+
+  .tab-item:hover {
+    background-color: var(--bg-tab-hover);
+  }
+
+  .tab-item.active {
+    background-color: var(--bg-tab-active);
+    border-color: var(--tab-border-color);
+  }
+
+  .tab-select {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 8px 0 12px;
+    background: transparent;
+    border: none;
+    color: inherit;
+    font-family: var(--font-ui);
+    font-size: 0.78rem;
+    text-align: left;
+    cursor: pointer;
+    outline: none;
+  }
+
+  .tab-select:focus-visible,
+  .tab-close-btn:focus-visible,
+  .tab-add-btn:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: -2px;
+  }
+
+  .tab-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tab-dirty-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .tab-close-btn,
+  .tab-add-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-color);
+    cursor: pointer;
+    outline: none;
+    flex-shrink: 0;
+  }
+
+  .tab-close-btn {
+    margin-right: 2px;
+  }
+
+  .tab-close-btn:hover,
+  .tab-add-btn:hover {
+    background-color: var(--bg-tab-button-hover);
+  }
+
+  .tab-add-btn {
+    margin-bottom: 2px;
   }
 
   /* 메뉴바 디자인 */
