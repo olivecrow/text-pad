@@ -5,7 +5,15 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { tokenizeLine, type Token } from "$lib/render-tokenizer";
+  import { FileCode2, PaintRoller, Settings, Sun, Moon } from "@lucide/svelte";
+  import {
+    getCommentSyntaxForPath,
+    tokenizeLineWithState,
+    type CommentSyntax,
+    type Token,
+    type TokenizeState
+  } from "$lib/render-tokenizer";
+  import { untrack } from "svelte";
 
   let filePath = $state<string | null>(null);
   let fileName = $state<string>("제목 없음");
@@ -18,17 +26,20 @@
   // 커서 상태 추적
   let cursorLine = $state<number>(1);
   let cursorCol = $state<number>(1);
+  let caretOffset = $state<number>(0);
+  let editorCaretColor = $state<string>('var(--color-render-text, var(--text-color))');
+  let editorCursorStyle = $state<string>('text');
 
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | null>(null);
   let showSettings = $state<boolean>(false);
   let activeSettingsTab = $state<'source' | 'render'>('render'); // 기본값은 렌더 모드
   let hasCenteredSettingsWindowThisSession = false;
-  
+
   // 폰트 크기 이원화
   let sourceFontSize = $state<number>(11);
   let renderFontSize = $state<number>(11);
-  
+
   // 렌더 모드 상태
   let isRenderMode = $state<boolean>(true); // 기본값은 렌더 모드
   let currentFontSize = $derived(isRenderMode ? renderFontSize : sourceFontSize);
@@ -41,20 +52,70 @@
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
   let editorViewportEl = $state<HTMLDivElement | null>(null);
 
-  // 렌더 모드 하이라이팅 커스텀 테마 색상 상태 변수
-  let colorHlCodeBg = $state<string>('');
-  let colorHlCodeText = $state<string>('');
-  let colorHlString = $state<string>('');
-  let colorHlNumber = $state<string>('');
-  let colorHlComment = $state<string>('');
-  let colorIndentGuide = $state<string>('');
-  let colorRenderBg = $state<string>('');
-  let colorRenderText = $state<string>('');
+  // 테마 모드: 'system' | 'light' | 'dark'
+  let themeMode = $state<'system' | 'light' | 'dark'>('system');
 
-  // 괄호 하이라이팅 커스텀 테마 색상 상태 변수
-  let colorHlParen = $state<string>('');
-  let colorHlBracket = $state<string>('');
-  let colorHlBrace = $state<string>('');
+  // 현재 시스템 테마 추적
+  let systemIsDark = $state<boolean>(false);
+  let currentTheme = $derived(themeMode === 'system' ? (systemIsDark ? 'dark' : 'light') : themeMode);
+
+  // 설정창에서 편집 중인 테마
+  let editingTheme = $state<'light' | 'dark'>('light');
+
+  interface ThemeColors {
+    codeBg: string;
+    codeText: string;
+    string: string;
+    number: string;
+    comment: string;
+    guide: string;
+    renderBg: string;
+    renderText: string;
+    renderFontWeight: string;
+    paren: string;
+    bracket: string;
+    brace: string;
+  }
+
+  type ColorField = Exclude<keyof ThemeColors, 'renderFontWeight'>;
+  const hexColorRegex = /^#[0-9a-fA-F]{6}$/;
+
+  // 시스템 테마별 기본 강조 색상
+  function getSystemDefaultColors(isDark: boolean): ThemeColors {
+    return isDark ? {
+      renderBg: '#0a0a0b',
+      renderText: '#d6eaf0',
+      renderFontWeight: '400',
+      codeBg: '#1e293b',
+      codeText: '#38bdf8',
+      string: '#F3AF82',
+      number: '#dffe8b',
+      comment: '#64748b',
+      guide: '#334155',
+      paren: '#ECA7BC',
+      bracket: '#C87EBA',
+      brace: '#CD81E9'
+    } : {
+      renderBg: '#f8fafc',
+      renderText: '#0f172a',
+      renderFontWeight: '500',
+      codeBg: '#f1f5f9',
+      codeText: '#0284c7',
+      string: '#b91c1c',
+      number: '#d97706',
+      comment: '#475569',
+      guide: '#cbd5e1',
+      paren: '#a57800',
+      bracket: '#b31c62',
+      brace: '#097a70'
+    };
+  }
+
+  let lightColors = $state<ThemeColors>(getSystemDefaultColors(false));
+  let darkColors = $state<ThemeColors>(getSystemDefaultColors(true));
+
+  // 현재 적용되는 테마 색상
+  let activeColors = $derived(currentTheme === 'dark' ? darkColors : lightColors);
 
   // 설정창이 독립 윈도우로 떴는지 감지하는 상태
   let isSettingsWindow = $state<boolean>(false);
@@ -84,58 +145,55 @@
   let initialModalY = 0;
 
   const isBrowser = typeof window !== 'undefined';
+  let canPersistPreferences = $state<boolean>(false);
 
-  // 시스템 테마별 기본 강조 색상
-  function getSystemDefaultColors(isDark: boolean) {
-    return isDark ? {
-      renderBg: '#0a0a0b',
-      renderText: '#d6eaf0',
-      codeBg: '#1e293b',
-      codeText: '#38bdf8',
-      string: '#F3AF82',
-      number: '#dffe8b',
-      comment: '#64748b',
-      guide: '#334155',
-      paren: '#ECA7BC',
-      bracket: '#C87EBA',
-      brace: '#CD81E9'
-    } : {
-      renderBg: '#f8fafc',
-      renderText: '#0f172a',
-      codeBg: '#f1f5f9',
-      codeText: '#0284c7',
-      string: '#b91c1c',
-      number: '#d97706',
-      comment: '#475569',
-      guide: '#cbd5e1',
-      paren: '#a57800',
-      bracket: '#b31c62',
-      brace: '#097a70'
-    };
+  function hasTauriRuntime(): boolean {
+    if (!isBrowser) return false;
+    const runtimeWindow = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown };
+    return '__TAURI_INTERNALS__' in runtimeWindow || '__TAURI__' in runtimeWindow;
   }
+
+  // 시스템 테마 변경 감지
+  $effect(() => {
+    if (!isBrowser) return;
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    systemIsDark = mediaQuery.matches;
+    const listener = (e: MediaQueryListEvent) => systemIsDark = e.matches;
+    mediaQuery.addEventListener('change', listener);
+    return () => mediaQuery.removeEventListener('change', listener);
+  });
+
+  // body 클래스 업데이트
+  $effect(() => {
+    if (isBrowser) {
+      if (currentTheme === 'dark') {
+        document.body.classList.add('theme-dark');
+        document.body.classList.remove('theme-light');
+      } else {
+        document.body.classList.add('theme-light');
+        document.body.classList.remove('theme-dark');
+      }
+    }
+  });
 
   // 기본 색상 복원
   function resetColorsToDefault() {
     if (!isBrowser) return;
-    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const defaults = getSystemDefaultColors(isDark);
-    colorHlCodeBg = defaults.codeBg;
-    colorHlCodeText = defaults.codeText;
-    colorHlString = defaults.string;
-    colorHlNumber = defaults.number;
-    colorHlComment = defaults.comment;
-    colorIndentGuide = defaults.guide;
-    colorRenderBg = defaults.renderBg;
-    colorRenderText = defaults.renderText;
-    colorHlParen = defaults.paren;
-    colorHlBracket = defaults.bracket;
-    colorHlBrace = defaults.brace;
-    renderFontFamily = 'nanum-gothic';
+    if (editingTheme === 'dark') {
+      darkColors = getSystemDefaultColors(true);
+    } else {
+      lightColors = getSystemDefaultColors(false);
+    }
   }
 
   // 마운트 시 localStorage Preferences 로드
   $effect(() => {
     if (!isBrowser) return;
+
+    const savedThemeMode = localStorage.getItem('pref_theme_mode');
+    if (savedThemeMode === 'system' || savedThemeMode === 'light' || savedThemeMode === 'dark') {
+      themeMode = savedThemeMode;
+    }
 
     const savedSourceFontSize = localStorage.getItem('pref_source_font_size');
     if (savedSourceFontSize) sourceFontSize = parseInt(savedSourceFontSize, 10);
@@ -146,115 +204,115 @@
     const savedTabSize = localStorage.getItem('pref_tab_size');
     if (savedTabSize) tabSize = parseInt(savedTabSize, 10);
 
-    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const defaults = getSystemDefaultColors(isDark);
-
-    // 구버전 기본 다크모드 색상 마이그레이션 감지용
-    const oldDefaults = {
-      string: '#fb7185',
-      paren: '#ffd700',
-      bracket: '#da70d6',
-      brace: '#17aeae'
-    };
-
-    colorHlCodeBg = localStorage.getItem('pref_color_hl_code_bg') || defaults.codeBg;
-    colorHlCodeText = localStorage.getItem('pref_color_hl_code_text') || defaults.codeText;
-
-    const savedString = localStorage.getItem('pref_color_hl_string');
-    colorHlString = (!savedString || savedString === oldDefaults.string) ? defaults.string : savedString;
-
-    colorHlNumber = localStorage.getItem('pref_color_hl_number') || defaults.number;
-    colorHlComment = localStorage.getItem('pref_color_hl_comment') || defaults.comment;
-    colorIndentGuide = localStorage.getItem('pref_color_indent_guide') || defaults.guide;
-    colorRenderBg = localStorage.getItem('pref_color_render_bg') || defaults.renderBg;
-    colorRenderText = localStorage.getItem('pref_color_render_text') || defaults.renderText;
     renderFontFamily = localStorage.getItem('pref_render_font_family') || 'nanum-gothic';
 
-    const savedParen = localStorage.getItem('pref_color_hl_paren');
-    colorHlParen = (!savedParen || savedParen === oldDefaults.paren) ? defaults.paren : savedParen;
+    const loadColors = (isDark: boolean): ThemeColors => {
+      const prefix = isDark ? 'pref_dark_' : 'pref_light_';
+      const defaults = getSystemDefaultColors(isDark);
 
-    const savedBracket = localStorage.getItem('pref_color_hl_bracket');
-    colorHlBracket = (!savedBracket || savedBracket === oldDefaults.bracket) ? defaults.bracket : savedBracket;
+      // Migration from old keys (if new key doesn't exist but old key does, use old key once, or just fallback to default)
+      return {
+        codeBg: localStorage.getItem(`${prefix}codeBg`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_code_bg') : null) || defaults.codeBg,
+        codeText: localStorage.getItem(`${prefix}codeText`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_code_text') : null) || defaults.codeText,
+        string: localStorage.getItem(`${prefix}string`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_string') : null) || defaults.string,
+        number: localStorage.getItem(`${prefix}number`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_number') : null) || defaults.number,
+        comment: localStorage.getItem(`${prefix}comment`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_comment') : null) || defaults.comment,
+        guide: localStorage.getItem(`${prefix}guide`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_indent_guide') : null) || defaults.guide,
+        renderBg: localStorage.getItem(`${prefix}renderBg`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_render_bg') : null) || defaults.renderBg,
+        renderText: localStorage.getItem(`${prefix}renderText`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_render_text') : null) || defaults.renderText,
+        renderFontWeight: localStorage.getItem(`${prefix}renderFontWeight`) || defaults.renderFontWeight,
+        paren: localStorage.getItem(`${prefix}paren`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_paren') : null) || defaults.paren,
+        bracket: localStorage.getItem(`${prefix}bracket`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_bracket') : null) || defaults.bracket,
+        brace: localStorage.getItem(`${prefix}brace`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_brace') : null) || defaults.brace,
+      };
+    };
 
-    const savedBrace = localStorage.getItem('pref_color_hl_brace');
-    colorHlBrace = (!savedBrace || savedBrace === oldDefaults.brace) ? defaults.brace : savedBrace;
+    lightColors = loadColors(false);
+    darkColors = loadColors(true);
+
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        canPersistPreferences = true;
+      }, 0);
+    });
   });
 
   // 상태 변경 감지 자동 로컬스토리지 동기화
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_theme_mode', themeMode); });
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_source_font_size', sourceFontSize.toString()); });
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_font_size', renderFontSize.toString()); });
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_tab_size', tabSize.toString()); });
+  $effect(() => { if (isBrowser && canPersistPreferences && renderFontFamily) localStorage.setItem('pref_render_font_family', renderFontFamily); });
+
   $effect(() => {
-    if (isBrowser) localStorage.setItem('pref_source_font_size', sourceFontSize.toString());
-  });
-  $effect(() => {
-    if (isBrowser) localStorage.setItem('pref_render_font_size', renderFontSize.toString());
-  });
-  $effect(() => {
-    if (isBrowser) localStorage.setItem('pref_tab_size', tabSize.toString());
-  });
-  $effect(() => {
-    if (isBrowser && colorHlCodeBg) localStorage.setItem('pref_color_hl_code_bg', colorHlCodeBg);
-  });
-  $effect(() => {
-    if (isBrowser && colorHlCodeText) localStorage.setItem('pref_color_hl_code_text', colorHlCodeText);
-  });
-  $effect(() => {
-    if (isBrowser && colorHlString) localStorage.setItem('pref_color_hl_string', colorHlString);
-  });
-  $effect(() => {
-    if (isBrowser && colorHlNumber) localStorage.setItem('pref_color_hl_number', colorHlNumber);
-  });
-  $effect(() => {
-    if (isBrowser && colorHlComment) localStorage.setItem('pref_color_hl_comment', colorHlComment);
-  });
-  $effect(() => {
-    if (isBrowser && colorIndentGuide) localStorage.setItem('pref_color_indent_guide', colorIndentGuide);
-  });
-  $effect(() => {
-    if (isBrowser && colorRenderBg) localStorage.setItem('pref_color_render_bg', colorRenderBg);
-  });
-  $effect(() => {
-    if (isBrowser && colorRenderText) localStorage.setItem('pref_color_render_text', colorRenderText);
-  });
-  $effect(() => {
-    if (isBrowser && renderFontFamily) localStorage.setItem('pref_render_font_family', renderFontFamily);
-  });
-  $effect(() => {
-    if (isBrowser && colorHlParen) localStorage.setItem('pref_color_hl_paren', colorHlParen);
-  });
-  $effect(() => {
-    if (isBrowser && colorHlBracket) localStorage.setItem('pref_color_hl_bracket', colorHlBracket);
-  });
-  $effect(() => {
-    if (isBrowser && colorHlBrace) localStorage.setItem('pref_color_hl_brace', colorHlBrace);
+    if (!isBrowser || !canPersistPreferences) return;
+    Object.entries(lightColors).forEach(([key, value]) => localStorage.setItem(`pref_light_${key}`, value));
   });
 
-  // 마운트 시 독립 설정창 감지
   $effect(() => {
-    if (!isBrowser) return;
+    if (!isBrowser || !canPersistPreferences) return;
+    Object.entries(darkColors).forEach(([key, value]) => localStorage.setItem(`pref_dark_${key}`, value));
+  });
+
+  // 마운트 시 독립 설정창 감지 및 메인 창 종료 시퀀스
+  $effect(() => {
+    if (!isBrowser || !hasTauriRuntime()) return;
     const label = getCurrentWindow().label;
     isSettingsWindow = label === 'settings';
     if (isSettingsWindow) {
       activeSettingsTab = 'render';
+      getCurrentWindow().onCloseRequested((event) => {
+        event.preventDefault();
+        getCurrentWindow().hide();
+      });
+    } else if (label === 'main') {
+      let unlistenClose: (() => void) | undefined;
+      getCurrentWindow().onCloseRequested(async (event) => {
+        event.preventDefault();
+
+        // 이미 preventDefault를 호출할지 결정하는 시점이므로,
+        // 여기서 isDirty는 클로저로 최신 상태를 읽게 됩니다.
+        const dirty = untrack(() => isDirty);
+        if (dirty) {
+          const confirmDiscard = confirm("저장되지 않은 변경 사항이 있습니다. 정말 종료하시겠습니까?");
+          if (!confirmDiscard) {
+            return;
+          }
+        }
+        try {
+          const settingsWin = await WebviewWindow.getByLabel('settings');
+          if (settingsWin) {
+            await settingsWin.destroy();
+          }
+        } catch {}
+
+        await getCurrentWindow().destroy();
+      }).then(unlisten => {
+        unlistenClose = unlisten;
+      });
+      return () => {
+        if (unlistenClose) unlistenClose();
+      };
     }
   });
 
   // storage 변경 감지 핸들러 (창 간 실시간 동기화)
   function handleStorageChange(e: StorageEvent) {
     if (!e.key) return;
+    if (e.key === 'pref_theme_mode' && e.newValue && (e.newValue === 'system' || e.newValue === 'light' || e.newValue === 'dark')) themeMode = e.newValue;
     if (e.key === 'pref_source_font_size' && e.newValue) sourceFontSize = parseInt(e.newValue, 10);
     if (e.key === 'pref_render_font_size' && e.newValue) renderFontSize = parseInt(e.newValue, 10);
     if (e.key === 'pref_tab_size' && e.newValue) tabSize = parseInt(e.newValue, 10);
-    if (e.key === 'pref_color_hl_code_bg' && e.newValue) colorHlCodeBg = e.newValue;
-    if (e.key === 'pref_color_hl_code_text' && e.newValue) colorHlCodeText = e.newValue;
-    if (e.key === 'pref_color_hl_string' && e.newValue) colorHlString = e.newValue;
-    if (e.key === 'pref_color_hl_number' && e.newValue) colorHlNumber = e.newValue;
-    if (e.key === 'pref_color_hl_comment' && e.newValue) colorHlComment = e.newValue;
-    if (e.key === 'pref_color_indent_guide' && e.newValue) colorIndentGuide = e.newValue;
-    if (e.key === 'pref_color_render_bg' && e.newValue) colorRenderBg = e.newValue;
-    if (e.key === 'pref_color_render_text' && e.newValue) colorRenderText = e.newValue;
     if (e.key === 'pref_render_font_family' && e.newValue) renderFontFamily = e.newValue;
-    if (e.key === 'pref_color_hl_paren' && e.newValue) colorHlParen = e.newValue;
-    if (e.key === 'pref_color_hl_bracket' && e.newValue) colorHlBracket = e.newValue;
-    if (e.key === 'pref_color_hl_brace' && e.newValue) colorHlBrace = e.newValue;
+
+    if (e.key.startsWith('pref_light_') && e.newValue) {
+      const field = e.key.replace('pref_light_', '') as keyof ThemeColors;
+      lightColors[field] = e.newValue;
+    }
+    if (e.key.startsWith('pref_dark_') && e.newValue) {
+      const field = e.key.replace('pref_dark_', '') as keyof ThemeColors;
+      darkColors[field] = e.newValue;
+    }
   }
 
   $effect(() => {
@@ -264,6 +322,76 @@
       window.removeEventListener('storage', handleStorageChange);
     };
   });
+
+  function normalizeHexColor(value: string): string | null {
+    const trimmed = value.trim();
+    return hexColorRegex.test(trimmed) ? trimmed.toUpperCase() : null;
+  }
+
+  function getColorInputValue(value: string): string {
+    return normalizeHexColor(value) ?? '#000000';
+  }
+
+  function formatColorCode(value: string): string {
+    return normalizeHexColor(value) ?? (value.trim().toUpperCase() || '#000000');
+  }
+
+  function getReadableTextColor(value: string): string {
+    const hex = getColorInputValue(value).slice(1);
+    const red = parseInt(hex.slice(0, 2), 16);
+    const green = parseInt(hex.slice(2, 4), 16);
+    const blue = parseInt(hex.slice(4, 6), 16);
+
+    const toLinear = (channel: number) => {
+      const normalized = channel / 255;
+      return normalized <= 0.03928
+        ? normalized / 12.92
+        : Math.pow((normalized + 0.055) / 1.055, 2.4);
+    };
+
+    const luminance = 0.2126 * toLinear(red) + 0.7152 * toLinear(green) + 0.0722 * toLinear(blue);
+    return luminance > 0.179 ? '#000000' : '#ffffff';
+  }
+
+  function getColorCodeStyle(value: string): string {
+    const backgroundColor = getColorInputValue(value);
+    return `background-color: ${backgroundColor}; color: ${getReadableTextColor(backgroundColor)};`;
+  }
+
+  function openColorPicker(inputId: string) {
+    if (!isBrowser) return;
+    const colorInput = document.getElementById(inputId) as (HTMLInputElement & { showPicker?: () => void }) | null;
+    if (!colorInput) return;
+
+    colorInput.focus({ preventScroll: true });
+
+    try {
+      if (typeof colorInput.showPicker === 'function') {
+        colorInput.showPicker();
+      } else {
+        colorInput.click();
+      }
+    } catch {
+      colorInput.click();
+    }
+  }
+
+  function handleColorTextPointerDown(inputId: string, event: PointerEvent) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    openColorPicker(inputId);
+  }
+
+  function handleColorInput(colors: ThemeColors, field: ColorField, event: Event) {
+    const target = event.currentTarget as HTMLInputElement;
+    colors[field] = target.value.toUpperCase();
+  }
+
+  function handleColorCodeKeydown(inputId: string, event: KeyboardEvent) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    openColorPicker(inputId);
+  }
 
 
 
@@ -303,7 +431,7 @@
     if (!isDraggingSettings) return;
     const deltaX = e.clientX - dragStartX;
     const deltaY = e.clientY - dragStartY;
-    
+
     settingsX = Math.max(10, Math.min(window.innerWidth - 120, initialModalX + deltaX));
     settingsY = Math.max(10, Math.min(window.innerHeight - 60, initialModalY + deltaY));
   }
@@ -325,10 +453,49 @@
     tokens: Token[];
   }
 
-  function parseLine(lineText: string, id: number, tabSize: number): ParsedLine {
+  function annotateTokenOffsets(tokens: Token[], lineStartOffset: number) {
+    let cursorOffset = 0;
+
+    const visit = (token: Token) => {
+      if (token.children && token.children.length > 0) {
+        token.children.forEach(visit);
+        return;
+      }
+
+      const text = token.text || '';
+      if (token.type === 'color') {
+        token.start = lineStartOffset + cursorOffset;
+        token.end = token.start + text.length;
+      }
+      cursorOffset += text.length;
+    };
+
+    tokens.forEach(visit);
+  }
+
+  function getLineStartOffsets(content: string): number[] {
+    const offsets = [0];
+    const newlineRegex = /\r?\n/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = newlineRegex.exec(content)) !== null) {
+      offsets.push(match.index + match[0].length);
+    }
+
+    return offsets;
+  }
+
+  function parseLine(
+    lineText: string,
+    id: number,
+    tabSize: number,
+    comments: CommentSyntax | null,
+    state: TokenizeState | null,
+    lineStartOffset: number
+  ): { line: ParsedLine; state: TokenizeState | null } {
     const match = lineText.match(/^([ \t]*)/);
     const indentStr = match ? match[0] : "";
-    
+
     let totalSpaces = 0;
     for (let j = 0; j < indentStr.length; j++) {
       if (indentStr[j] === '\t') {
@@ -340,18 +507,40 @@
 
     const indentLevel = Math.floor(totalSpaces / tabSize);
     const extraIndentSpaces = totalSpaces % tabSize;
+    const tokenized = tokenizeLineWithState(lineText, { comments, state });
+    annotateTokenOffsets(tokenized.tokens, lineStartOffset);
 
     return {
-      id,
-      indentLevel,
-      extraIndentSpaces,
-      tokens: tokenizeLine(lineText)
+      line: {
+        id,
+        indentLevel,
+        extraIndentSpaces,
+        tokens: tokenized.tokens
+      },
+      state: tokenized.state
     };
+  }
+
+  function parseLines(
+    lines: string[],
+    tabSize: number,
+    comments: CommentSyntax | null,
+    lineStartOffsets: number[]
+  ): ParsedLine[] {
+    let state: TokenizeState | null = null;
+
+    return lines.map((lineText, idx) => {
+      const parsed = parseLine(lineText, idx, tabSize, comments, state, lineStartOffsets[idx] ?? 0);
+      state = parsed.state;
+      return parsed.line;
+    });
   }
 
   // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
   let rawLines = $derived(fileContent.split(/\r?\n/));
-  let parsedLines = $derived(rawLines.map((lineText, idx) => parseLine(lineText, idx, tabSize)));
+  let lineStartOffsets = $derived(getLineStartOffsets(fileContent));
+  let activeCommentSyntax = $derived(getCommentSyntaxForPath(filePath || fileName));
+  let parsedLines = $derived(parseLines(rawLines, tabSize, activeCommentSyntax, lineStartOffsets));
 
   // 가상화 범위 계산
   let startLine = $derived(Math.max(0, Math.floor(scrollTop / measuredLineHeight) - 8));
@@ -405,6 +594,7 @@
 
   // 창 제목 동기화 (Rune Effect)
   $effect(() => {
+    if (!hasTauriRuntime()) return;
     const appWindow = getCurrentWindow();
     const title = `${isDirty ? "*" : ""}${fileName} - 메모장`;
     appWindow.setTitle(title).catch(() => {});
@@ -414,17 +604,21 @@
   function updateCursorPosition() {
     if (!textareaEl) return;
     const pos = textareaEl.selectionStart;
+    caretOffset = pos;
     const textBeforeCursor = fileContent.substring(0, pos);
     const linesBefore = textBeforeCursor.split(/\r?\n/);
     cursorLine = linesBefore.length;
     cursorCol = linesBefore[linesBefore.length - 1].length + 1;
+    updateEditorCaretColor(pos);
   }
 
   // 변경 감지
-  function handleInput() {
+  function handleInput(event: Event) {
+    fileContent = (event.target as HTMLTextAreaElement).value;
     isDirty = true;
     errorMsg = null;
     updateCursorPosition();
+    reconcileInlineColorPickerState();
   }
 
   // 새 파일 생성
@@ -438,8 +632,9 @@
     fileContent = "";
     isDirty = false;
     errorMsg = null;
+    clearInlineColorPickerState();
     closeAllDropdown();
-    
+
     // 스크롤 및 선택 영역 초기화
     scrollTop = 0;
     scrollLeft = 0;
@@ -484,6 +679,7 @@
         const content = await invoke<string>("read_file_content", { path: selected });
         fileContent = content;
         isDirty = false;
+        clearInlineColorPickerState();
       }
     } catch (err: any) {
       errorMsg = typeof err === "string" ? err : err.message || String(err);
@@ -530,7 +726,7 @@
       }
 
       await invoke("write_file_content", { path: targetPath, content: fileContent });
-      
+
       filePath = targetPath;
       const parts = targetPath.split(/[/\\]/);
       fileName = parts[parts.length - 1] || targetPath;
@@ -576,10 +772,8 @@
 
   // 앱 종료
   function handleExit() {
-    if (isDirty) {
-      const confirmDiscard = confirm("저장되지 않은 변경 사항이 있습니다. 정말 종료하시겠습니까?");
-      if (!confirmDiscard) return;
-    }
+    // onCloseRequested 이벤트 리스너가 저장 여부를 묻고
+    // 설정창도 함께 닫아주므로 여기서 바로 close만 호출합니다.
     getCurrentWindow().close().catch(() => {});
   }
 
@@ -674,20 +868,21 @@
     const start = textareaEl.selectionStart;
     const end = textareaEl.selectionEnd;
     const now = new Date();
-    
+
     const timeStr = now.toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit', hour12: true });
     const dateStr = now.toLocaleDateString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit' })
       .replace(/\. /g, '-').replace(/\./g, '');
-      
+
     const formatted = `${timeStr} ${dateStr}`;
-    
+
     const before = fileContent.substring(0, start);
     const after = fileContent.substring(end);
     fileContent = before + formatted + after;
     isDirty = true;
-    
+    reconcileInlineColorPickerState();
+
     closeAllDropdown();
-    
+
     setTimeout(() => {
       if (textareaEl) {
         textareaEl.focus();
@@ -720,15 +915,16 @@
     const start = textareaEl.selectionStart;
     const end = textareaEl.selectionEnd;
     if (start === end) return;
-    
+
     const selectedText = fileContent.substring(start, end);
     await navigator.clipboard.writeText(selectedText);
-    
+
     const before = fileContent.substring(0, start);
     const after = fileContent.substring(end);
     fileContent = before + after;
     isDirty = true;
-    
+    reconcileInlineColorPickerState();
+
     closeAllDropdown();
     setTimeout(() => {
       if (textareaEl) {
@@ -744,7 +940,7 @@
     const start = textareaEl.selectionStart;
     const end = textareaEl.selectionEnd;
     if (start === end) return;
-    
+
     const selectedText = fileContent.substring(start, end);
     await navigator.clipboard.writeText(selectedText);
     closeAllDropdown();
@@ -756,12 +952,13 @@
       const text = await navigator.clipboard.readText();
       const start = textareaEl.selectionStart;
       const end = textareaEl.selectionEnd;
-      
+
       const before = fileContent.substring(0, start);
       const after = fileContent.substring(end);
       fileContent = before + text + after;
       isDirty = true;
-      
+      reconcileInlineColorPickerState();
+
       closeAllDropdown();
       setTimeout(() => {
         if (textareaEl) {
@@ -791,7 +988,8 @@
       fileContent = before + after;
     }
     isDirty = true;
-    
+    reconcileInlineColorPickerState();
+
     closeAllDropdown();
     setTimeout(() => {
       if (textareaEl) {
@@ -816,15 +1014,15 @@
   // 마우스 가로 휠 및 Shift + 마우스 세로 휠 가로 스크롤 지원
   function handleWheel(e: WheelEvent) {
     if (!textareaEl) return;
-    
+
     wheelDebug = `dX:${e.deltaX.toFixed(0)}, dY:${e.deltaY.toFixed(0)}, shift:${e.shiftKey}`;
-    
+
     // deltaX가 존재하면 가로 휠 입력이 있는 것임 (macOS 및 일반 브라우저 환경 등)
     if (e.deltaX !== 0) {
       // 일반 브라우저 환경에서 가로 휠 동작 시 스크롤 속도를 보정하기 위해 배율(x3) 적용
       textareaEl.scrollLeft += e.deltaX * 3;
       e.preventDefault();
-    } 
+    }
     // Shift 키를 누르고 세로 휠을 돌릴 때 가로 스크롤 매핑
     else if (e.shiftKey && e.deltaY !== 0) {
       textareaEl.scrollLeft += e.deltaY;
@@ -842,33 +1040,35 @@
   // passive: false 리스너로 등록하여 preventDefault() 오동작 차단 및 Rust 네이티브 가로 휠 이벤트 통합
   $effect(() => {
     if (!textareaEl) return;
-    
+
     const onWheelNative = (e: WheelEvent) => {
       handleWheel(e);
     };
 
     textareaEl.addEventListener('wheel', onWheelNative, { passive: false });
-    
+
     // Windows WebView2에서는 가로 휠 조작 시 브라우저 내 wheel 이벤트의 deltaX가 아예 0이 되는 버그가 있습니다.
     // 이를 우회하기 위해 Rust 백엔드에서 WM_MOUSEHWHEEL 메시지를 후킹하여 가로 휠 델타를 직접 수신받습니다.
-    const unlistenPromise = listen<number>("native-horizontal-wheel", (event: TauriEvent<number>) => {
-      if (!textareaEl) return;
-      const delta = event.payload;
-      // OS의 delta 값(보통 120 또는 -120)을 받아 가로 스크롤에 직접 반영
-      // 윈도우 OS의 가로 스크롤 한 틱 단위가 대개 120이므로, 120px 만큼 스크롤됩니다.
-      textareaEl.scrollLeft += delta;
-      scrollTop = textareaEl.scrollTop;
-      scrollLeft = textareaEl.scrollLeft;
-      
-      // 디버그 텍스트 갱신
-      wheelDebug = `Native dX: ${delta}`;
-    });
-    
+    const unlistenPromise = hasTauriRuntime()
+      ? listen<number>("native-horizontal-wheel", (event: TauriEvent<number>) => {
+          if (!textareaEl) return;
+          const delta = event.payload;
+          // OS의 delta 값(보통 120 또는 -120)을 받아 가로 스크롤에 직접 반영
+          // 윈도우 OS의 가로 스크롤 한 틱 단위가 대개 120이므로, 120px 만큼 스크롤됩니다.
+          textareaEl.scrollLeft += delta;
+          scrollTop = textareaEl.scrollTop;
+          scrollLeft = textareaEl.scrollLeft;
+
+          // 디버그 텍스트 갱신
+          wheelDebug = `Native dX: ${delta}`;
+        })
+      : null;
+
     return () => {
       if (textareaEl) {
         textareaEl.removeEventListener('wheel', onWheelNative);
       }
-      unlistenPromise.then((unlisten: UnlistenFn) => unlisten());
+      unlistenPromise?.then((unlisten: UnlistenFn) => unlisten());
     };
   });
 
@@ -891,6 +1091,7 @@
       insertDateTime();
     }
   }
+
   const depthColorCount = 5;
 
   function getTokenClass(token: Token): string {
@@ -901,46 +1102,319 @@
     return classes.join(' ');
   }
 
+  let inlineColorPickerEl = $state<HTMLInputElement | null>(null);
+  let inlineColorPickerValue = $state<string>('#000000');
+  let pendingInlineColorReplacement = $state<{ start: number; end: number } | null>(null);
+  let suppressNextEditorClickAfterColorOpen = false;
+  const parkedInlineColorPickerPosition = { left: -10000, top: -10000 };
+  let inlineColorPickerPosition = $state<{ left: number; top: number }>({ ...parkedInlineColorPickerPosition });
+  const hexColorInContentRegex = /#[0-9a-fA-F]{6}(?![0-9a-zA-Z_])/g;
+
+  function setInlineColorPickerPosition(position: { left: number; top: number }) {
+    inlineColorPickerPosition = position;
+    if (!inlineColorPickerEl) return;
+    inlineColorPickerEl.style.left = `${position.left}px`;
+    inlineColorPickerEl.style.top = `${position.top}px`;
+  }
+
+  function parkInlineColorPickerAnchor() {
+    setInlineColorPickerPosition({ ...parkedInlineColorPickerPosition });
+  }
+
+  function clearInlineColorPickerState() {
+    pendingInlineColorReplacement = null;
+    parkInlineColorPickerAnchor();
+  }
+
+  function reconcileInlineColorPickerState() {
+    if (!pendingInlineColorReplacement) return;
+    const { start, end } = pendingInlineColorReplacement;
+    const currentValue = fileContent.slice(start, end);
+
+    if (!hexColorRegex.test(currentValue)) {
+      clearInlineColorPickerState();
+    }
+  }
+
+  function findColorCodeAtOffset(text: string, offset: number): { start: number; end: number; value: string } | null {
+    hexColorInContentRegex.lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = hexColorInContentRegex.exec(text)) !== null) {
+      const start = match.index;
+      const end = start + match[0].length;
+      if (offset >= start && offset < end) {
+        return { start, end, value: match[0] };
+      }
+    }
+
+    return null;
+  }
+
+  function findColorCodeAtCaretOffset(text: string, offset: number): { start: number; end: number; value: string } | null {
+    hexColorInContentRegex.lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = hexColorInContentRegex.exec(text)) !== null) {
+      const start = match.index;
+      const end = start + match[0].length;
+      if (offset > start && offset < end) {
+        return { start, end, value: match[0] };
+      }
+    }
+
+    return null;
+  }
+
+  function updateEditorCaretColor(offset: number) {
+    const activeColor = isRenderMode ? findColorCodeAtCaretOffset(fileContent, offset) : null;
+    editorCaretColor = activeColor
+      ? getReadableTextColor(activeColor.value)
+      : 'var(--color-render-text, var(--text-color))';
+  }
+
+  function getColorTokenElement(range: { start: number; end: number }) {
+    if (!isBrowser) return null;
+    return document.querySelector(
+      `.hl-color[data-color-start="${range.start}"][data-color-end="${range.end}"]`
+    ) as HTMLElement | null;
+  }
+
+  function findColorCodeAtPoint(clientX: number, clientY: number): { start: number; end: number; value: string } | null {
+    if (!isBrowser || !isRenderMode) return null;
+    const elements = document.querySelectorAll<HTMLElement>('.hl-color[data-color-start][data-color-end]');
+
+    for (const element of elements) {
+      const rect = element.getBoundingClientRect();
+      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) continue;
+
+      const start = Number(element.dataset.colorStart);
+      const end = Number(element.dataset.colorEnd);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+
+      return {
+        start,
+        end,
+        value: element.textContent || fileContent.slice(start, end)
+      };
+    }
+
+    return null;
+  }
+
+  function clamp(value: number, min: number, max: number) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function positionInlineColorPicker(range: { start: number; end: number }) {
+    if (!editorViewportEl) return;
+
+    const tokenElement = getColorTokenElement(range);
+    const viewportRect = editorViewportEl.getBoundingClientRect();
+    const tokenRect = tokenElement?.getBoundingClientRect();
+    const pickerAnchorSize = 1;
+    const gap = 6;
+    const margin = 8;
+
+    if (!tokenRect) {
+      setInlineColorPickerPosition({ left: margin, top: margin });
+      return;
+    }
+
+    const target = {
+      left: tokenRect.left - viewportRect.left,
+      top: tokenRect.top - viewportRect.top,
+      width: tokenRect.width,
+      height: tokenRect.height
+    };
+    const viewportWidth = Math.max(viewportRect.width, pickerAnchorSize + margin * 2);
+    const viewportHeight = Math.max(viewportRect.height, pickerAnchorSize + margin * 2);
+    const maxLeft = viewportWidth - pickerAnchorSize - margin;
+    const maxTop = viewportHeight - pickerAnchorSize - margin;
+
+    const candidates = [
+      { left: target.left + target.width + gap, top: target.top + target.height / 2 },
+      { left: target.left - gap, top: target.top + target.height / 2 },
+      { left: target.left, top: target.top + target.height + gap },
+      { left: target.left, top: target.top - gap }
+    ].map((candidate) => ({
+      left: clamp(candidate.left, margin, maxLeft),
+      top: clamp(candidate.top, margin, maxTop)
+    }));
+
+    const positioned = candidates[0];
+    setInlineColorPickerPosition({
+      left: positioned.left,
+      top: positioned.top
+    });
+  }
+
+  function openInlineColorPicker(range: { start: number; end: number; value: string }) {
+    pendingInlineColorReplacement = { start: range.start, end: range.end };
+    const nextValue = getColorInputValue(range.value);
+    inlineColorPickerValue = nextValue;
+    if (inlineColorPickerEl) {
+      inlineColorPickerEl.value = nextValue;
+    }
+    positionInlineColorPicker(range);
+
+    inlineColorPickerEl?.focus({ preventScroll: true });
+
+    try {
+      if (typeof inlineColorPickerEl?.showPicker === 'function') {
+        inlineColorPickerEl.showPicker();
+      } else {
+        inlineColorPickerEl?.click();
+      }
+    } catch {
+      inlineColorPickerEl?.click();
+    }
+  }
+
+  function handleEditorPointerDown(event: PointerEvent) {
+    if (!isRenderMode || !textareaEl || event.button !== 0) return;
+
+    const range = findColorCodeAtPoint(event.clientX, event.clientY);
+    if (!range) return;
+
+    event.preventDefault();
+    suppressNextEditorClickAfterColorOpen = true;
+    textareaEl.focus({ preventScroll: true });
+    textareaEl.selectionStart = range.start;
+    textareaEl.selectionEnd = range.end;
+    updateCursorPosition();
+    openInlineColorPicker(range);
+  }
+
+  function handleEditorClick(event: MouseEvent) {
+    updateCursorPosition();
+    if (suppressNextEditorClickAfterColorOpen) {
+      suppressNextEditorClickAfterColorOpen = false;
+      return;
+    }
+    if (!isRenderMode || !textareaEl) return;
+    if (textareaEl.selectionStart !== textareaEl.selectionEnd) return;
+
+    const range = findColorCodeAtPoint(event.clientX, event.clientY)
+      ?? findColorCodeAtOffset(fileContent, textareaEl.selectionStart);
+    if (range) {
+      openInlineColorPicker(range);
+    } else {
+      clearInlineColorPickerState();
+    }
+  }
+
+  function handleEditorMouseMove(event: MouseEvent) {
+    editorCursorStyle = findColorCodeAtPoint(event.clientX, event.clientY) ? 'pointer' : 'text';
+  }
+
+  function handleEditorMouseLeave() {
+    editorCursorStyle = 'text';
+  }
+
+  function handleInlineColorPickerInput(event: Event) {
+    if (!pendingInlineColorReplacement) return;
+    const target = event.currentTarget as HTMLInputElement;
+    const nextValue = target.value.toUpperCase();
+    const { start, end } = pendingInlineColorReplacement;
+
+    fileContent = `${fileContent.slice(0, start)}${nextValue}${fileContent.slice(end)}`;
+    inlineColorPickerValue = nextValue;
+    pendingInlineColorReplacement = { start, end: start + nextValue.length };
+    isDirty = true;
+    updateEditorCaretColor(caretOffset);
+
+    requestAnimationFrame(() => {
+      if (!textareaEl) return;
+      textareaEl.selectionStart = start;
+      textareaEl.selectionEnd = start + nextValue.length;
+      updateCursorPosition();
+      if (pendingInlineColorReplacement) {
+        positionInlineColorPicker({ start, end: start + nextValue.length });
+      }
+    });
+  }
+
+  function handleInlineColorPickerChange() {
+    clearInlineColorPickerState();
+  }
+
+  function toggleRenderMode() {
+    isRenderMode = !isRenderMode;
+    editorCursorStyle = 'text';
+    clearInlineColorPickerState();
+    requestAnimationFrame(() => updateCursorPosition());
+  }
 </script>
 
 <svelte:window onkeydown={handleKeyDown} onclick={closeAllDropdown} />
 
-{#snippet renderToken(token: Token)}{#if token.children && token.children.length > 0}<span class={getTokenClass(token)}>{#each token.children as child}{@render renderToken(child)}{/each}</span>{:else}<span class={getTokenClass(token)}>{token.text || ''}</span>{/if}{/snippet}
+{#snippet renderToken(token: Token)}{#if token.children && token.children.length > 0}<span class={getTokenClass(token)}>{#each token.children as child}{@render renderToken(child)}{/each}</span>{:else if token.type === 'color'}<span class={getTokenClass(token)} style={getColorCodeStyle(token.text || '')} data-color-start={token.start} data-color-end={token.end}>{token.text || ''}</span>{:else}<span class={getTokenClass(token)}>{token.text || ''}</span>{/if}{/snippet}
+
+{#snippet colorSettingRow(id: string, labelText: string, colors: ThemeColors, field: ColorField)}
+  {@const pickerId = `${id}-picker`}
+  <div class="settings-row color-row">
+    <label for={id}>{labelText}</label>
+    <div class="color-picker-wrapper">
+      <input
+        id={pickerId}
+        class="color-picker-native"
+        type="color"
+        value={getColorInputValue(colors[field])}
+        oninput={(event) => handleColorInput(colors, field, event)}
+        tabindex="-1"
+        aria-hidden="true"
+      />
+      <input
+        id={id}
+        type="text"
+        readonly
+        class="color-text-input"
+        value={formatColorCode(colors[field])}
+        style={getColorCodeStyle(colors[field])}
+        onpointerdown={(event) => handleColorTextPointerDown(pickerId, event)}
+        onkeydown={(event) => handleColorCodeKeydown(pickerId, event)}
+        aria-label={labelText}
+      />
+    </div>
+  </div>
+{/snippet}
 
 {#if isSettingsWindow}
   <div class="settings-window-container" style="
-    --color-hl-code-bg: {colorHlCodeBg};
-    --color-hl-code-text: {colorHlCodeText};
-    --color-hl-string: {colorHlString};
-    --color-hl-number: {colorHlNumber};
-    --color-hl-comment: {colorHlComment};
-    --color-indent-guide: {colorIndentGuide};
-    --color-render-bg: {colorRenderBg};
-    --color-render-text: {colorRenderText};
+    --color-hl-code-bg: {activeColors.codeBg};
+    --color-hl-code-text: {activeColors.codeText};
+    --color-hl-string: {activeColors.string};
+    --color-hl-number: {activeColors.number};
+    --color-hl-comment: {activeColors.comment};
+    --color-indent-guide: {activeColors.guide};
+    --color-render-bg: {activeColors.renderBg};
+    --color-render-text: {activeColors.renderText};
     --font-render-family: {currentRenderFontFamilyCSS};
-    --color-hl-paren: {colorHlParen};
-    --color-hl-bracket: {colorHlBracket};
-    --color-hl-brace: {colorHlBrace};
+    --font-render-weight: {activeColors.renderFontWeight};
+    --color-hl-paren: {activeColors.paren};
+    --color-hl-bracket: {activeColors.bracket};
+    --color-hl-brace: {activeColors.brace};
   ">
     <div class="settings-body window-mode">
       <!-- 좌측 네비게이션 메뉴 -->
       <aside class="settings-sidebar">
-        <button 
-          class="sidebar-item" 
-          class:active={activeSettingsTab === 'source'} 
+        <button
+          class="sidebar-item"
+          class:active={activeSettingsTab === 'source'}
           onclick={() => activeSettingsTab = 'source'}
         >
-          📝 원본 모드
+          <FileCode2 size={16} class="tab-icon"/> 원본 모드
         </button>
-        <button 
-          class="sidebar-item" 
-          class:active={activeSettingsTab === 'render'} 
+        <button
+          class="sidebar-item"
+          class:active={activeSettingsTab === 'render'}
           onclick={() => activeSettingsTab = 'render'}
         >
-          🎨 렌더 모드
+          <PaintRoller size={16} class="tab-icon"/> 렌더 모드
         </button>
       </aside>
-      
+
       <!-- 우측 메인 콘텐츠 영역 -->
       <div class="settings-main">
         {#if activeSettingsTab === 'source'}
@@ -949,12 +1423,12 @@
             <div class="settings-row">
               <label for="source-font-size-input-window">글꼴 크기 (pt)</label>
               <div class="size-control">
-                <input 
+                <input
                   id="source-font-size-input-window"
-                  type="number" 
-                  min="6" 
-                  max="72" 
-                  bind:value={sourceFontSize} 
+                  type="number"
+                  min="6"
+                  max="72"
+                  bind:value={sourceFontSize}
                   class="font-size-num"
                 />
                 <button class="adjust-btn" onclick={() => sourceFontSize = Math.max(6, sourceFontSize - 1)}>-</button>
@@ -968,24 +1442,24 @@
             <div class="settings-row">
               <label for="render-font-size-input-window">글꼴 크기 (pt)</label>
               <div class="size-control">
-                <input 
+                <input
                   id="render-font-size-input-window"
-                  type="number" 
-                  min="6" 
-                  max="72" 
-                  bind:value={renderFontSize} 
+                  type="number"
+                  min="6"
+                  max="72"
+                  bind:value={renderFontSize}
                   class="font-size-num"
                 />
                 <button class="adjust-btn" onclick={() => renderFontSize = Math.max(6, renderFontSize - 1)}>-</button>
                 <button class="adjust-btn" onclick={() => renderFontSize = Math.min(72, renderFontSize + 1)}>+</button>
               </div>
             </div>
-            
+
             <div class="settings-row">
               <label for="tab-size-select-window">들여쓰기 너비 (공백 개수)</label>
               <select id="tab-size-select-window" bind:value={tabSize} class="tab-size-select">
                 <option value={2}>2</option>
-                <option value={4}>4 (기본값)</option>
+                <option value={4}>4</option>
                 <option value={8}>8</option>
               </select>
             </div>
@@ -993,115 +1467,95 @@
             <div class="settings-row">
               <label for="render-font-family-select-window">렌더 모드 글꼴</label>
               <select id="render-font-family-select-window" bind:value={renderFontFamily} class="tab-size-select" style="width: 195px; text-align-last: center;">
-                <optgroup label="기본형">
-                  <option value="nanum-gothic">나눔고딕 (기본값)</option>
-                  <option value="notepad">기본 글꼴 (Notepad)</option>
+                <optgroup label="기본">
+                  <option value="nanum-gothic">나눔고딕</option>
+                  <option value="notepad">기본 글꼴</option>
                 </optgroup>
-                <optgroup label="고정폭(Monospace) 글꼴">
-                  <option value="jetbrains-mono">JetBrains Mono (추천)</option>
-                  <option value="d2coding">D2Coding (한글 추천)</option>
-                  <option value="nanum-gothic-coding">나눔고딕 코딩 (선명함)</option>
-                  <option value="fira-code">Fira Code (코딩 특화)</option>
-                  <option value="roboto-mono">Roboto Mono (모던함)</option>
-                  <option value="cascadia-mono">Cascadia Mono (윈도우11)</option>
-                  <option value="consolas">Consolas (기본 고정폭)</option>
+                <optgroup label="고정폭 (Monospace)">
+                  <option value="jetbrains-mono">JetBrains Mono</option>
+                  <option value="d2coding">D2Coding</option>
+                  <option value="nanum-gothic-coding">나눔고딕 코딩</option>
+                  <option value="fira-code">Fira Code</option>
+                  <option value="roboto-mono">Roboto Mono</option>
+                  <option value="cascadia-mono">Cascadia Mono</option>
+                  <option value="consolas">Consolas</option>
                 </optgroup>
               </select>
             </div>
           </div>
-          
+
           <div class="settings-section">
-            <h4 class="section-title">시각적 테마 색상 설정</h4>
-            
-            <div class="settings-row color-row">
-              <label for="color-render-bg-window">렌더 모드 배경색</label>
-              <div class="color-picker-wrapper">
-                <input id="color-render-bg-window" type="color" bind:value={colorRenderBg} />
-                <input type="text" class="color-text-input" bind:value={colorRenderBg} placeholder="#000000" />
+            <div class="settings-row" style="margin-bottom: 0.75rem;">
+              <h4 class="section-title">시각적 테마 색상 설정</h4>
+
+              <div class="theme-edit-toggle">
+                <button
+                  class="theme-toggle-btn"
+                  class:active={editingTheme === 'light'}
+                  onclick={() => editingTheme = 'light'}
+                >
+                  <Sun size={16} class="tab-icon"/> 라이트
+                </button>
+                <button
+                  class="theme-toggle-btn"
+                  class:active={editingTheme === 'dark'}
+                  onclick={() => editingTheme = 'dark'}
+                >
+                  <Moon size={16} class="tab-icon"/> 다크
+                </button>
               </div>
             </div>
 
-            <div class="settings-row color-row">
-              <label for="color-render-text-window">렌더 모드 기본 글자 색상</label>
-              <div class="color-picker-wrapper">
-                <input id="color-render-text-window" type="color" bind:value={colorRenderText} />
-                <input type="text" class="color-text-input" bind:value={colorRenderText} placeholder="#000000" />
-              </div>
-            </div>
+            {#if editingTheme === 'dark'}
+              {@render colorSettingRow('color-render-bg-window-dark', '렌더 모드 배경색', darkColors, 'renderBg')}
+              {@render colorSettingRow('color-render-text-window-dark', '렌더 모드 기본 글자 색상', darkColors, 'renderText')}
 
-            <div class="settings-row color-row">
-              <label for="color-hl-code-bg-window">코드 백그라운드 색상</label>
-              <div class="color-picker-wrapper">
-                <input id="color-hl-code-bg-window" type="color" bind:value={colorHlCodeBg} />
-                <input type="text" class="color-text-input" bind:value={colorHlCodeBg} placeholder="#000000" />
+              <div class="settings-row color-row">
+                <label for="render-font-weight-window-dark">렌더 모드 폰트 굵기</label>
+                <select id="render-font-weight-window-dark" bind:value={darkColors.renderFontWeight} class="tab-size-select" style="width: 140px;">
+                  <option value="300">Light</option>
+                  <option value="400">Normal</option>
+                  <option value="500">Medium</option>
+                  <option value="600">Semi Bold</option>
+                  <option value="700">Bold</option>
+                </select>
               </div>
-            </div>
-            
-            <div class="settings-row color-row">
-              <label for="color-hl-code-text-window">코드 글자 색상</label>
-              <div class="color-picker-wrapper">
-                <input id="color-hl-code-text-window" type="color" bind:value={colorHlCodeText} />
-                <input type="text" class="color-text-input" bind:value={colorHlCodeText} placeholder="#000000" />
-              </div>
-            </div>
-            
-            <div class="settings-row color-row">
-              <label for="color-hl-string-window">문자열 색상 ('...', "...")</label>
-              <div class="color-picker-wrapper">
-                <input id="color-hl-string-window" type="color" bind:value={colorHlString} />
-                <input type="text" class="color-text-input" bind:value={colorHlString} placeholder="#000000" />
-              </div>
-            </div>
-            
-            <div class="settings-row color-row">
-              <label for="color-hl-number-window">숫자 색상 (0-9)</label>
-              <div class="color-picker-wrapper">
-                <input id="color-hl-number-window" type="color" bind:value={colorHlNumber} />
-                <input type="text" class="color-text-input" bind:value={colorHlNumber} placeholder="#000000" />
-              </div>
-            </div>
-            
-            <div class="settings-row color-row">
-              <label for="color-hl-comment-window">주석 색상 (//, #)</label>
-              <div class="color-picker-wrapper">
-                <input id="color-hl-comment-window" type="color" bind:value={colorHlComment} />
-                <input type="text" class="color-text-input" bind:value={colorHlComment} placeholder="#000000" />
-              </div>
-            </div>
 
-            <!-- 소대중괄호 색상 추가 -->
-            <div class="settings-row color-row">
-              <label for="color-hl-paren-window">소괄호 색상 ( )</label>
-              <div class="color-picker-wrapper">
-                <input id="color-hl-paren-window" type="color" bind:value={colorHlParen} />
-                <input type="text" class="color-text-input" bind:value={colorHlParen} placeholder="#000000" />
-              </div>
-            </div>
+              {@render colorSettingRow('color-hl-code-bg-window-dark', '코드 백그라운드 색상', darkColors, 'codeBg')}
+              {@render colorSettingRow('color-hl-code-text-window-dark', '코드 글자 색상', darkColors, 'codeText')}
+              {@render colorSettingRow('color-hl-string-window-dark', `문자열 색상 ('...', "...")`, darkColors, 'string')}
+              {@render colorSettingRow('color-hl-number-window-dark', '숫자 색상 (0-9)', darkColors, 'number')}
+              {@render colorSettingRow('color-hl-comment-window-dark', '파일 형식별 주석 색상', darkColors, 'comment')}
+              {@render colorSettingRow('color-hl-paren-window-dark', '소괄호 색상 ( )', darkColors, 'paren')}
+              {@render colorSettingRow('color-hl-bracket-window-dark', '대괄호 색상 [ ]', darkColors, 'bracket')}
+              {@render colorSettingRow('color-hl-brace-window-dark', '중괄호 색상 { }', darkColors, 'brace')}
+              {@render colorSettingRow('color-indent-guide-window-dark', '들여쓰기 가이드라인 색상', darkColors, 'guide')}
+            {:else}
+              {@render colorSettingRow('color-render-bg-window-light', '렌더 모드 배경색', lightColors, 'renderBg')}
+              {@render colorSettingRow('color-render-text-window-light', '렌더 모드 기본 글자 색상', lightColors, 'renderText')}
 
-            <div class="settings-row color-row">
-              <label for="color-hl-bracket-window">대괄호 색상 [ ]</label>
-              <div class="color-picker-wrapper">
-                <input id="color-hl-bracket-window" type="color" bind:value={colorHlBracket} />
-                <input type="text" class="color-text-input" bind:value={colorHlBracket} placeholder="#000000" />
+              <div class="settings-row color-row">
+                <label for="render-font-weight-window-light">렌더 모드 폰트 굵기</label>
+                <select id="render-font-weight-window-light" bind:value={lightColors.renderFontWeight} class="tab-size-select" style="width: 140px;">
+                  <option value="300">Light</option>
+                  <option value="400">Normal</option>
+                  <option value="500">Medium</option>
+                  <option value="600">Semi Bold</option>
+                  <option value="700">Bold</option>
+                </select>
               </div>
-            </div>
 
-            <div class="settings-row color-row">
-              <label for="color-hl-brace-window">중괄호 색상 &#123; &#125;</label>
-              <div class="color-picker-wrapper">
-                <input id="color-hl-brace-window" type="color" bind:value={colorHlBrace} />
-                <input type="text" class="color-text-input" bind:value={colorHlBrace} placeholder="#000000" />
-              </div>
-            </div>
-            
-            <div class="settings-row color-row">
-              <label for="color-indent-guide-window">들여쓰기 가이드라인 색상</label>
-              <div class="color-picker-wrapper">
-                <input id="color-indent-guide-window" type="color" bind:value={colorIndentGuide} />
-                <input type="text" class="color-text-input" bind:value={colorIndentGuide} placeholder="#000000" />
-              </div>
-            </div>
-            
+              {@render colorSettingRow('color-hl-code-bg-window-light', '코드 백그라운드 색상', lightColors, 'codeBg')}
+              {@render colorSettingRow('color-hl-code-text-window-light', '코드 글자 색상', lightColors, 'codeText')}
+              {@render colorSettingRow('color-hl-string-window-light', `문자열 색상 ('...', "...")`, lightColors, 'string')}
+              {@render colorSettingRow('color-hl-number-window-light', '숫자 색상 (0-9)', lightColors, 'number')}
+              {@render colorSettingRow('color-hl-comment-window-light', '파일 형식별 주석 색상', lightColors, 'comment')}
+              {@render colorSettingRow('color-hl-paren-window-light', '소괄호 색상 ( )', lightColors, 'paren')}
+              {@render colorSettingRow('color-hl-bracket-window-light', '대괄호 색상 [ ]', lightColors, 'bracket')}
+              {@render colorSettingRow('color-hl-brace-window-light', '중괄호 색상 { }', lightColors, 'brace')}
+              {@render colorSettingRow('color-indent-guide-window-light', '들여쓰기 가이드라인 색상', lightColors, 'guide')}
+            {/if}
+
             <div class="settings-action-row">
               <button class="reset-colors-btn" onclick={resetColorsToDefault}>
                 기본 색상으로 복원
@@ -1114,25 +1568,26 @@
   </div>
 {:else}
   <div class="app-container" style="
-    --color-hl-code-bg: {colorHlCodeBg};
-    --color-hl-code-text: {colorHlCodeText};
-    --color-hl-string: {colorHlString};
-    --color-hl-number: {colorHlNumber};
-    --color-hl-comment: {colorHlComment};
-    --color-indent-guide: {colorIndentGuide};
-    --color-render-bg: {colorRenderBg};
-    --color-render-text: {colorRenderText};
+    --color-hl-code-bg: {activeColors.codeBg};
+    --color-hl-code-text: {activeColors.codeText};
+    --color-hl-string: {activeColors.string};
+    --color-hl-number: {activeColors.number};
+    --color-hl-comment: {activeColors.comment};
+    --color-indent-guide: {activeColors.guide};
+    --color-render-bg: {activeColors.renderBg};
+    --color-render-text: {activeColors.renderText};
     --font-render-family: {currentRenderFontFamilyCSS};
-    --color-hl-paren: {colorHlParen};
-    --color-hl-bracket: {colorHlBracket};
-    --color-hl-brace: {colorHlBrace};
+    --font-render-weight: {activeColors.renderFontWeight};
+    --color-hl-paren: {activeColors.paren};
+    --color-hl-bracket: {activeColors.bracket};
+    --color-hl-brace: {activeColors.brace};
   ">
     <!-- 메뉴바 영역 -->
     <nav class="menu-bar">
       <div class="menu-left">
         <div class="menu-item-container">
-          <button 
-            class="menu-trigger" 
+          <button
+            class="menu-trigger"
             class:active={openDropdown === 'file'}
             onclick={(e) => toggleDropdown('file', e)}
             onmouseenter={() => handleMouseEnter('file')}
@@ -1167,8 +1622,8 @@
         </div>
 
         <div class="menu-item-container">
-          <button 
-            class="menu-trigger" 
+          <button
+            class="menu-trigger"
             class:active={openDropdown === 'edit'}
             onclick={(e) => toggleDropdown('edit', e)}
             onmouseenter={() => handleMouseEnter('edit')}
@@ -1223,21 +1678,40 @@
 
       <!-- 우측 설정 톱니바퀴 및 렌더 모드 토글 버튼 -->
       <div class="menu-right">
-        <button 
+        <button
+          class="theme-mode-toggle"
+          onclick={() => {
+            if (themeMode === 'system') themeMode = systemIsDark ? 'light' : 'dark';
+            else themeMode = themeMode === 'light' ? 'dark' : 'light';
+          }}
+          title="테마 모드 변경"
+        >
+          {#if currentTheme === 'dark'}
+            <Moon size={18} />
+          {:else}
+            <Sun size={18} />
+          {/if}
+        </button>
+
+        <button
           class="render-mode-toggle"
           class:active={isRenderMode}
-          onclick={() => isRenderMode = !isRenderMode}
+          onclick={toggleRenderMode}
           title={isRenderMode ? "원본 모드로 전환" : "렌더 모드로 전환"}
         >
-          {isRenderMode ? "🎨" : "📝"}
+          {#if isRenderMode}
+            <PaintRoller size={18} />
+          {:else}
+            <FileCode2 size={18} />
+          {/if}
         </button>
-        
-        <button 
-          class="settings-trigger" 
-          onclick={handleSettingsTrigger} 
+
+        <button
+          class="settings-trigger"
+          onclick={handleSettingsTrigger}
           title="설정"
         >
-          ⚙️
+          <Settings size={18} />
         </button>
       </div>
     </nav>
@@ -1251,8 +1725,8 @@
             <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
               {#each Array(endLine - startLine + 1) as _, idx}
                 {@const lineIdx = startLine + idx}
-                <div 
-                  class="gutter-line-number" 
+                <div
+                  class="gutter-line-number"
                   style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt;"
                 >
                   {lineIdx + 1}
@@ -1263,8 +1737,8 @@
         {/if}
 
         <!-- 에디터 영역 뷰포트 -->
-        <div 
-          class="editor-viewport" 
+        <div
+          class="editor-viewport"
           bind:this={editorViewportEl}
         >
           <!-- 렌더 모드 Backdrop -->
@@ -1285,15 +1759,29 @@
           <textarea
             bind:this={textareaEl}
             class="editor-textarea"
-            style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize};"
+            style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode ? editorCaretColor : 'var(--text-color)'}; cursor: {isRenderMode ? editorCursorStyle : 'text'};"
             bind:value={fileContent}
             oninput={handleInput}
             onscroll={handleScroll}
+            onpointerdown={handleEditorPointerDown}
             onkeyup={updateCursorPosition}
-            onclick={updateCursorPosition}
+            onclick={handleEditorClick}
+            onmousemove={handleEditorMouseMove}
+            onmouseleave={handleEditorMouseLeave}
             onfocus={updateCursorPosition}
             spellcheck="false"
           ></textarea>
+          <input
+            bind:this={inlineColorPickerEl}
+            class="color-picker-native inline-color-picker-native"
+            type="color"
+            value={inlineColorPickerValue}
+            style="left: {inlineColorPickerPosition.left}px; top: {inlineColorPickerPosition.top}px;"
+            oninput={handleInlineColorPickerInput}
+            onchange={handleInlineColorPickerChange}
+            tabindex="-1"
+            aria-hidden="true"
+          />
         </div>
       </div>
     </main>
@@ -1320,7 +1808,7 @@
     /* Windows 11 Fluent Notepad Light/Dark CSS variables */
     --font-notepad: "Consolas", "Courier New", "Malgun Gothic", monospace;
     --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif;
-    
+
     /* 기본은 시스템 다크/라이트 자동 지원 */
     --bg-window: #f3f3f3;
     --bg-editor: #ffffff;
@@ -1332,7 +1820,7 @@
     --text-muted: #5f5f5f;
     --accent-color: #0078d4;
     --shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
-    
+
     --bg-modal: #ffffff;
     --bg-overlay: rgba(0, 0, 0, 0.2);
 
@@ -1347,32 +1835,30 @@
     --bg-gutter: #f9f9f9;
   }
 
-  @media (prefers-color-scheme: dark) {
-    :global(:root) {
-      --bg-window: #1e1e1e;
-      --bg-editor: #1b1b1b;
-      --bg-menu-hover: #2d2d2d;
-      --bg-menu-active: #323232;
-      --bg-dropdown: #2c2c2c;
-      --border-color: #2c2c2c;
-      --text-color: #e3e3e3;
-      --text-muted: #9f9f9f;
-      --accent-color: #0078d4;
-      --shadow-menu: 0 4px 16px rgba(0, 0, 0, 0.25), 0 2px 4px rgba(0, 0, 0, 0.15);
-      
-      --bg-modal: #2c2c2c;
-      --bg-overlay: rgba(0, 0, 0, 0.4);
+  :global(body.theme-dark) {
+    --bg-window: #1e1e1e;
+    --bg-editor: #1b1b1b;
+    --bg-menu-hover: #2d2d2d;
+    --bg-menu-active: #323232;
+    --bg-dropdown: #2c2c2c;
+    --border-color: #2c2c2c;
+    --text-color: #e3e3e3;
+    --text-muted: #9f9f9f;
+    --accent-color: #0078d4;
+    --shadow-menu: 0 4px 16px rgba(0, 0, 0, 0.25), 0 2px 4px rgba(0, 0, 0, 0.15);
 
-      /* 다크모드 하이라이팅 색상 */
-      --color-hl-code-bg: rgba(86, 156, 214, 0.15);
-      --color-hl-code-text: #4fc1ff;
-      --color-hl-string: #ce9178;
-      --color-hl-number: #b5cea8;
-      --color-hl-comment: #6a9955;
-      --color-indent-guide: rgba(255, 255, 255, 0.08);
-      --color-gutter-text: #858585;
-      --bg-gutter: #1b1b1b;
-    }
+    --bg-modal: #2c2c2c;
+    --bg-overlay: rgba(0, 0, 0, 0.4);
+
+    /* 다크모드 하이라이팅 색상 */
+    --color-hl-code-bg: rgba(86, 156, 214, 0.15);
+    --color-hl-code-text: #4fc1ff;
+    --color-hl-string: #ce9178;
+    --color-hl-number: #b5cea8;
+    --color-hl-comment: #6a9955;
+    --color-indent-guide: rgba(255, 255, 255, 0.08);
+    --color-gutter-text: #858585;
+    --bg-gutter: #1b1b1b;
   }
 
   /* 렌더 모드 토큰 색상 스타일 */
@@ -1386,6 +1872,13 @@
   }
   :global(.hl-number) {
     color: var(--color-hl-number);
+  }
+  :global(.hl-color) {
+    border-radius: 2px;
+    box-shadow: inset 0 0 0 1px #9ca3af;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    cursor: pointer;
   }
   :global(.hl-comment) {
     color: var(--color-hl-comment);
@@ -1418,7 +1911,7 @@
     color: var(--color-hl-code-text);
   }
 
-  .render-mode-toggle {
+  .render-mode-toggle, .theme-mode-toggle {
     background: transparent;
     border: none;
     color: var(--text-color);
@@ -1433,9 +1926,41 @@
     align-items: center;
     justify-content: center;
   }
-  
-  .render-mode-toggle:hover, .render-mode-toggle.active {
+
+  .render-mode-toggle:hover, .render-mode-toggle.active,
+  .theme-mode-toggle:hover {
     background-color: var(--bg-menu-hover);
+  }
+
+  .theme-edit-toggle {
+    display: flex;
+    gap: 4px;
+    background-color: var(--bg-window);
+    padding: 2px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+  }
+
+  .theme-toggle-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-color);
+    padding: 4px 12px;
+    font-size: 0.8rem;
+    border-radius: 4px;
+    cursor: pointer;
+    outline: none;
+    transition: background 0.1s;
+  }
+
+  .theme-toggle-btn:hover {
+    background-color: var(--bg-menu-hover);
+  }
+
+  .theme-toggle-btn.active {
+    background-color: var(--bg-editor);
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
   }
 
   .tab-size-select {
@@ -1679,7 +2204,7 @@
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: subpixel-antialiased;
     -moz-osx-font-smoothing: auto;
-    font-weight: normal;
+    font-weight: var(--font-render-weight, normal);
   }
 
   .guide-line {
@@ -1730,7 +2255,7 @@
     color: transparent;
     caret-color: var(--color-render-text, var(--text-color));
     font-family: var(--font-render-family, var(--font-notepad));
-    font-weight: normal;
+    font-weight: var(--font-render-weight, normal);
   }
 
   .render-mode .editor-viewport {
@@ -1892,33 +2417,82 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    position: relative;
   }
 
-  .color-picker-wrapper input[type="color"] {
-    border: 1px solid var(--border-color);
+  .color-picker-native {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .inline-color-picker-native {
+    width: 1px;
+    height: 1px;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
     padding: 0;
-    width: 28px;
-    height: 28px;
-    cursor: pointer;
-    border-radius: 4px;
-    background: none;
+    border: 0;
+    background: transparent;
+    color: transparent;
+    pointer-events: none;
+    opacity: 0;
+    outline: none;
+    appearance: none;
+    -webkit-appearance: none;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(100%);
+    transform: scale(0);
+    transform-origin: top left;
+  }
+
+  .inline-color-picker-native::-webkit-color-swatch-wrapper,
+  .inline-color-picker-native::-webkit-color-swatch {
+    width: 0;
+    height: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
   }
 
   .color-text-input {
-    width: 80px;
-    padding: 0.25rem 0.4rem;
-    border: 1px solid var(--border-color);
-    background-color: var(--bg-editor);
-    color: var(--text-color);
+    width: 92px;
+    min-height: 28px;
+    padding: 0;
+    border: 1px solid #9ca3af;
     border-radius: 4px;
-    font-family: Consolas, monospace;
+    font-family: Consolas, "Courier New", monospace;
     font-size: 0.8rem;
+    font-weight: 600;
+    line-height: 26px;
+    text-align: center;
     outline: none;
     text-transform: uppercase;
+    cursor: pointer;
+    box-sizing: border-box;
+    transition: box-shadow 0.1s, transform 0.1s;
+  }
+
+  .color-text-input:hover {
+    box-shadow: 0 0 0 1px rgba(156, 163, 175, 0.45);
   }
 
   .color-text-input:focus {
-    border-color: var(--accent-color);
+    border-color: #9ca3af;
+    outline: 2px solid var(--accent-color);
+    outline-offset: 2px;
+  }
+
+  .color-text-input:active {
+    transform: translateY(1px);
+  }
+
+  .color-text-input::selection {
+    background: rgba(255, 255, 255, 0.35);
   }
 
   .settings-action-row {

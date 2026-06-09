@@ -1,17 +1,174 @@
 export interface Token {
-  type: 'text' | 'string' | 'code' | 'number' | 'comment' | 'paren' | 'bracket' | 'brace';
+  type: 'text' | 'string' | 'code' | 'number' | 'comment' | 'color' | 'paren' | 'bracket' | 'brace';
   text?: string;
   children?: Token[];
   depth?: number;
+  start?: number;
+  end?: number;
 }
 
-function parseNumbers(text: string): Token[] {
+export interface LineCommentRule {
+  marker: string;
+  anchored?: boolean;
+  caseInsensitive?: boolean;
+  requiresWordBoundaryAfter?: boolean;
+}
+
+export interface BlockCommentRule {
+  start: string;
+  end: string;
+  caseInsensitive?: boolean;
+}
+
+export interface CommentSyntax {
+  line?: LineCommentRule[];
+  block?: BlockCommentRule[];
+}
+
+export interface TokenizeState {
+  blockCommentEnd: string;
+  blockCommentCaseInsensitive?: boolean;
+}
+
+export interface TokenizeLineResult {
+  tokens: Token[];
+  state: TokenizeState | null;
+}
+
+const hexColorAtStartRegex = /^#[0-9a-fA-F]{6}$/;
+const asciiWordRegex = /[0-9a-zA-Z_]/;
+const wordLikeCharRegex = /[\p{L}\p{M}\p{N}]/u;
+const whitespaceRegex = /\s/u;
+const depthTrackedTypes = new Set<Token['type']>(['string', 'code', 'paren', 'bracket', 'brace']);
+
+const cBlockComment: BlockCommentRule = { start: '/*', end: '*/' };
+const htmlBlockComment: BlockCommentRule = { start: '<!--', end: '-->' };
+const powershellBlockComment: BlockCommentRule = { start: '<#', end: '#>' };
+const luaBlockComment: BlockCommentRule = { start: '--[[', end: ']]' };
+
+const slashLineComment: LineCommentRule = { marker: '//' };
+const hashLineComment: LineCommentRule = { marker: '#' };
+const semicolonLineComment: LineCommentRule = { marker: ';', anchored: true };
+const iniHashLineComment: LineCommentRule = { marker: '#', anchored: true };
+const dashLineComment: LineCommentRule = { marker: '--' };
+
+const cFamilyCommentSyntax: CommentSyntax = {
+  line: [slashLineComment],
+  block: [cBlockComment]
+};
+
+const hashCommentSyntax: CommentSyntax = {
+  line: [hashLineComment]
+};
+
+const commentSyntaxByExtension: Record<string, CommentSyntax> = {
+  bash: hashCommentSyntax,
+  bat: {
+    line: [
+      { marker: 'rem', anchored: true, caseInsensitive: true, requiresWordBoundaryAfter: true },
+      { marker: '::', anchored: true }
+    ]
+  },
+  c: cFamilyCommentSyntax,
+  cmd: {
+    line: [
+      { marker: 'rem', anchored: true, caseInsensitive: true, requiresWordBoundaryAfter: true },
+      { marker: '::', anchored: true }
+    ]
+  },
+  cfg: {
+    line: [semicolonLineComment, iniHashLineComment]
+  },
+  cpp: cFamilyCommentSyntax,
+  cs: cFamilyCommentSyntax,
+  css: {
+    block: [cBlockComment]
+  },
+  go: cFamilyCommentSyntax,
+  h: cFamilyCommentSyntax,
+  html: {
+    block: [htmlBlockComment]
+  },
+  ini: {
+    line: [semicolonLineComment, iniHashLineComment]
+  },
+  java: cFamilyCommentSyntax,
+  js: cFamilyCommentSyntax,
+  jsonc: cFamilyCommentSyntax,
+  jsx: cFamilyCommentSyntax,
+  kt: cFamilyCommentSyntax,
+  lua: {
+    line: [dashLineComment],
+    block: [luaBlockComment]
+  },
+  md: {
+    block: [htmlBlockComment]
+  },
+  php: {
+    line: [slashLineComment, hashLineComment],
+    block: [cBlockComment]
+  },
+  ps1: {
+    line: [hashLineComment],
+    block: [powershellBlockComment]
+  },
+  py: hashCommentSyntax,
+  r: hashCommentSyntax,
+  rb: hashCommentSyntax,
+  rs: cFamilyCommentSyntax,
+  sh: hashCommentSyntax,
+  sql: {
+    line: [dashLineComment],
+    block: [cBlockComment]
+  },
+  svg: {
+    block: [htmlBlockComment]
+  },
+  swift: cFamilyCommentSyntax,
+  toml: hashCommentSyntax,
+  ts: cFamilyCommentSyntax,
+  tsx: cFamilyCommentSyntax,
+  vim: {
+    line: [{ marker: '"' }]
+  },
+  xml: {
+    block: [htmlBlockComment]
+  },
+  yaml: hashCommentSyntax,
+  yml: hashCommentSyntax,
+  zsh: hashCommentSyntax
+};
+
+export function getCommentSyntaxForPath(path: string | null | undefined): CommentSyntax | null {
+  if (!path) return null;
+
+  const normalized = path.split(/[?#]/)[0].toLowerCase();
+  const fileName = normalized.split(/[/\\]/).pop() || normalized;
+  const match = fileName.match(/\.([^.]+)$/);
+  const extension = match?.[1] || '';
+
+  return commentSyntaxByExtension[extension] || null;
+}
+
+function getHexColorAt(text: string, index: number): string | null {
+  const candidate = text.slice(index, index + 7);
+  if (!hexColorAtStartRegex.test(candidate)) return null;
+
+  const nextChar = text[index + 7];
+  if (nextChar && asciiWordRegex.test(nextChar)) return null;
+
+  return candidate;
+}
+
+function parseInlineText(text: string, includeNumbers = true): Token[] {
   const tokens: Token[] = [];
-  const numRegex = /\b\d+(?:\.\d+)?\b/g;
+  const inlineRegex = includeNumbers
+    ? /#[0-9a-fA-F]{6}(?![0-9a-zA-Z_])|\b\d+(?:\.\d+)?\b/g
+    : /#[0-9a-fA-F]{6}(?![0-9a-zA-Z_])/g;
   let lastIndex = 0;
   let match;
 
-  while ((match = numRegex.exec(text)) !== null) {
+  while ((match = inlineRegex.exec(text)) !== null) {
     const matchIndex = match.index;
     const matchText = match[0];
 
@@ -19,8 +176,8 @@ function parseNumbers(text: string): Token[] {
       tokens.push({ type: 'text', text: text.substring(lastIndex, matchIndex) });
     }
 
-    tokens.push({ type: 'number', text: matchText });
-    lastIndex = numRegex.lastIndex;
+    tokens.push({ type: matchText.startsWith('#') ? 'color' : 'number', text: matchText });
+    lastIndex = inlineRegex.lastIndex;
   }
 
   if (lastIndex < text.length) {
@@ -30,24 +187,26 @@ function parseNumbers(text: string): Token[] {
   return tokens;
 }
 
-function processNumbersInTree(tokens: Token[]) {
+function processInlineTextInTree(tokens: Token[]) {
   for (let j = 0; j < tokens.length; j++) {
     const token = tokens[j];
     if (token.type === 'text' && token.text) {
-      const parsed = parseNumbers(token.text);
-      if (parsed.length > 1 || (parsed.length === 1 && parsed[0].type === 'number')) {
+      const parsed = parseInlineText(token.text);
+      if (parsed.length > 1 || (parsed.length === 1 && parsed[0].type !== 'text')) {
         tokens.splice(j, 1, ...parsed);
         j += parsed.length - 1;
       }
+    } else if (token.type === 'comment' && token.text) {
+      const parsed = parseInlineText(token.text, false);
+      if (parsed.some((child) => child.type === 'color')) {
+        token.children = parsed;
+        delete token.text;
+      }
     } else if (token.children && token.children.length > 0) {
-      processNumbersInTree(token.children);
+      processInlineTextInTree(token.children);
     }
   }
 }
-
-const wordLikeCharRegex = /[\p{L}\p{M}\p{N}]/u;
-const whitespaceRegex = /\s/u;
-const depthTrackedTypes = new Set<Token['type']>(['string', 'code', 'paren', 'bracket', 'brace']);
 
 function isWordLikeChar(char: string | undefined): boolean {
   return !!char && wordLikeCharRegex.test(char);
@@ -139,10 +298,70 @@ function assignDepths(tokens: Token[], parentDepth = -1) {
   }
 }
 
-export function tokenizeLine(line: string): Token[] {
+function startsWithMarker(line: string, index: number, marker: string, caseInsensitive?: boolean): boolean {
+  const segment = line.slice(index, index + marker.length);
+  return caseInsensitive
+    ? segment.toLowerCase() === marker.toLowerCase()
+    : segment === marker;
+}
+
+function indexOfMarker(line: string, marker: string, startIndex: number, caseInsensitive?: boolean): number {
+  if (caseInsensitive) {
+    return line.toLowerCase().indexOf(marker.toLowerCase(), startIndex);
+  }
+
+  return line.indexOf(marker, startIndex);
+}
+
+function findLineCommentRule(
+  line: string,
+  index: number,
+  rules: LineCommentRule[] | undefined,
+  firstNonWhitespaceIndex: number
+): LineCommentRule | null {
+  if (!rules) return null;
+
+  for (const rule of rules) {
+    if (rule.anchored && index !== firstNonWhitespaceIndex) continue;
+    if (!startsWithMarker(line, index, rule.marker, rule.caseInsensitive)) continue;
+
+    if (rule.requiresWordBoundaryAfter) {
+      const nextChar = line[index + rule.marker.length];
+      if (nextChar && !isWhitespaceChar(nextChar)) continue;
+    }
+
+    return rule;
+  }
+
+  return null;
+}
+
+function findBlockCommentRule(line: string, index: number, rules: BlockCommentRule[] | undefined): BlockCommentRule | null {
+  if (!rules) return null;
+
+  for (const rule of rules) {
+    if (startsWithMarker(line, index, rule.start, rule.caseInsensitive)) {
+      return rule;
+    }
+  }
+
+  return null;
+}
+
+function finalizeTokens(root: Token): Token[] {
+  const finalTokens = root.children || [];
+  processInlineTextInTree(finalTokens);
+  assignDepths(finalTokens);
+
+  return finalTokens;
+}
+
+export function tokenizeLineWithState(line: string, options: TokenizeLineOptions = {}): TokenizeLineResult {
   const root: Token = { type: 'text', children: [] };
   const stack: { token: Token; openChar?: string; closeIndex?: number }[] = [{ token: root }];
-
+  const commentSyntax = options.comments || null;
+  const firstNonWhitespaceIndex = getNextNonWhitespaceIndex(line, 0);
+  let nextState: TokenizeState | null = options.state || null;
   let i = 0;
   const len = line.length;
 
@@ -162,6 +381,10 @@ export function tokenizeLine(line: string): Token[] {
 
   function addChar(char: string) {
     appendChild(getTop().token, { type: 'text', text: char });
+  }
+
+  function addComment(text: string) {
+    appendChild(getTop().token, { type: 'comment', text });
   }
 
   function pushContainer(type: Token['type'], openChar: string, closeIndex?: number) {
@@ -213,6 +436,21 @@ export function tokenizeLine(line: string): Token[] {
   }
 
   while (i < len) {
+    if (nextState) {
+      const endIndex = indexOfMarker(line, nextState.blockCommentEnd, i, nextState.blockCommentCaseInsensitive);
+
+      if (endIndex === -1) {
+        addComment(line.substring(i));
+        i = len;
+        break;
+      }
+
+      addComment(line.substring(i, endIndex + nextState.blockCommentEnd.length));
+      i = endIndex + nextState.blockCommentEnd.length;
+      nextState = null;
+      continue;
+    }
+
     const char = line[i];
     const nextChar = line[i + 1];
     const top = getTop();
@@ -241,10 +479,40 @@ export function tokenizeLine(line: string): Token[] {
       continue;
     }
 
-    if (!activeQuoteFrame && ((char === '/' && nextChar === '/') || char === '#')) {
-      appendChild(top.token, { type: 'comment', text: line.substring(i) });
-      i = len;
-      break;
+    const hexColor = getHexColorAt(line, i);
+    if (hexColor) {
+      appendChild(top.token, { type: 'color', text: hexColor });
+      i += hexColor.length;
+      continue;
+    }
+
+    if (!activeQuoteFrame) {
+      const blockRule = findBlockCommentRule(line, i, commentSyntax?.block);
+      if (blockRule) {
+        const endSearchIndex = i + blockRule.start.length;
+        const endIndex = indexOfMarker(line, blockRule.end, endSearchIndex, blockRule.caseInsensitive);
+
+        if (endIndex === -1) {
+          addComment(line.substring(i));
+          nextState = {
+            blockCommentEnd: blockRule.end,
+            blockCommentCaseInsensitive: blockRule.caseInsensitive
+          };
+          i = len;
+          break;
+        }
+
+        addComment(line.substring(i, endIndex + blockRule.end.length));
+        i = endIndex + blockRule.end.length;
+        continue;
+      }
+
+      const lineRule = findLineCommentRule(line, i, commentSyntax?.line, firstNonWhitespaceIndex);
+      if (lineRule) {
+        addComment(line.substring(i));
+        i = len;
+        break;
+      }
     }
 
     if (char === '"' || char === "'" || char === '`') {
@@ -302,9 +570,18 @@ export function tokenizeLine(line: string): Token[] {
   }
 
   flattenUnclosedContainers();
-  const finalTokens = root.children || [];
-  processNumbersInTree(finalTokens);
-  assignDepths(finalTokens);
 
-  return finalTokens;
+  return {
+    tokens: finalizeTokens(root),
+    state: nextState
+  };
+}
+
+export interface TokenizeLineOptions {
+  comments?: CommentSyntax | null;
+  state?: TokenizeState | null;
+}
+
+export function tokenizeLine(line: string, options: TokenizeLineOptions = {}): Token[] {
+  return tokenizeLineWithState(line, options).tokens;
 }
