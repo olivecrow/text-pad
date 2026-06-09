@@ -21,6 +21,7 @@
   let isDirty = $state<boolean>(false);
   let isLoading = $state<boolean>(false);
   let errorMsg = $state<string | null>(null);
+  let isHandlingCloseRequest = false;
   let hasFocusedEditorOnStartup = false;
 
   // 커서 상태 추적
@@ -146,6 +147,17 @@
 
   const isBrowser = typeof window !== 'undefined';
   let canPersistPreferences = $state<boolean>(false);
+  const textSaveFilters = [
+    {
+      name: "Text Files",
+      extensions: ["txt"]
+    }
+  ];
+  const closeSaveButtons = {
+    yes: "저장",
+    no: "저장 안 함",
+    cancel: "취소"
+  };
 
   function hasTauriRuntime(): boolean {
     if (!isBrowser) return false;
@@ -270,23 +282,23 @@
       getCurrentWindow().onCloseRequested(async (event) => {
         event.preventDefault();
 
-        // 이미 preventDefault를 호출할지 결정하는 시점이므로,
-        // 여기서 isDirty는 클로저로 최신 상태를 읽게 됩니다.
-        const dirty = untrack(() => isDirty);
-        if (dirty) {
-          const confirmDiscard = confirm("저장되지 않은 변경 사항이 있습니다. 정말 종료하시겠습니까?");
-          if (!confirmDiscard) {
-            return;
-          }
-        }
+        if (isHandlingCloseRequest) return;
+        isHandlingCloseRequest = true;
         try {
-          const settingsWin = await WebviewWindow.getByLabel('settings');
-          if (settingsWin) {
-            await settingsWin.destroy();
-          }
-        } catch {}
+          const canClose = await shouldCloseMainWindow();
+          if (!canClose) return;
 
-        await getCurrentWindow().destroy();
+          try {
+            const settingsWin = await WebviewWindow.getByLabel('settings');
+            if (settingsWin) {
+              await settingsWin.destroy();
+            }
+          } catch {}
+
+          await getCurrentWindow().destroy();
+        } finally {
+          isHandlingCloseRequest = false;
+        }
       }).then(unlisten => {
         unlistenClose = unlisten;
       });
@@ -295,6 +307,90 @@
       };
     }
   });
+
+  async function shouldCloseMainWindow(): Promise<boolean> {
+    const dirty = untrack(() => isDirty);
+    if (!dirty) return true;
+
+    closeAllDropdown();
+
+    let result: string;
+    try {
+      result = await message("변경 내용을 저장하시겠습니까?", {
+        title: "저장 확인",
+        kind: "warning",
+        buttons: closeSaveButtons
+      });
+    } catch (err: any) {
+      errorMsg = typeof err === "string" ? err : err.message || String(err);
+      return false;
+    }
+
+    if (result === closeSaveButtons.yes || result === "Yes") {
+      return runSaveOperation(saveCurrentFile);
+    }
+
+    if (result === closeSaveButtons.no || result === "No") {
+      return true;
+    }
+
+    return false;
+  }
+
+  async function runSaveOperation(saveOperation: () => Promise<boolean>): Promise<boolean> {
+    try {
+      isLoading = true;
+      errorMsg = null;
+      closeAllDropdown();
+      return await saveOperation();
+    } catch (err: any) {
+      errorMsg = typeof err === "string" ? err : err.message || String(err);
+      return false;
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  function applySavedPath(targetPath: string) {
+    filePath = targetPath;
+    const parts = targetPath.split(/[/\\]/);
+    fileName = parts[parts.length - 1] || targetPath;
+    isDirty = false;
+  }
+
+  async function writeCurrentContent(targetPath: string) {
+    await invoke("write_file_content", { path: targetPath, content: fileContent });
+    applySavedPath(targetPath);
+  }
+
+  async function saveCurrentFile(): Promise<boolean> {
+    let targetPath = filePath;
+
+    if (!targetPath) {
+      const selected = await save({
+        filters: textSaveFilters
+      });
+      if (!selected) {
+        return false;
+      }
+      targetPath = selected;
+    }
+
+    await writeCurrentContent(targetPath);
+    return true;
+  }
+
+  async function saveCurrentFileAs(): Promise<boolean> {
+    const selected = await save({
+      filters: textSaveFilters
+    });
+    if (!selected) {
+      return false;
+    }
+
+    await writeCurrentContent(selected);
+    return true;
+  }
 
   // storage 변경 감지 핸들러 (창 간 실시간 동기화)
   function handleStorageChange(e: StorageEvent) {
@@ -702,72 +798,12 @@
 
   // 파일 저장
   async function handleSaveFile() {
-    try {
-      isLoading = true;
-      errorMsg = null;
-      closeAllDropdown();
-
-      let targetPath = filePath;
-
-      if (!targetPath) {
-        const selected = await save({
-          filters: [
-            {
-              name: "Text Files",
-              extensions: ["txt"]
-            }
-          ]
-        });
-        if (!selected) {
-          isLoading = false;
-          return;
-        }
-        targetPath = selected;
-      }
-
-      await invoke("write_file_content", { path: targetPath, content: fileContent });
-
-      filePath = targetPath;
-      const parts = targetPath.split(/[/\\]/);
-      fileName = parts[parts.length - 1] || targetPath;
-      isDirty = false;
-    } catch (err: any) {
-      errorMsg = typeof err === "string" ? err : err.message || String(err);
-    } finally {
-      isLoading = false;
-    }
+    await runSaveOperation(saveCurrentFile);
   }
 
   // 다른 이름으로 저장
   async function handleSaveAsFile() {
-    try {
-      isLoading = true;
-      errorMsg = null;
-      closeAllDropdown();
-
-      const selected = await save({
-        filters: [
-          {
-            name: "Text Files",
-            extensions: ["txt"]
-          }
-        ]
-      });
-      if (!selected) {
-        isLoading = false;
-        return;
-      }
-
-      await invoke("write_file_content", { path: selected, content: fileContent });
-      filePath = selected;
-      const parts = selected.split(/[/\\]/);
-      fileName = parts[parts.length - 1] || selected;
-      isDirty = false;
-    } catch (err: any) {
-      errorMsg = typeof err === "string" ? err : err.message || String(err);
-    } finally {
-      isLoading = false;
-    }
+    await runSaveOperation(saveCurrentFileAs);
   }
 
   // 앱 종료

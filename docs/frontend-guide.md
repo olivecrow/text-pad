@@ -63,7 +63,8 @@
 1. `WebviewWindow.getByLabel("settings")`로 기존 창을 찾는다.
 2. 찾은 창에 `show()`와 `setFocus()`를 호출한다.
 3. 설정창의 닫기 요청은 `hide()`로 처리한다.
-4. 메인 창이 종료될 때 설정창은 `destroy()`로 정리한다.
+4. 메인 창 닫기 요청은 변경 사항 저장 여부를 먼저 확인한다.
+5. 메인 창 종료가 확정되면 설정창은 `destroy()`로 정리한다.
 
 이 흐름에는 `src-tauri/capabilities/default.json`의 창 보이기, 초점 이동, 숨기기 권한이 필요하다.
 
