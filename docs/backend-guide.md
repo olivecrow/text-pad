@@ -5,23 +5,24 @@
 ## 현재 진입점
 
 - `src-tauri/src/main.rs`: 애플리케이션 실행 진입점.
-- `src-tauri/src/lib.rs`: Tauri 빌더, 명령 등록, 플러그인 설정, Windows 가로 휠 처리.
+- `src-tauri/src/lib.rs`: Tauri 빌더, 명령 등록, 플러그인 설정.
+- `src-tauri/src/file_commands.rs`: 파일 읽기/쓰기 명령과 파일 오류 응답.
+- `src-tauri/src/windows_wheel.rs`: Windows 가로 휠 처리.
 - `src-tauri/capabilities/default.json`: 프론트엔드 명령 권한.
 - `src-tauri/tauri.conf.json`: 창 설정과 빌드 설정.
 - `src-tauri/Cargo.toml`: Rust 의존성과 Tauri 플러그인 의존성.
 
 ## Tauri 명령
 
-- `read_file_content(path: String) -> Result<String, String>`
+- `read_file_content(path: String) -> Result<String, FileCommandError>`
   - 지정한 파일을 UTF-8 문자열로 읽는다.
-  - 실패하면 에러 문자열을 반환한다.
-- `write_file_content(path: String, content: String) -> Result<(), String>`
+  - 실패하면 파일 명령 오류인 `FileCommandError`를 반환한다.
+- `write_file_content(path: String, content: String) -> Result<(), FileCommandError>`
   - 지정한 파일에 문자열을 저장한다.
-  - 실패하면 에러 문자열을 반환한다.
+  - 실패하면 파일 명령 오류인 `FileCommandError`를 반환한다.
 
 새 파일 입출력 기능을 추가할 때는 사용자가 선택한 경로만 다루고, 실패를 `Result`로 반환한다.
-
-현재 `greet` 예제 명령은 제품 기능에서 사용하지 않는다. 다음 백엔드 정리 때 명령 등록과 함수 정의를 함께 제거한다.
+`FileCommandError`는 `code`와 `message`를 가진다. `code`는 오류 종류를 분기하기 위한 짧은 코드이고, `message`는 사용자에게 보여줄 수 있는 설명이다.
 
 ## 창과 권한
 
@@ -49,7 +50,7 @@ Windows WebView2는 일부 마우스 가로 휠 입력을 브라우저 `wheel` �
 이 코드를 수정할 때는 다음을 지킨다.
 
 - Windows 전용 코드는 `#[cfg(target_os = "windows")]` 안에 둔다.
-- 메시지 처리 실패가 앱 종료로 이어지지 않게 한다.
+- 훅 설치 실패가 앱 종료로 이어지지 않게 하되, 실패한 설치 시도에서 만든 리소스는 회수한다.
 - 메인 창에만 훅을 연결한다.
 
 ## Rust 기준
