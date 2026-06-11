@@ -5,7 +5,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { FileCode2, PaintRoller, Settings, Sun, Moon, Plus, X } from "@lucide/svelte";
+  import { ChevronDown, FileCode2, PaintRoller, PenLine, Settings, Sun, Moon, Plus, X } from "@lucide/svelte";
   import {
     getCommentSyntaxForPath,
     tokenizeLineWithState,
@@ -111,7 +111,10 @@
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | null>(null);
   let showSettings = $state<boolean>(false);
-  let activeSettingsTab = $state<'source' | 'render'>('render'); // 기본값은 렌더 모드
+  type SettingsView = 'sourceAppearance' | 'renderAppearance' | 'renderEditing';
+  let activeSettingsView = $state<SettingsView>('renderAppearance');
+  let isSourceSettingsExpanded = $state<boolean>(true);
+  let isRenderSettingsExpanded = $state<boolean>(true);
   let hasCenteredSettingsWindowThisSession = false;
 
   // 폰트 크기 이원화
@@ -120,6 +123,7 @@
 
   // 렌더 모드 상태
   let isRenderMode = $state<boolean>(true); // 기본값은 렌더 모드
+  let renderAutoPairEditing = $state<boolean>(true);
   let currentFontSize = $derived(isRenderMode ? renderFontSize : sourceFontSize);
   let tabSize = $state<number>(4);          // 기본 들여쓰기 탭 4칸
   let scrollTop = $state<number>(0);
@@ -434,6 +438,8 @@
     const savedTabSize = localStorage.getItem('pref_tab_size');
     if (savedTabSize) tabSize = parseInt(savedTabSize, 10);
 
+    renderAutoPairEditing = localStorage.getItem('pref_render_auto_pair_editing') !== 'false';
+
     renderFontFamily = localStorage.getItem('pref_render_font_family') || 'nanum-gothic';
 
     const loadColors = (isDark: boolean): ThemeColors => {
@@ -472,6 +478,7 @@
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_source_font_size', sourceFontSize.toString()); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_font_size', renderFontSize.toString()); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_tab_size', tabSize.toString()); });
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_pair_editing', renderAutoPairEditing ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences && renderFontFamily) localStorage.setItem('pref_render_font_family', renderFontFamily); });
 
   $effect(() => {
@@ -490,7 +497,7 @@
     const label = getCurrentWindow().label;
     isSettingsWindow = label === 'settings';
     if (isSettingsWindow) {
-      activeSettingsTab = 'render';
+      activeSettingsView = 'renderAppearance';
       getCurrentWindow().onCloseRequested((event) => {
         event.preventDefault();
         getCurrentWindow().hide();
@@ -660,6 +667,7 @@
     if (e.key === 'pref_source_font_size' && e.newValue) sourceFontSize = parseInt(e.newValue, 10);
     if (e.key === 'pref_render_font_size' && e.newValue) renderFontSize = parseInt(e.newValue, 10);
     if (e.key === 'pref_tab_size' && e.newValue) tabSize = parseInt(e.newValue, 10);
+    if (e.key === 'pref_render_auto_pair_editing' && e.newValue) renderAutoPairEditing = e.newValue !== 'false';
     if (e.key === 'pref_render_font_family' && e.newValue) renderFontFamily = e.newValue;
 
     if (e.key.startsWith('pref_light_') && e.newValue) {
@@ -1014,6 +1022,7 @@
   }
 
   function handleRenderAutoPairInput(event: KeyboardEvent): boolean {
+    if (!renderAutoPairEditing) return false;
     if (!isRenderMode || !textareaEl || event.isComposing) return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
@@ -1035,6 +1044,7 @@
   }
 
   function handleRenderAutoPairBackspace(event: KeyboardEvent): boolean {
+    if (!renderAutoPairEditing) return false;
     if (!isRenderMode || !textareaEl || event.isComposing) return false;
     if (event.key !== 'Backspace') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
@@ -1759,26 +1769,63 @@
   ">
     <div class="settings-body window-mode">
       <!-- 좌측 네비게이션 메뉴 -->
-      <aside class="settings-sidebar">
-        <button
-          class="sidebar-item"
-          class:active={activeSettingsTab === 'source'}
-          onclick={() => activeSettingsTab = 'source'}
-        >
-          <FileCode2 size={16} class="tab-icon"/> 원본 모드
-        </button>
-        <button
-          class="sidebar-item"
-          class:active={activeSettingsTab === 'render'}
-          onclick={() => activeSettingsTab = 'render'}
-        >
-          <PaintRoller size={16} class="tab-icon"/> 렌더 모드
-        </button>
+      <aside class="settings-sidebar" aria-label="설정 분류">
+        <div class="sidebar-tree-group">
+          <button
+            type="button"
+            class="sidebar-group"
+            aria-expanded={isSourceSettingsExpanded}
+            onclick={() => isSourceSettingsExpanded = !isSourceSettingsExpanded}
+          >
+            <ChevronDown size={14} class={isSourceSettingsExpanded ? 'tree-chevron' : 'tree-chevron collapsed'}/>
+            <FileCode2 size={16} class="tab-icon"/> 원본 모드
+          </button>
+          {#if isSourceSettingsExpanded}
+            <button
+              type="button"
+              class="sidebar-item tree-child"
+              class:active={activeSettingsView === 'sourceAppearance'}
+              onclick={() => activeSettingsView = 'sourceAppearance'}
+            >
+              <PaintRoller size={15} class="tab-icon"/> 모양
+            </button>
+          {/if}
+        </div>
+
+        <div class="sidebar-tree-group">
+          <button
+            type="button"
+            class="sidebar-group"
+            aria-expanded={isRenderSettingsExpanded}
+            onclick={() => isRenderSettingsExpanded = !isRenderSettingsExpanded}
+          >
+            <ChevronDown size={14} class={isRenderSettingsExpanded ? 'tree-chevron' : 'tree-chevron collapsed'}/>
+            <PaintRoller size={16} class="tab-icon"/> 렌더 모드
+          </button>
+          {#if isRenderSettingsExpanded}
+            <button
+              type="button"
+              class="sidebar-item tree-child"
+              class:active={activeSettingsView === 'renderAppearance'}
+              onclick={() => activeSettingsView = 'renderAppearance'}
+            >
+              <PaintRoller size={15} class="tab-icon"/> 모양
+            </button>
+            <button
+              type="button"
+              class="sidebar-item tree-child"
+              class:active={activeSettingsView === 'renderEditing'}
+              onclick={() => activeSettingsView = 'renderEditing'}
+            >
+              <PenLine size={15} class="tab-icon"/> 편집
+            </button>
+          {/if}
+        </div>
       </aside>
 
       <!-- 우측 메인 콘텐츠 영역 -->
       <div class="settings-main">
-        {#if activeSettingsTab === 'source'}
+        {#if activeSettingsView === 'sourceAppearance'}
           <div class="settings-section">
             <h4 class="section-title">글꼴 설정</h4>
             <div class="settings-row">
@@ -1797,7 +1844,7 @@
               </div>
             </div>
           </div>
-        {:else if activeSettingsTab === 'render'}
+        {:else if activeSettingsView === 'renderAppearance'}
           <div class="settings-section">
             <h4 class="section-title">화면 및 글꼴</h4>
             <div class="settings-row">
@@ -1922,6 +1969,22 @@
                 기본 색상으로 복원
               </button>
             </div>
+          </div>
+        {:else if activeSettingsView === 'renderEditing'}
+          <div class="settings-section">
+            <h4 class="section-title">자동 입력</h4>
+            <label class="settings-check-row" for="render-auto-pair-editing-window">
+              <input
+                id="render-auto-pair-editing-window"
+                class="settings-checkbox"
+                type="checkbox"
+                bind:checked={renderAutoPairEditing}
+              />
+              <span class="settings-check-copy">
+                <span class="settings-check-title">쌍 문자 자동 입력 및 삭제</span>
+                <span class="settings-check-description">( )나 &#123; &#125; 같은 괄호 및 따옴표를 하나만 입력해도 자동으로 쌍을 생성합니다.</span>
+              </span>
+            </label>
           </div>
         {/if}
       </div>
@@ -2883,6 +2946,13 @@
     flex-shrink: 0;
   }
 
+  .sidebar-tree-group {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .sidebar-group,
   .sidebar-item {
     background: transparent;
     border: none;
@@ -2897,6 +2967,33 @@
     border-left: 3px solid transparent;
   }
 
+  .sidebar-group {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-weight: 600;
+  }
+
+  .tree-chevron {
+    flex-shrink: 0;
+    transition: transform 0.1s;
+  }
+
+  .tree-chevron.collapsed {
+    transform: rotate(-90deg);
+  }
+
+  .tree-child {
+    padding-left: 2.35rem;
+  }
+
+  .sidebar-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .sidebar-group:hover,
   .sidebar-item:hover {
     background-color: var(--bg-menu-hover);
   }
@@ -2945,6 +3042,39 @@
     align-items: center;
     font-size: 0.85rem;
     min-height: 28px;
+  }
+
+  .settings-check-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+
+  .settings-checkbox {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    margin-top: 2px;
+    accent-color: var(--accent-color);
+  }
+
+  .settings-check-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    line-height: 1.35;
+  }
+
+  .settings-check-title {
+    color: var(--text-color);
+    font-weight: 500;
+  }
+
+  .settings-check-description {
+    color: var(--text-muted);
+    font-size: 0.78rem;
   }
 
   .color-picker-wrapper {

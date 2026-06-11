@@ -19,6 +19,7 @@
 - `pref_render_font_size`: 렌더 모드 글자 크기.
 - `pref_tab_size`: 탭 표시 폭.
 - `pref_render_font_family`: 렌더 모드 글꼴 선택.
+- `pref_render_auto_pair_editing`: 렌더 모드 쌍 문자 자동 입력과 삭제 사용 여부.
 - `pref_light_*`: 라이트 테마 렌더 색상과 굵기.
 - `pref_dark_*`: 다크 테마 렌더 색상과 굵기.
 
