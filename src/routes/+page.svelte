@@ -235,6 +235,14 @@
     no: "저장 안 함",
     cancel: "취소"
   };
+  const renderAutoClosingPairs: Record<string, string> = {
+    '(': ')',
+    '[': ']',
+    '{': '}',
+    '"': '"',
+    "'": "'",
+    '`': '`'
+  };
 
   function getActiveTabIndex(): number {
     return tabs.findIndex((tab) => tab.id === activeTabId);
@@ -981,6 +989,76 @@
       fileContent,
       isDirty: true
     });
+  }
+
+  function applyEditorContentChange(nextContent: string) {
+    fileContent = nextContent;
+    fileName = filePath ? fileName : getFirstLineTitle(fileContent);
+    isDirty = true;
+    errorMsg = null;
+    reconcileInlineColorPickerState();
+    updateTabById(activeTabId, {
+      fileName,
+      fileContent,
+      isDirty: true
+    });
+  }
+
+  function placeEditorCaret(offset: number) {
+    requestAnimationFrame(() => {
+      if (!textareaEl) return;
+      textareaEl.focus({ preventScroll: true });
+      textareaEl.selectionStart = textareaEl.selectionEnd = offset;
+      updateCursorPosition();
+    });
+  }
+
+  function handleRenderAutoPairInput(event: KeyboardEvent): boolean {
+    if (!isRenderMode || !textareaEl || event.isComposing) return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const closingChar = renderAutoClosingPairs[event.key];
+    if (!closingChar) return false;
+
+    const start = textareaEl.selectionStart;
+    const end = textareaEl.selectionEnd;
+    if (start !== end) return false;
+    if (fileContent[start] === closingChar) return false;
+
+    event.preventDefault();
+
+    const nextContent = `${fileContent.slice(0, start)}${event.key}${closingChar}${fileContent.slice(end)}`;
+    applyEditorContentChange(nextContent);
+    placeEditorCaret(start + 1);
+
+    return true;
+  }
+
+  function handleRenderAutoPairBackspace(event: KeyboardEvent): boolean {
+    if (!isRenderMode || !textareaEl || event.isComposing) return false;
+    if (event.key !== 'Backspace') return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const start = textareaEl.selectionStart;
+    const end = textareaEl.selectionEnd;
+    if (start !== end || start === 0) return false;
+
+    const openingChar = fileContent[start - 1];
+    const closingChar = renderAutoClosingPairs[openingChar];
+    if (!closingChar || fileContent[start] !== closingChar) return false;
+
+    event.preventDefault();
+
+    const nextContent = `${fileContent.slice(0, start - 1)}${fileContent.slice(start + 1)}`;
+    applyEditorContentChange(nextContent);
+    placeEditorCaret(start - 1);
+
+    return true;
+  }
+
+  function handleEditorKeyDown(event: KeyboardEvent) {
+    if (handleRenderAutoPairBackspace(event)) return;
+    handleRenderAutoPairInput(event);
   }
 
   // 새 탭 생성
@@ -2085,6 +2163,7 @@
             class="editor-textarea"
             style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode ? editorCaretColor : 'var(--text-color)'}; cursor: {isRenderMode ? editorCursorStyle : 'text'};"
             bind:value={fileContent}
+            onkeydown={handleEditorKeyDown}
             oninput={handleInput}
             onscroll={handleScroll}
             onpointerdown={handleEditorPointerDown}
