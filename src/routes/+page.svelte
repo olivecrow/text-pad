@@ -5,7 +5,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { ChevronDown, FileCode2, PaintRoller, PenLine, Settings, Sun, Moon, Plus, X } from "@lucide/svelte";
+  import { ChevronDown, Copy, FileCode2, Minus, NotebookText, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, X } from "@lucide/svelte";
   import {
     getCommentSyntaxForPath,
     tokenizeLineWithState,
@@ -118,6 +118,7 @@
   let isHandlingCloseRequest = false;
   let hasFocusedEditorOnStartup = false;
   let hasShownMainWindowOnStartup = false;
+  let isWindowMaximized = $state<boolean>(false);
 
   // 커서 상태 추적
   let cursorLine = $state<number>(1);
@@ -545,6 +546,30 @@
 
     return true;
   }
+
+  async function refreshWindowMaximizedState() {
+    if (!hasTauriRuntime()) return;
+
+    try {
+      isWindowMaximized = await getCurrentWindow().isMaximized();
+    } catch {}
+  }
+
+  $effect(() => {
+    if (!isBrowser || !hasTauriRuntime() || isSettingsWindow) return;
+
+    let unlistenResized: UnlistenFn | undefined;
+    void refreshWindowMaximizedState();
+    getCurrentWindow().onResized(() => {
+      void refreshWindowMaximizedState();
+    }).then((unlisten) => {
+      unlistenResized = unlisten;
+    });
+
+    return () => {
+      if (unlistenResized) unlistenResized();
+    };
+  });
 
   async function confirmCloseTab(tabId: string): Promise<boolean> {
     syncActiveTabState();
@@ -1109,6 +1134,36 @@
     // onCloseRequested 이벤트 리스너가 저장 여부를 묻고
     // 설정창도 함께 닫아주므로 여기서 바로 close만 호출합니다.
     getCurrentWindow().close().catch(() => {});
+  }
+
+  async function handleTitlebarPointerDown(event: PointerEvent) {
+    if (!hasTauriRuntime() || event.button !== 0 || event.detail > 1) return;
+    await getCurrentWindow().startDragging().catch(() => {});
+  }
+
+  async function handleTitlebarDoubleClick(event: MouseEvent) {
+    if (!hasTauriRuntime() || event.button !== 0) return;
+    event.preventDefault();
+    await getCurrentWindow().toggleMaximize().catch(() => {});
+    await refreshWindowMaximizedState();
+  }
+
+  async function handleWindowMinimize(event: MouseEvent) {
+    event.stopPropagation();
+    if (!hasTauriRuntime()) return;
+    await getCurrentWindow().minimize().catch(() => {});
+  }
+
+  async function handleWindowToggleMaximize(event: MouseEvent) {
+    event.stopPropagation();
+    if (!hasTauriRuntime()) return;
+    await getCurrentWindow().toggleMaximize().catch(() => {});
+    await refreshWindowMaximizedState();
+  }
+
+  function handleWindowClose(event: MouseEvent) {
+    event.stopPropagation();
+    handleExit();
   }
 
   // 설정 창 열기 (독립 윈도우)
@@ -1983,45 +2038,98 @@
     --color-hl-bracket: {activeColors.bracket};
     --color-hl-brace: {activeColors.brace};
   ">
-    <!-- 탭 바 영역 -->
-    <div class="tab-bar">
-      <div class="tab-list" role="tablist" aria-label="열린 파일 탭">
-        {#each tabs as tab (tab.id)}
-          <div class="tab-item" class:active={tab.id === activeTabId} class:dirty={tab.isDirty}>
-            <button
-              type="button"
-              class="tab-select"
-              role="tab"
-              aria-selected={tab.id === activeTabId}
-              title={tab.filePath || getDisplayFileName(tab)}
-              onclick={() => activateTab(tab.id)}
-            >
-              {#if tab.isDirty}
-                <span class="tab-dirty-dot" aria-hidden="true"></span>
-              {/if}
-              <span class="tab-title">{getDisplayFileName(tab)}</span>
-            </button>
-            <button
-              type="button"
-              class="tab-close-btn"
-              aria-label={`${getDisplayFileName(tab)} 탭 닫기`}
-              title="탭 닫기"
-              onclick={(event) => handleCloseTab(tab.id, event)}
-            >
-              <X size={14} aria-hidden="true" />
-            </button>
-          </div>
-        {/each}
-      </div>
-      <button
-        type="button"
-        class="tab-add-btn"
-        aria-label="새 탭"
-        title="새 탭"
-        onclick={handleAddTab}
+    <!-- 통합 제목 표시줄 및 탭 영역 -->
+    <div class="title-tab-bar">
+      <div
+        class="titlebar-app-icon"
+        data-tauri-drag-region
+        aria-hidden="true"
+        onpointerdown={handleTitlebarPointerDown}
+        ondblclick={handleTitlebarDoubleClick}
       >
-        <Plus size={16} aria-hidden="true" />
-      </button>
+        <NotebookText size={17} />
+      </div>
+
+      <div class="titlebar-tabs">
+        <div class="tab-list" role="tablist" aria-label="열린 파일 탭">
+          {#each tabs as tab (tab.id)}
+            <div class="tab-item" class:active={tab.id === activeTabId} class:dirty={tab.isDirty}>
+              <button
+                type="button"
+                class="tab-select"
+                role="tab"
+                aria-selected={tab.id === activeTabId}
+                title={tab.filePath || getDisplayFileName(tab)}
+                onclick={() => activateTab(tab.id)}
+              >
+                {#if tab.isDirty}
+                  <span class="tab-dirty-dot" aria-hidden="true"></span>
+                {/if}
+                <span class="tab-title">{getDisplayFileName(tab)}</span>
+              </button>
+              <button
+                type="button"
+                class="tab-close-btn"
+                aria-label={`${getDisplayFileName(tab)} 탭 닫기`}
+                title="탭 닫기"
+                onclick={(event) => handleCloseTab(tab.id, event)}
+              >
+                <X size={14} aria-hidden="true" />
+              </button>
+            </div>
+          {/each}
+        </div>
+        <button
+          type="button"
+          class="tab-add-btn"
+          aria-label="새 탭"
+          title="새 탭"
+          onclick={handleAddTab}
+        >
+          <Plus size={16} aria-hidden="true" />
+        </button>
+        <div
+          class="titlebar-drag-region"
+          data-tauri-drag-region
+          aria-hidden="true"
+          onpointerdown={handleTitlebarPointerDown}
+          ondblclick={handleTitlebarDoubleClick}
+        ></div>
+      </div>
+
+      <div class="window-control-group" aria-label="창 제어">
+        <button
+          type="button"
+          class="window-control-btn"
+          aria-label="창 최소화"
+          title="최소화"
+          onclick={handleWindowMinimize}
+        >
+          <Minus size={16} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          class="window-control-btn"
+          aria-label={isWindowMaximized ? "창 복원" : "창 최대화"}
+          title={isWindowMaximized ? "복원" : "최대화"}
+          onclick={handleWindowToggleMaximize}
+        >
+          {#if isWindowMaximized}
+            <Copy size={15} aria-hidden="true" />
+          {:else}
+            <Square size={14} aria-hidden="true" />
+          {/if}
+        </button>
+        <button
+          type="button"
+          class="window-control-btn close"
+          aria-label="창 닫기"
+          title="닫기"
+          onclick={handleWindowClose}
+        >
+          <X size={16} aria-hidden="true" />
+        </button>
+      </div>
     </div>
 
     <!-- 메뉴바 영역 -->
@@ -2447,19 +2555,40 @@
     box-sizing: border-box;
   }
 
-  /* 탭 바 디자인 */
-  .tab-bar {
+  /* 통합 제목 표시줄 및 탭 디자인 */
+  .title-tab-bar {
     display: flex;
-    align-items: flex-end;
-    gap: 6px;
-    height: 38px;
-    padding: 5px 8px 0;
+    align-items: stretch;
+    height: 36px;
     background-color: var(--bg-tab-strip);
-    border-bottom: 1px solid var(--border-color);
     box-sizing: border-box;
     user-select: none;
     min-width: 0;
     overflow: hidden;
+  }
+
+  .titlebar-app-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    color: var(--accent-color);
+    flex-shrink: 0;
+  }
+
+  .titlebar-tabs {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-top: 5px;
+  }
+
+  .titlebar-drag-region {
+    align-self: stretch;
+    flex: 1 1 32px;
+    min-width: 16px;
   }
 
   .tab-list {
@@ -2467,7 +2596,6 @@
     align-items: flex-end;
     gap: 2px;
     flex: 0 1 auto;
-    max-width: calc(100% - 34px);
     min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
@@ -2565,7 +2693,43 @@
   }
 
   .tab-add-btn {
-    margin-bottom: 2px;
+    margin-bottom: 3px;
+  }
+
+  .window-control-group {
+    display: flex;
+    align-items: stretch;
+    align-self: stretch;
+    flex-shrink: 0;
+  }
+
+  .window-control-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 46px;
+    height: 100%;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    color: var(--text-color);
+    cursor: pointer;
+    outline: none;
+  }
+
+  .window-control-btn:hover {
+    background-color: var(--bg-tab-button-hover);
+  }
+
+  .window-control-btn.close:hover {
+    background-color: #c42b1c;
+    color: #ffffff;
+  }
+
+  .window-control-btn:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: -3px;
   }
 
   /* 메뉴바 디자인 */

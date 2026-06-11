@@ -16,7 +16,9 @@
         "title": "제목 없음 - 메모장",
         "width": 800,
         "height": 600,
-        "visible": false
+        "visible": false,
+        "decorations": false,
+        "shadow": true
       }
     ],
     "security": {

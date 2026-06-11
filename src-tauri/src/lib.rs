@@ -22,7 +22,7 @@ fn write_file_content(path: String, content: String) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 mod win_util {
     use std::ffi::c_void;
-    use tauri::{WebviewWindow, Emitter};
+    use tauri::{Emitter, WebviewWindow};
 
     type HWND = *mut c_void;
     type WPARAM = usize;
@@ -47,12 +47,7 @@ mod win_util {
             dwRefData: usize,
         ) -> i32;
 
-        fn DefSubclassProc(
-            hWnd: HWND,
-            uMsg: u32,
-            wParam: WPARAM,
-            lParam: LPARAM,
-        ) -> LRESULT;
+        fn DefSubclassProc(hWnd: HWND, uMsg: u32, wParam: WPARAM, lParam: LPARAM) -> LRESULT;
     }
 
     const WM_MOUSEHWHEEL: u32 = 0x020E;
@@ -72,7 +67,7 @@ mod win_util {
         if msg == WM_MOUSEHWHEEL {
             // wparam의 상위 16비트에 wheel delta가 들어있음
             let delta = (wparam >> 16) as i16;
-            
+
             // ref_data에서 SubclassData 복원
             let data_ptr = ref_data as *const SubclassData;
             if !data_ptr.is_null() {
@@ -80,7 +75,7 @@ mod win_util {
                 // 프론트엔드로 가로 휠 스크롤 델타 전송
                 let _ = data.window.emit("native-horizontal-wheel", delta);
             }
-            
+
             // WebView2가 이 가로 휠 메시지를 삼켜 deltaX=0으로 만드는 오동작 방지를 위해
             // 메시지를 직접 가로채 처리했으므로 0을 즉시 리턴함.
             return 0;
@@ -93,10 +88,10 @@ mod win_util {
         unsafe {
             if let Ok(hwnd) = window.hwnd() {
                 let hwnd_ptr = hwnd.0 as HWND;
-                
+
                 let data = Box::new(SubclassData { window });
                 let ref_data = Box::into_raw(data) as usize;
-                
+
                 SetWindowSubclass(hwnd_ptr, Some(window_subclass_proc), 1001, ref_data);
             }
         }
@@ -105,10 +100,21 @@ mod win_util {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let window_state_flags = tauri_plugin_window_state::StateFlags::SIZE
+        | tauri_plugin_window_state::StateFlags::POSITION
+        | tauri_plugin_window_state::StateFlags::MAXIMIZED
+        | tauri_plugin_window_state::StateFlags::VISIBLE
+        | tauri_plugin_window_state::StateFlags::FULLSCREEN;
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_window_state::Builder::default().with_denylist(&["settings"]).build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_denylist(&["settings"])
+                .with_state_flags(window_state_flags)
+                .build(),
+        )
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {
@@ -119,7 +125,11 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet, read_file_content, write_file_content])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            read_file_content,
+            write_file_content
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
