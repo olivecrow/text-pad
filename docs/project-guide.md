@@ -20,7 +20,7 @@ graph TD
 - `src/routes/+page.svelte`: 메인 화면, 원문 모드, 렌더 모드, 설정창 UI.
 - `src-tauri/src/lib.rs`: 파일 읽기/쓰기 명령, Windows 가로 휠 처리, Tauri 플러그인 설정.
 - `src-tauri/capabilities/default.json`: 프론트엔드가 호출할 수 있는 Tauri 명령 권한.
-- `src-tauri/tauri.conf.json`: 메인 창과 설정창 정의.
+- `src-tauri/tauri.conf.json`: 메인 창과 빌드 설정. 설정창은 실행 중 동적으로 만든다.
 - `package.json`: SvelteKit, Tauri, Lucide 아이콘 의존성과 실행 명령.
 - `docs/backend-guide.md`: 백엔드 계약.
 - `docs/frontend-guide.md`: 프론트엔드 계약.
@@ -36,6 +36,7 @@ graph TD
 - 원문 모드 편집.
 - 렌더 모드 구문 강조, 들여쓰기 가이드, 줄 번호, 가상화된 화면 렌더링.
 - 라이트/다크 테마, 렌더 색상, 글꼴, 글자 크기, 탭 크기 설정.
+- 메인 창을 편집기 준비 뒤 표시해 첫 화면이 곧바로 입력 가능한 상태가 되게 하는 시작 흐름.
 - 설정 버튼을 처음 눌렀을 때 독립 설정창을 동적으로 생성하고 표시.
 - Windows WebView2 가로 휠 입력 보정.
 - Windows 릴리스 빌드 생성.
@@ -45,7 +46,6 @@ graph TD
 - 검색, 바꾸기, 특정 줄 이동의 완성도 개선.
 - 저장 대화상자의 확장자 필터를 열기 대화상자와 맞추기.
 - 앱 표시 이름과 번들 실행 파일 이름을 `text-pad`로 정리.
-- `src/routes/+page.svelte`에 남은 이전 설정 모달 상태와 CSS 정리.
 - 사용하지 않는 Rust 예제 명령 정리.
 - Markdown 렌더링과 제한적 편집.
 - JSON 트리 보기와 값 편집.

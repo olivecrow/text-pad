@@ -13,10 +13,10 @@
     "windows": [
       {
         "label": "main",
-        "title": "tauri-app",
+        "title": "제목 없음 - 메모장",
         "width": 800,
         "height": 600,
-        "visible": true
+        "visible": false
       }
     ],
     "security": {

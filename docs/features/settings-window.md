@@ -4,7 +4,7 @@
 
 ## 창 구성
 
-- `tauri.conf.json`에는 시작 성능을 위해 `main` 창만 정의한다.
+- `tauri.conf.json`에는 시작 성능을 위해 `main` 창만 정의하며, 메인 창은 편집기 준비 뒤 표시되도록 처음에는 숨김 상태로 둔다.
 - `settings` 창은 앱 시작 때 만들지 않고, 설정 버튼을 처음 눌렀을 때 동적으로 만든다.
 - 프론트엔드는 현재 창의 라벨이 `settings`인지 확인해 설정창 전용 화면을 렌더링한다.
 - 창 상태 복원 플러그인은 메인 창만 대상으로 하며, `settings` 창은 복원 대상에서 제외한다.
@@ -38,7 +38,3 @@
 - `core:window:allow-create`
 
 권한이 빠지면 설정 버튼을 눌렀을 때 `Command plugin:window|show not allowed by ACL` 같은 오류가 난다.
-
-## 정리 대상
-
-`src/routes/+page.svelte`에는 이전 인페이지 설정 모달에 쓰던 위치 상태와 일부 CSS가 남아 있다. 현재 제품 흐름은 독립 설정창이므로, 다음 프론트엔드 정리 때 제거한다.

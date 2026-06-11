@@ -28,6 +28,7 @@
 접근 제어 목록(ACL)은 프론트엔드가 호출할 수 있는 Tauri 명령을 제한하는 보안 설정이다.
 
 - 설정창은 시작 성능을 위해 앱 실행 시 만들지 않는다.
+- 메인 창은 빈 WebView가 먼저 보이지 않도록 `visible: false`로 시작하고, 편집기 `textarea`가 준비되면 프론트엔드가 `show()`와 `setFocus()`를 호출한다.
 - 설정 버튼은 기존 `settings` 창을 찾고, 없으면 동적으로 만든 뒤 `show()`와 `setFocus()`를 호출한다.
 - 설정창 닫기 요청은 창을 파괴하지 않고 `hide()`로 숨긴다.
 - 따라서 `src-tauri/capabilities/default.json`에는 최소한 다음 권한이 필요하다.

@@ -34,6 +34,23 @@
   let nextUntitledNumber = 1;
   const untitledFileName = "제목 없음";
   const invalidFileNameCharsPattern = /[<>:"/\\|?*\x00-\x1F]/g;
+  const isBrowser = typeof window !== 'undefined';
+
+  function hasTauriRuntime(): boolean {
+    if (!isBrowser) return false;
+    const runtimeWindow = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown };
+    return '__TAURI_INTERNALS__' in runtimeWindow || '__TAURI__' in runtimeWindow;
+  }
+
+  function getInitialIsSettingsWindow(): boolean {
+    if (!hasTauriRuntime()) return false;
+
+    try {
+      return getCurrentWindow().label === 'settings';
+    } catch {
+      return false;
+    }
+  }
 
   function getFileNameFromPath(path: string): string {
     const parts = path.split(/[/\\]/);
@@ -100,6 +117,7 @@
   let errorMsg = $state<string | null>(null);
   let isHandlingCloseRequest = false;
   let hasFocusedEditorOnStartup = false;
+  let hasShownMainWindowOnStartup = false;
 
   // 커서 상태 추적
   let cursorLine = $state<number>(1);
@@ -110,7 +128,6 @@
 
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | null>(null);
-  let showSettings = $state<boolean>(false);
   type SettingsView = 'sourceAppearance' | 'renderAppearance' | 'renderEditing';
   let activeSettingsView = $state<SettingsView>('renderAppearance');
   let isSourceSettingsExpanded = $state<boolean>(true);
@@ -200,7 +217,7 @@
   let activeColors = $derived(currentTheme === 'dark' ? darkColors : lightColors);
 
   // 설정창이 독립 윈도우로 떴는지 감지하는 상태
-  let isSettingsWindow = $state<boolean>(false);
+  let isSettingsWindow = $state<boolean>(getInitialIsSettingsWindow());
 
   let renderFontFamily = $state<string>('nanum-gothic');
   let currentRenderFontFamilyCSS = $derived(
@@ -216,17 +233,6 @@
     "'Nanum Gothic', 'NanumGothic', 'Malgun Gothic', sans-serif"
   );
 
-  // 설정창 드래그 이동 상태 변수
-  let settingsX = $state<number>(0);
-  let settingsY = $state<number>(0);
-  let isDraggingSettings = $state<boolean>(false);
-  let isSettingsPositioned = $state<boolean>(false);
-  let dragStartX = 0;
-  let dragStartY = 0;
-  let initialModalX = 0;
-  let initialModalY = 0;
-
-  const isBrowser = typeof window !== 'undefined';
   let canPersistPreferences = $state<boolean>(false);
   const textSaveFilters = [
     {
@@ -379,12 +385,6 @@
     const canClose = await confirmCloseTab(tabId);
     if (!canClose) return;
     closeTabWithoutPrompt(tabId);
-  }
-
-  function hasTauriRuntime(): boolean {
-    if (!isBrowser) return false;
-    const runtimeWindow = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown };
-    return '__TAURI_INTERNALS__' in runtimeWindow || '__TAURI__' in runtimeWindow;
   }
 
   // 시스템 테마 변경 감지
@@ -757,56 +757,6 @@
     event.preventDefault();
     openColorPicker(inputId);
   }
-
-
-
-  // 설정창이 열릴 때 초기 위치 지정 및 화면 클램핑
-  $effect(() => {
-    if (showSettings) {
-      if (!isSettingsPositioned) {
-        settingsX = Math.max(10, (window.innerWidth - 720) / 2);
-        settingsY = Math.max(10, (window.innerHeight - 480) / 2);
-        isSettingsPositioned = true;
-      } else {
-        if (settingsX < 0 || settingsX > window.innerWidth - 100 ||
-            settingsY < 0 || settingsY > window.innerHeight - 100) {
-          settingsX = Math.max(10, (window.innerWidth - 720) / 2);
-          settingsY = Math.max(10, (window.innerHeight - 480) / 2);
-        }
-      }
-    }
-  });
-
-  function handleSettingsDragStart(e: MouseEvent) {
-    if (e.button !== 0) return;
-    if ((e.target as HTMLElement).closest('.settings-close')) return;
-
-    isDraggingSettings = true;
-    dragStartX = e.clientX;
-    dragStartY = e.clientY;
-    initialModalX = settingsX;
-    initialModalY = settingsY;
-
-    window.addEventListener('mousemove', handleSettingsDragMove);
-    window.addEventListener('mouseup', handleSettingsDragEnd);
-    e.preventDefault();
-  }
-
-  function handleSettingsDragMove(e: MouseEvent) {
-    if (!isDraggingSettings) return;
-    const deltaX = e.clientX - dragStartX;
-    const deltaY = e.clientY - dragStartY;
-
-    settingsX = Math.max(10, Math.min(window.innerWidth - 120, initialModalX + deltaX));
-    settingsY = Math.max(10, Math.min(window.innerHeight - 60, initialModalY + deltaY));
-  }
-
-  function handleSettingsDragEnd() {
-    isDraggingSettings = false;
-    window.removeEventListener('mousemove', handleSettingsDragMove);
-    window.removeEventListener('mouseup', handleSettingsDragEnd);
-  }
-
   // 반응형 상태
   let lineCount = $derived(fileContent.split(/\r?\n/).length);
   let charCount = $derived(fileContent.length);
@@ -949,12 +899,39 @@
     return () => observer.disconnect();
   });
 
+  function focusEditorOnStartup() {
+    if (!textareaEl || hasFocusedEditorOnStartup) return;
+    textareaEl.focus({ preventScroll: true });
+    updateCursorPosition();
+    hasFocusedEditorOnStartup = true;
+  }
+
+  async function showMainWindowAfterStartup() {
+    const appWindow = getCurrentWindow();
+
+    try {
+      await appWindow.setTitle(`${isDirty ? "*" : ""}${fileName} - 메모장`);
+      await appWindow.show();
+      await appWindow.setFocus();
+    } catch (err) {
+      console.error('Failed to show main window:', err);
+    } finally {
+      requestAnimationFrame(focusEditorOnStartup);
+    }
+  }
+
   $effect(() => {
-    if (!textareaEl || isSettingsWindow || hasFocusedEditorOnStartup) return;
-    requestAnimationFrame(() => {
-      textareaEl?.focus({ preventScroll: true });
-      hasFocusedEditorOnStartup = true;
-    });
+    if (!textareaEl || isSettingsWindow || hasShownMainWindowOnStartup) return;
+    hasShownMainWindowOnStartup = true;
+
+    if (!hasTauriRuntime()) {
+      requestAnimationFrame(focusEditorOnStartup);
+      return;
+    }
+
+    setTimeout(() => {
+      void showMainWindowAfterStartup();
+    }, 0);
   });
 
   // 창 제목 동기화 (Rune Effect)
@@ -2857,60 +2834,6 @@
 
   .render-mode .editor-viewport {
     background-color: var(--color-render-bg, var(--bg-editor));
-  }
-
-  /* 설정 팝업 오버레이 */
-  .settings-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background-color: var(--bg-overlay);
-    z-index: 30;
-  }
-
-  .settings-modal {
-    background-color: var(--bg-modal);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    box-shadow: var(--shadow-menu);
-    width: 720px;
-    height: 480px;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    animation: fadeIn 0.15s ease-out;
-  }
-
-  .settings-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid var(--border-color);
-    background-color: var(--bg-window);
-    cursor: move;
-    user-select: none;
-  }
-
-  .settings-header h3 {
-    margin: 0;
-    font-size: 1rem;
-    font-weight: 600;
-  }
-
-  .settings-close {
-    background: transparent;
-    border: none;
-    font-size: 1.25rem;
-    color: var(--text-muted);
-    cursor: pointer;
-    outline: none;
-  }
-
-  .settings-close:hover {
-    color: var(--text-color);
   }
 
   .settings-window-container {
