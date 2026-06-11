@@ -5,7 +5,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { ChevronDown, Copy, FileCode2, Minus, NotebookText, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, X } from "@lucide/svelte";
+  import { ChevronDown, Copy, FileCode2, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, X } from "@lucide/svelte";
   import {
     getCommentSyntaxForPath,
     tokenizeLineWithState,
@@ -2047,7 +2047,7 @@
         onpointerdown={handleTitlebarPointerDown}
         ondblclick={handleTitlebarDoubleClick}
       >
-        <NotebookText size={17} />
+        <img class="titlebar-app-image" src="/favicon.png" alt="" draggable="false" />
       </div>
 
       <div class="titlebar-tabs">
@@ -2572,8 +2572,14 @@
     align-items: center;
     justify-content: center;
     width: 40px;
-    color: var(--accent-color);
     flex-shrink: 0;
+  }
+
+  .titlebar-app-image {
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
+    pointer-events: none;
   }
 
   .titlebar-tabs {
