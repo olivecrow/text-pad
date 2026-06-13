@@ -36,7 +36,6 @@ export interface TokenizeLineResult {
 }
 
 const hexColorAtStartRegex = /^#[0-9a-fA-F]{6}$/;
-const asciiWordRegex = /[0-9a-zA-Z_]/;
 const wordLikeCharRegex = /[\p{L}\p{M}\p{N}]/u;
 const whitespaceRegex = /\s/u;
 const depthTrackedTypes = new Set<Token['type']>(['string', 'code', 'paren', 'bracket', 'brace']);
@@ -150,12 +149,17 @@ export function getCommentSyntaxForPath(path: string | null | undefined): Commen
   return commentSyntaxByExtension[extension] || null;
 }
 
+function hasWhitespaceWordBoundary(text: string, start: number, end: number): boolean {
+  const previousChar = text[start - 1];
+  const nextChar = text[end];
+
+  return (!previousChar || isWhitespaceChar(previousChar)) && (!nextChar || isWhitespaceChar(nextChar));
+}
+
 function getHexColorAt(text: string, index: number): string | null {
   const candidate = text.slice(index, index + 7);
   if (!hexColorAtStartRegex.test(candidate)) return null;
-
-  const nextChar = text[index + 7];
-  if (nextChar && asciiWordRegex.test(nextChar)) return null;
+  if (!hasWhitespaceWordBoundary(text, index, index + candidate.length)) return null;
 
   return candidate;
 }
@@ -171,12 +175,16 @@ function parseInlineText(text: string, includeNumbers = true): Token[] {
   while ((match = inlineRegex.exec(text)) !== null) {
     const matchIndex = match.index;
     const matchText = match[0];
+    const isColorMatch = matchText.startsWith('#');
+    if (isColorMatch && !hasWhitespaceWordBoundary(text, matchIndex, matchIndex + matchText.length)) {
+      continue;
+    }
 
     if (matchIndex > lastIndex) {
       tokens.push({ type: 'text', text: text.substring(lastIndex, matchIndex) });
     }
 
-    tokens.push({ type: matchText.startsWith('#') ? 'color' : 'number', text: matchText });
+    tokens.push({ type: isColorMatch ? 'color' : 'number', text: matchText });
     lastIndex = inlineRegex.lastIndex;
   }
 

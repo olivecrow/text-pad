@@ -1552,7 +1552,14 @@
   let suppressNextEditorClickAfterColorOpen = false;
   const parkedInlineColorPickerPosition = { left: -10000, top: -10000 };
   let inlineColorPickerPosition = $state<{ left: number; top: number }>({ ...parkedInlineColorPickerPosition });
-  const hexColorInContentRegex = /#[0-9a-fA-F]{6}(?![0-9a-zA-Z_])/g;
+  const hexColorInContentRegex = /#[0-9a-fA-F]{6}/g;
+
+  function hasWhitespaceWordBoundary(text: string, start: number, end: number): boolean {
+    const previousChar = text[start - 1];
+    const nextChar = text[end];
+
+    return (!previousChar || /\s/.test(previousChar)) && (!nextChar || /\s/.test(nextChar));
+  }
 
   function setInlineColorPickerPosition(position: { left: number; top: number }) {
     inlineColorPickerPosition = position;
@@ -1587,6 +1594,7 @@
     while ((match = hexColorInContentRegex.exec(text)) !== null) {
       const start = match.index;
       const end = start + match[0].length;
+      if (!hasWhitespaceWordBoundary(text, start, end)) continue;
       if (offset >= start && offset < end) {
         return { start, end, value: match[0] };
       }
@@ -1602,6 +1610,7 @@
     while ((match = hexColorInContentRegex.exec(text)) !== null) {
       const start = match.index;
       const end = start + match[0].length;
+      if (!hasWhitespaceWordBoundary(text, start, end)) continue;
       if (offset > start && offset < end) {
         return { start, end, value: match[0] };
       }
