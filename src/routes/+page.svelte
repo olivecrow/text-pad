@@ -142,6 +142,7 @@
   // 렌더 모드 상태
   let isRenderMode = $state<boolean>(true); // 기본값은 렌더 모드
   let renderAutoPairEditing = $state<boolean>(true);
+  let renderAutoSymbolSubstitution = $state<boolean>(true);
   let currentFontSize = $derived(isRenderMode ? renderFontSize : sourceFontSize);
   let tabSize = $state<number>(4);          // 기본 들여쓰기 탭 4칸
   let scrollTop = $state<number>(0);
@@ -254,6 +255,14 @@
     "'": "'",
     '`': '`'
   };
+  const renderAutoSubstitutions: Record<string, string> = {
+    '->': '→',
+    '<-': '←',
+    '<->': '↔',
+    '=>': '⇒',
+    '<=>': '⇔'
+  };
+  const renderAutoSubstitutionTriggers = Object.keys(renderAutoSubstitutions).sort((a, b) => b.length - a.length);
 
   function getActiveTabIndex(): number {
     return tabs.findIndex((tab) => tab.id === activeTabId);
@@ -440,6 +449,7 @@
     if (savedTabSize) tabSize = parseInt(savedTabSize, 10);
 
     renderAutoPairEditing = localStorage.getItem('pref_render_auto_pair_editing') !== 'false';
+    renderAutoSymbolSubstitution = localStorage.getItem('pref_render_auto_symbol_substitution') !== 'false';
 
     renderFontFamily = localStorage.getItem('pref_render_font_family') || 'nanum-gothic';
 
@@ -480,6 +490,7 @@
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_font_size', renderFontSize.toString()); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_tab_size', tabSize.toString()); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_pair_editing', renderAutoPairEditing ? 'true' : 'false'); });
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_symbol_substitution', renderAutoSymbolSubstitution ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences && renderFontFamily) localStorage.setItem('pref_render_font_family', renderFontFamily); });
 
   $effect(() => {
@@ -693,6 +704,7 @@
     if (e.key === 'pref_render_font_size' && e.newValue) renderFontSize = parseInt(e.newValue, 10);
     if (e.key === 'pref_tab_size' && e.newValue) tabSize = parseInt(e.newValue, 10);
     if (e.key === 'pref_render_auto_pair_editing' && e.newValue) renderAutoPairEditing = e.newValue !== 'false';
+    if (e.key === 'pref_render_auto_symbol_substitution' && e.newValue) renderAutoSymbolSubstitution = e.newValue !== 'false';
     if (e.key === 'pref_render_font_family' && e.newValue) renderFontFamily = e.newValue;
 
     if (e.key.startsWith('pref_light_') && e.newValue) {
@@ -1068,8 +1080,38 @@
     return true;
   }
 
+  function handleRenderAutoSubstitutionSpace(event: KeyboardEvent): boolean {
+    if (!renderAutoSymbolSubstitution) return false;
+    if (!isRenderMode || !textareaEl || event.isComposing) return false;
+    if (event.key !== ' ') return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const start = textareaEl.selectionStart;
+    const end = textareaEl.selectionEnd;
+    if (start !== end || start === 0) return false;
+
+    const trigger = renderAutoSubstitutionTriggers.find((candidate) => {
+      const triggerStart = start - candidate.length;
+      if (triggerStart < 0) return false;
+      if (fileContent.slice(triggerStart, start) !== candidate) return false;
+      return triggerStart === 0 || /\s/.test(fileContent[triggerStart - 1]);
+    });
+    if (!trigger) return false;
+
+    event.preventDefault();
+
+    const triggerStart = start - trigger.length;
+    const substitution = renderAutoSubstitutions[trigger];
+    const nextContent = `${fileContent.slice(0, triggerStart)}${substitution} ${fileContent.slice(end)}`;
+    applyEditorContentChange(nextContent);
+    placeEditorCaret(triggerStart + substitution.length + 1);
+
+    return true;
+  }
+
   function handleEditorKeyDown(event: KeyboardEvent) {
     if (handleRenderAutoPairBackspace(event)) return;
+    if (handleRenderAutoSubstitutionSpace(event)) return;
     handleRenderAutoPairInput(event);
   }
 
@@ -2015,6 +2057,18 @@
               <span class="settings-check-copy">
                 <span class="settings-check-title">쌍 문자 자동 입력 및 삭제</span>
                 <span class="settings-check-description">( )나 &#123; &#125; 같은 괄호 및 따옴표를 하나만 입력해도 자동으로 쌍을 생성합니다.</span>
+              </span>
+            </label>
+            <label class="settings-check-row" for="render-auto-symbol-substitution-window">
+              <input
+                id="render-auto-symbol-substitution-window"
+                class="settings-checkbox"
+                type="checkbox"
+                bind:checked={renderAutoSymbolSubstitution}
+              />
+              <span class="settings-check-copy">
+                <span class="settings-check-title">화살표 기호 자동 변환</span>
+                <span class="settings-check-description">->나 => 같은 기호를 단독으로 입력한 뒤 스페이스를 누르면 →나 ⇒로 변환합니다.</span>
               </span>
             </label>
           </div>
