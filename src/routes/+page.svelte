@@ -256,10 +256,11 @@
     '`': '`'
   };
   const renderAutoSubstitutions: Record<string, string> = {
-    '->': '→',
-    '<-': '←',
+    '-->': '→',
+    '<--': '←',
     '<->': '↔',
-    '=>': '⇒',
+    '==>': '⇒',
+    '<==': '⇐',
     '<=>': '⇔'
   };
   const renderAutoSubstitutionTriggers = Object.keys(renderAutoSubstitutions).sort((a, b) => b.length - a.length);
@@ -2077,7 +2078,7 @@
               />
               <span class="settings-check-copy">
                 <span class="settings-check-title">화살표 기호 자동 변환</span>
-                <span class="settings-check-description">->나 => 같은 기호를 단독으로 입력한 뒤 스페이스를 누르면 →나 ⇒로 변환합니다.</span>
+                <span class="settings-check-description">-->나 ==> 같은 기호를 단독으로 입력한 뒤 스페이스를 누르면 →나 ⇒로 변환합니다.</span>
               </span>
             </label>
           </div>
