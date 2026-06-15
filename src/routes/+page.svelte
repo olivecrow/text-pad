@@ -264,6 +264,7 @@
     '<=>': '⇔'
   };
   const renderAutoSubstitutionTriggers = Object.keys(renderAutoSubstitutions).sort((a, b) => b.length - a.length);
+  const editorIndentUnit = '    ';
 
   function getActiveTabIndex(): number {
     return tabs.findIndex((tab) => tab.id === activeTabId);
@@ -1036,6 +1037,148 @@
     });
   }
 
+  function placeEditorSelection(start: number, end: number) {
+    requestAnimationFrame(() => {
+      if (!textareaEl) return;
+      textareaEl.focus({ preventScroll: true });
+      textareaEl.selectionStart = start;
+      textareaEl.selectionEnd = end;
+      updateCursorPosition();
+    });
+  }
+
+  function getSelectedLineBounds(text: string, start: number, end: number): { start: number; end: number } {
+    const lineStart = text.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
+    const adjustedEnd = end > start && text[end - 1] === '\n' ? end - 1 : end;
+    const nextLineBreak = text.indexOf('\n', adjustedEnd);
+    if (nextLineBreak === -1) return { start: lineStart, end: text.length };
+
+    const lineEnd = nextLineBreak > 0 && text[nextLineBreak - 1] === '\r'
+      ? nextLineBreak - 1
+      : nextLineBreak;
+    return { start: lineStart, end: lineEnd };
+  }
+
+  function transformSelectedLines(
+    text: string,
+    lineStart: number,
+    lineEnd: number,
+    transformLine: (line: string, absoluteLineStart: number) => string
+  ): string {
+    const block = text.slice(lineStart, lineEnd);
+    let result = '';
+    let cursor = 0;
+    const lineRegex = /([^\r\n]*)(\r\n|\n|\r|$)/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = lineRegex.exec(block)) !== null) {
+      if (match[0] === '' && match.index === block.length) break;
+      const lineText = match[1];
+      const lineEnding = match[2];
+      result += transformLine(lineText, lineStart + cursor) + lineEnding;
+      cursor += match[0].length;
+    }
+
+    return `${text.slice(0, lineStart)}${result}${text.slice(lineEnd)}`;
+  }
+
+  function countSelectedLines(text: string, lineStart: number, lineEnd: number): number {
+    const block = text.slice(lineStart, lineEnd);
+    if (block.length === 0) return 1;
+    return (block.match(/\r\n|\n|\r/g)?.length ?? 0) + 1;
+  }
+
+  function handleEditorTabIndent(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing) return false;
+    if (event.key !== 'Tab') return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    event.preventDefault();
+
+    const start = textareaEl.selectionStart;
+    const end = textareaEl.selectionEnd;
+
+    if (start === end && !event.shiftKey) {
+      const nextContent = `${fileContent.slice(0, start)}${editorIndentUnit}${fileContent.slice(end)}`;
+      applyEditorContentChange(nextContent);
+      placeEditorCaret(start + editorIndentUnit.length);
+      return true;
+    }
+
+    const bounds = getSelectedLineBounds(fileContent, start, end);
+
+    if (!event.shiftKey) {
+      const lineCount = countSelectedLines(fileContent, bounds.start, bounds.end);
+      const nextContent = transformSelectedLines(
+        fileContent,
+        bounds.start,
+        bounds.end,
+        (lineText) => `${editorIndentUnit}${lineText}`
+      );
+      applyEditorContentChange(nextContent);
+      if (start === end) {
+        placeEditorSelection(start + editorIndentUnit.length, end + editorIndentUnit.length);
+      } else {
+        const nextStart = start === bounds.start ? start : start + editorIndentUnit.length;
+        placeEditorSelection(nextStart, end + editorIndentUnit.length * lineCount);
+      }
+      return true;
+    }
+
+    let removedBeforeStart = 0;
+    let removedBeforeEnd = 0;
+    const nextContent = transformSelectedLines(
+      fileContent,
+      bounds.start,
+      bounds.end,
+      (lineText, absoluteLineStart) => {
+        const removeCount = lineText.startsWith('\t')
+          ? 1
+          : Math.min(lineText.match(/^ {1,4}/)?.[0].length ?? 0, editorIndentUnit.length);
+        const removeEnd = absoluteLineStart + removeCount;
+        if (absoluteLineStart < start) {
+          removedBeforeStart += Math.max(0, Math.min(removeEnd, start) - absoluteLineStart);
+        }
+        if (absoluteLineStart < end) {
+          removedBeforeEnd += Math.max(0, Math.min(removeEnd, end) - absoluteLineStart);
+        }
+        return lineText.slice(removeCount);
+      }
+    );
+
+    applyEditorContentChange(nextContent);
+    placeEditorSelection(start - removedBeforeStart, end - removedBeforeEnd);
+    return true;
+  }
+
+  function handleEditorIndentBackspace(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing) return false;
+    if (event.key !== 'Backspace') return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const start = textareaEl.selectionStart;
+    const end = textareaEl.selectionEnd;
+    if (start !== end || start === 0) return false;
+
+    const lineStart = fileContent.lastIndexOf('\n', start - 1) + 1;
+    if (start === lineStart) return false;
+
+    const linePrefix = fileContent.slice(lineStart, start);
+    if (!/^[ \t]+$/.test(linePrefix)) return false;
+
+    const trailingSpaces = linePrefix.match(/ +$/)?.[0].length ?? 0;
+    const removeCount = trailingSpaces > 0
+      ? ((trailingSpaces - 1) % editorIndentUnit.length) + 1
+      : 1;
+    const nextStart = start - removeCount;
+    const nextContent = `${fileContent.slice(0, nextStart)}${fileContent.slice(start)}`;
+
+    event.preventDefault();
+    applyEditorContentChange(nextContent);
+    placeEditorCaret(nextStart);
+    return true;
+  }
+
   function handleRenderAutoPairInput(event: KeyboardEvent): boolean {
     if (!renderAutoPairEditing) return false;
     if (!isRenderMode || !textareaEl || event.isComposing) return false;
@@ -1111,6 +1254,8 @@
   }
 
   function handleEditorKeyDown(event: KeyboardEvent) {
+    if (handleEditorTabIndent(event)) return;
+    if (handleEditorIndentBackspace(event)) return;
     if (handleRenderAutoPairBackspace(event)) return;
     if (handleRenderAutoSubstitutionSpace(event)) return;
     handleRenderAutoPairInput(event);
