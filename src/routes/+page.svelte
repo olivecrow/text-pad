@@ -154,6 +154,7 @@
   let isRenderMode = $state<boolean>(true); // 기본값은 렌더 모드
   let renderAutoPairEditing = $state<boolean>(true);
   let renderAutoSymbolSubstitution = $state<boolean>(true);
+  let renderPreserveIndentOnEnter = $state<boolean>(true);
   let currentFontSize = $derived(isRenderMode ? renderFontSize : sourceFontSize);
   let tabSize = $state<number>(4);          // 기본 들여쓰기 탭 4칸
   let scrollTop = $state<number>(0);
@@ -467,6 +468,7 @@
 
     renderAutoPairEditing = localStorage.getItem('pref_render_auto_pair_editing') !== 'false';
     renderAutoSymbolSubstitution = localStorage.getItem('pref_render_auto_symbol_substitution') !== 'false';
+    renderPreserveIndentOnEnter = localStorage.getItem('pref_render_preserve_indent_on_enter') !== 'false';
 
     renderFontFamily = localStorage.getItem('pref_render_font_family') || 'nanum-gothic';
 
@@ -511,6 +513,7 @@
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_tab_size', tabSize.toString()); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_pair_editing', renderAutoPairEditing ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_symbol_substitution', renderAutoSymbolSubstitution ? 'true' : 'false'); });
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_preserve_indent_on_enter', renderPreserveIndentOnEnter ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences && renderFontFamily) localStorage.setItem('pref_render_font_family', renderFontFamily); });
 
   $effect(() => {
@@ -725,6 +728,7 @@
     if (e.key === 'pref_tab_size' && e.newValue) tabSize = parseInt(e.newValue, 10);
     if (e.key === 'pref_render_auto_pair_editing' && e.newValue) renderAutoPairEditing = e.newValue !== 'false';
     if (e.key === 'pref_render_auto_symbol_substitution' && e.newValue) renderAutoSymbolSubstitution = e.newValue !== 'false';
+    if (e.key === 'pref_render_preserve_indent_on_enter' && e.newValue) renderPreserveIndentOnEnter = e.newValue !== 'false';
     if (e.key === 'pref_render_font_family' && e.newValue) renderFontFamily = e.newValue;
 
     if (e.key.startsWith('pref_light_') && e.newValue) {
@@ -1237,6 +1241,94 @@
     return true;
   }
 
+  function getLineStartOffset(text: string, offset: number): number {
+    if (offset <= 0) return 0;
+    return text.lastIndexOf('\n', offset - 1) + 1;
+  }
+
+  function getLineEndOffset(text: string, offset: number): number {
+    const nextLineBreak = text.indexOf('\n', offset);
+    if (nextLineBreak === -1) return text.length;
+    return text[nextLineBreak - 1] === '\r' ? nextLineBreak - 1 : nextLineBreak;
+  }
+
+  function getPreferredNewline(text: string, offset: number): string {
+    const previousLineBreak = offset <= 0 ? -1 : text.lastIndexOf('\n', offset - 1);
+    if (previousLineBreak > 0 && text[previousLineBreak - 1] === '\r') return '\r\n';
+
+    const firstLineBreak = text.indexOf('\n');
+    if (firstLineBreak > 0 && text[firstLineBreak - 1] === '\r') return '\r\n';
+
+    return '\n';
+  }
+
+  function getPreviousLineBounds(text: string, lineStart: number): { start: number; end: number } | null {
+    if (lineStart <= 0 || text[lineStart - 1] !== '\n') return null;
+
+    const previousLineEnd = lineStart > 1 && text[lineStart - 2] === '\r'
+      ? lineStart - 2
+      : lineStart - 1;
+    const previousLineStart = previousLineEnd <= 0 ? 0 : text.lastIndexOf('\n', previousLineEnd - 1) + 1;
+
+    return { start: previousLineStart, end: previousLineEnd };
+  }
+
+  function getLeadingWhitespace(text: string): string {
+    return text.match(/^[ \t]*/)?.[0] ?? '';
+  }
+
+  function handleRenderPreserveIndentEnter(event: KeyboardEvent): boolean {
+    if (!renderPreserveIndentOnEnter) return false;
+    if (!isRenderMode || !textareaEl || event.isComposing) return false;
+    if (event.key !== 'Enter') return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const start = textareaEl.selectionStart;
+    const end = textareaEl.selectionEnd;
+    const lineStart = getLineStartOffset(fileContent, start);
+    const lineEnd = getLineEndOffset(fileContent, start);
+    const lineIndent = getLeadingWhitespace(fileContent.slice(lineStart, lineEnd));
+    if (lineIndent.length === 0) return false;
+
+    const insertText = `${getPreferredNewline(fileContent, start)}${lineIndent}`;
+
+    event.preventDefault();
+    applyEditorContentChange(`${fileContent.slice(0, start)}${insertText}${fileContent.slice(end)}`);
+    placeEditorCaret(start + insertText.length);
+    return true;
+  }
+
+  function handleRenderEmptyIndentedLineBackspace(event: KeyboardEvent): boolean {
+    if (!renderPreserveIndentOnEnter) return false;
+    if (!isRenderMode || !textareaEl || event.isComposing) return false;
+    if (event.key !== 'Backspace') return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const start = textareaEl.selectionStart;
+    const end = textareaEl.selectionEnd;
+    if (start !== end || start === 0) return false;
+
+    const lineStart = getLineStartOffset(fileContent, start);
+    if (lineStart === 0 || start === lineStart) return false;
+
+    const lineEnd = getLineEndOffset(fileContent, start);
+    if (start !== lineEnd) return false;
+
+    const currentLine = fileContent.slice(lineStart, lineEnd);
+    if (!/^[ \t]+$/.test(currentLine)) return false;
+
+    const previousLineBounds = getPreviousLineBounds(fileContent, lineStart);
+    if (!previousLineBounds) return false;
+
+    const previousLine = fileContent.slice(previousLineBounds.start, previousLineBounds.end);
+    if (currentLine !== getLeadingWhitespace(previousLine)) return false;
+
+    event.preventDefault();
+    applyEditorContentChange(`${fileContent.slice(0, previousLineBounds.end)}${fileContent.slice(start)}`);
+    placeEditorCaret(previousLineBounds.end);
+    return true;
+  }
+
   function handleRenderAutoPairInput(event: KeyboardEvent): boolean {
     if (!renderAutoPairEditing) return false;
     if (!isRenderMode || !textareaEl || event.isComposing) return false;
@@ -1317,6 +1409,8 @@
   }
 
   function handleEditorKeyDown(event: KeyboardEvent) {
+    if (handleRenderPreserveIndentEnter(event)) return;
+    if (handleRenderEmptyIndentedLineBackspace(event)) return;
     if (handleEditorTabIndent(event)) return;
     if (handleEditorIndentBackspace(event)) return;
     if (handleRenderAutoPairBackspace(event)) return;
@@ -2357,6 +2451,18 @@
               <span class="settings-check-copy">
                 <span class="settings-check-title">화살표 기호 자동 변환</span>
                 <span class="settings-check-description">-->나 ==> 같은 기호를 단독으로 입력한 뒤 스페이스를 누르면 →나 ⇒로 변환합니다.</span>
+              </span>
+            </label>
+            <label class="settings-check-row" for="render-preserve-indent-on-enter-window">
+              <input
+                id="render-preserve-indent-on-enter-window"
+                class="settings-checkbox"
+                type="checkbox"
+                bind:checked={renderPreserveIndentOnEnter}
+              />
+              <span class="settings-check-copy">
+                <span class="settings-check-title">줄바꿈 시 들여쓰기 유지</span>
+                <span class="settings-check-description">들여쓰기된 줄에서 Enter를 누르면 다음 줄에도 같은 들여쓰기를 넣습니다.</span>
               </span>
             </label>
           </div>

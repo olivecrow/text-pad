@@ -21,6 +21,7 @@
 - `pref_render_font_family`: 렌더 모드 글꼴 선택.
 - `pref_render_auto_pair_editing`: 렌더 모드 쌍 문자 자동 입력과 삭제 사용 여부.
 - `pref_render_auto_symbol_substitution`: 렌더 모드 화살표 기호 자동 변환 사용 여부.
+- `pref_render_preserve_indent_on_enter`: 렌더 모드 줄바꿈 시 들여쓰기 유지 사용 여부.
 - `pref_light_*`: 라이트 테마 렌더 색상과 굵기.
 - `pref_dark_*`: 다크 테마 렌더 색상과 굵기.
 
