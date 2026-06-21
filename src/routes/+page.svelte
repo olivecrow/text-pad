@@ -976,7 +976,7 @@
   }
 
   function keepEditorCaretVisibleDuringEdit() {
-    if (!isBrowser || !textareaEl || !isRenderMode) {
+    if (!isBrowser || !textareaEl) {
       hideSteadyEditorCaret();
       return;
     }
@@ -990,6 +990,14 @@
       steadyEditorCaretVisible = false;
       steadyEditorCaretTimer = null;
     }, 700);
+  }
+
+  function syncEditorCaretVisibilityForCurrentMode() {
+    if (isRenderMode) {
+      keepEditorCaretVisibleDuringEdit();
+    } else {
+      hideSteadyEditorCaret();
+    }
   }
 
   // 폰트 변경 반응성
@@ -1134,7 +1142,7 @@
     isDirty = true;
     errorMsg = null;
     updateCursorPosition();
-    keepEditorCaretVisibleDuringEdit();
+    syncEditorCaretVisibilityForCurrentMode();
     reconcileInlineColorPickerState();
     updateTabById(activeTabId, {
       fileName,
@@ -1148,11 +1156,15 @@
     isDirty = true;
     errorMsg = null;
     reconcileInlineColorPickerState();
-    keepEditorCaretVisibleDuringEdit();
     updateTabById(activeTabId, {
       fileName,
       isDirty: true
     });
+  }
+
+  function applyRenderEditorContentChange(nextContent: string) {
+    applyEditorContentChange(nextContent);
+    keepEditorCaretVisibleDuringEdit();
   }
 
   function placeEditorCaret(offset: number) {
@@ -1175,8 +1187,7 @@
   }
 
   function handleEditorBeforeInput() {
-    if (!isRenderMode) return;
-    keepEditorCaretVisibleDuringEdit();
+    syncEditorCaretVisibilityForCurrentMode();
   }
 
   function handleEditorBlur() {
@@ -1225,7 +1236,7 @@
   }
 
   function handleRenderTabIndent(event: KeyboardEvent): boolean {
-    if (!isRenderMode || !textareaEl || event.isComposing) return false;
+    if (!textareaEl || event.isComposing) return false;
     if (event.key !== 'Tab') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
@@ -1236,7 +1247,7 @@
 
     if (start === end && !event.shiftKey) {
       const nextContent = `${fileContent.slice(0, start)}${editorIndentUnit}${fileContent.slice(end)}`;
-      applyEditorContentChange(nextContent);
+      applyRenderEditorContentChange(nextContent);
       placeEditorCaret(start + editorIndentUnit.length);
       return true;
     }
@@ -1251,7 +1262,7 @@
         bounds.end,
         (lineText) => `${editorIndentUnit}${lineText}`
       );
-      applyEditorContentChange(nextContent);
+      applyRenderEditorContentChange(nextContent);
       if (start === end) {
         placeEditorSelection(start + editorIndentUnit.length, end + editorIndentUnit.length);
       } else {
@@ -1282,13 +1293,13 @@
       }
     );
 
-    applyEditorContentChange(nextContent);
+    applyRenderEditorContentChange(nextContent);
     placeEditorSelection(start - removedBeforeStart, end - removedBeforeEnd);
     return true;
   }
 
   function handleRenderIndentBackspace(event: KeyboardEvent): boolean {
-    if (!isRenderMode || !textareaEl || event.isComposing) return false;
+    if (!textareaEl || event.isComposing) return false;
     if (event.key !== 'Backspace') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
@@ -1310,7 +1321,7 @@
     const nextContent = `${fileContent.slice(0, nextStart)}${fileContent.slice(start)}`;
 
     event.preventDefault();
-    applyEditorContentChange(nextContent);
+    applyRenderEditorContentChange(nextContent);
     placeEditorCaret(nextStart);
     return true;
   }
@@ -1353,7 +1364,7 @@
 
   function handleRenderPreserveIndentEnter(event: KeyboardEvent): boolean {
     if (!renderPreserveIndentOnEnter) return false;
-    if (!isRenderMode || !textareaEl || event.isComposing) return false;
+    if (!textareaEl || event.isComposing) return false;
     if (event.key !== 'Enter') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
@@ -1367,14 +1378,14 @@
     const insertText = `${getPreferredNewline(fileContent, start)}${lineIndent}`;
 
     event.preventDefault();
-    applyEditorContentChange(`${fileContent.slice(0, start)}${insertText}${fileContent.slice(end)}`);
+    applyRenderEditorContentChange(`${fileContent.slice(0, start)}${insertText}${fileContent.slice(end)}`);
     placeEditorCaret(start + insertText.length);
     return true;
   }
 
   function handleRenderEmptyIndentedLineBackspace(event: KeyboardEvent): boolean {
     if (!renderPreserveIndentOnEnter) return false;
-    if (!isRenderMode || !textareaEl || event.isComposing) return false;
+    if (!textareaEl || event.isComposing) return false;
     if (event.key !== 'Backspace') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
@@ -1398,14 +1409,14 @@
     if (currentLine !== getLeadingWhitespace(previousLine)) return false;
 
     event.preventDefault();
-    applyEditorContentChange(`${fileContent.slice(0, previousLineBounds.end)}${fileContent.slice(start)}`);
+    applyRenderEditorContentChange(`${fileContent.slice(0, previousLineBounds.end)}${fileContent.slice(start)}`);
     placeEditorCaret(previousLineBounds.end);
     return true;
   }
 
   function handleRenderAutoPairInput(event: KeyboardEvent): boolean {
     if (!renderAutoPairEditing) return false;
-    if (!isRenderMode || !textareaEl || event.isComposing) return false;
+    if (!textareaEl || event.isComposing) return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
     const closingChar = renderAutoClosingPairs[event.key];
@@ -1418,7 +1429,7 @@
     event.preventDefault();
 
     const nextContent = `${fileContent.slice(0, start)}${event.key}${closingChar}${fileContent.slice(end)}`;
-    applyEditorContentChange(nextContent);
+    applyRenderEditorContentChange(nextContent);
     placeEditorCaret(start + 1);
 
     return true;
@@ -1431,7 +1442,7 @@
 
   function handleRenderAutoPairBackspace(event: KeyboardEvent): boolean {
     if (!renderAutoPairEditing) return false;
-    if (!isRenderMode || !textareaEl || event.isComposing) return false;
+    if (!textareaEl || event.isComposing) return false;
     if (event.key !== 'Backspace') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
@@ -1447,7 +1458,7 @@
     event.preventDefault();
 
     const nextContent = `${fileContent.slice(0, start - 1)}${fileContent.slice(start + 1)}`;
-    applyEditorContentChange(nextContent);
+    applyRenderEditorContentChange(nextContent);
     placeEditorCaret(start - 1);
 
     return true;
@@ -1455,7 +1466,7 @@
 
   function handleRenderAutoSubstitutionSpace(event: KeyboardEvent): boolean {
     if (!renderAutoSymbolSubstitution) return false;
-    if (!isRenderMode || !textareaEl || event.isComposing) return false;
+    if (!textareaEl || event.isComposing) return false;
     if (event.key !== ' ') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
@@ -1476,14 +1487,13 @@
     const triggerStart = start - trigger.length;
     const substitution = renderAutoSubstitutions[trigger];
     const nextContent = `${fileContent.slice(0, triggerStart)}${substitution} ${fileContent.slice(end)}`;
-    applyEditorContentChange(nextContent);
+    applyRenderEditorContentChange(nextContent);
     placeEditorCaret(triggerStart + substitution.length + 1);
 
     return true;
   }
 
-  function handleEditorKeyDown(event: KeyboardEvent) {
-    if (!isRenderMode) return;
+  function handleRenderEditorKeyDown(event: KeyboardEvent) {
     if (handleRenderPreserveIndentEnter(event)) return;
     if (handleRenderEmptyIndentedLineBackspace(event)) return;
     if (handleRenderTabIndent(event)) return;
@@ -1491,6 +1501,11 @@
     if (handleRenderAutoPairBackspace(event)) return;
     if (handleRenderAutoSubstitutionSpace(event)) return;
     handleRenderAutoPairInput(event);
+  }
+
+  function handleEditorKeyDown(event: KeyboardEvent) {
+    if (!isRenderMode) return;
+    handleRenderEditorKeyDown(event);
   }
 
   // 새 탭 생성
@@ -1759,7 +1774,7 @@
           textareaEl.focus();
           textareaEl.selectionStart = textareaEl.selectionEnd = start + text.length;
           updateCursorPosition();
-          keepEditorCaretVisibleDuringEdit();
+          syncEditorCaretVisibilityForCurrentMode();
         }
       }, 0);
     } catch (err) {
@@ -1792,7 +1807,7 @@
         textareaEl.focus();
         textareaEl.selectionStart = textareaEl.selectionEnd = newCursorPos;
         updateCursorPosition();
-        keepEditorCaretVisibleDuringEdit();
+        syncEditorCaretVisibilityForCurrentMode();
       }
     }, 0);
   }
@@ -2069,7 +2084,7 @@
     const nextSelectionStart = adjustOffsetAfterReplacement(selectionStart, range, nextValue.length);
     const nextSelectionEnd = adjustOffsetAfterReplacement(selectionEnd, range, nextValue.length);
 
-    applyEditorContentChange(nextContent);
+    applyRenderEditorContentChange(nextContent);
     placeEditorSelection(nextSelectionStart, nextSelectionEnd);
   }
 
