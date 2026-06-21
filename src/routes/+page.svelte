@@ -1264,7 +1264,6 @@
     const start = textareaEl.selectionStart;
     const end = textareaEl.selectionEnd;
     if (start !== end) return false;
-    if (fileContent[start] === closingChar) return false;
 
     event.preventDefault();
 
@@ -1273,6 +1272,11 @@
     placeEditorCaret(start + 1);
 
     return true;
+  }
+
+  function isIncompleteRepeatedPairContext(openingChar: string, closingChar: string, caretOffset: number): boolean {
+    if (fileContent[caretOffset - 2] !== openingChar) return false;
+    return fileContent[caretOffset + 1] !== closingChar;
   }
 
   function handleRenderAutoPairBackspace(event: KeyboardEvent): boolean {
@@ -1288,6 +1292,7 @@
     const openingChar = fileContent[start - 1];
     const closingChar = renderAutoClosingPairs[openingChar];
     if (!closingChar || fileContent[start] !== closingChar) return false;
+    if (isIncompleteRepeatedPairContext(openingChar, closingChar, start)) return false;
 
     event.preventDefault();
 
