@@ -126,6 +126,11 @@
   let caretOffset = $state<number>(0);
   let editorCaretColor = $state<string>('var(--color-render-text, var(--text-color))');
   let editorCursorStyle = $state<string>('text');
+  let steadyEditorCaretVisible = $state<boolean>(false);
+  let steadyEditorCaretCollapsed = $state<boolean>(true);
+  let steadyEditorCaretLeft = $state<number>(12);
+  let steadyEditorCaretTop = $state<number>(8);
+  let steadyEditorCaretTimer: ReturnType<typeof setTimeout> | null = null;
 
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | null>(null);
@@ -918,6 +923,60 @@
     document.body.removeChild(testEl);
   }
 
+  function measureEditorTextWidth(text: string): number {
+    if (!isBrowser || !editorViewportEl || text.length === 0) return 0;
+
+    const measureEl = document.createElement('span');
+    measureEl.style.position = 'absolute';
+    measureEl.style.visibility = 'hidden';
+    measureEl.style.whiteSpace = 'pre';
+    measureEl.style.fontFamily = isRenderMode ? currentRenderFontFamilyCSS : 'var(--font-notepad)';
+    measureEl.style.fontSize = `${currentFontSize}pt`;
+    measureEl.style.fontWeight = isRenderMode ? activeColors.renderFontWeight : 'normal';
+    measureEl.style.lineHeight = `${measuredLineHeight}px`;
+    measureEl.style.tabSize = `${tabSize}`;
+    measureEl.style.setProperty('-moz-tab-size', `${tabSize}`);
+    measureEl.style.letterSpacing = 'normal';
+    measureEl.style.wordSpacing = 'normal';
+    measureEl.style.fontVariantLigatures = 'none';
+    measureEl.style.fontFeatureSettings = '"liga" 0';
+    measureEl.textContent = text;
+
+    editorViewportEl.appendChild(measureEl);
+    const width = measureEl.getBoundingClientRect().width;
+    editorViewportEl.removeChild(measureEl);
+    return width;
+  }
+
+  function syncSteadyEditorCaretPosition() {
+    if (!textareaEl) return;
+
+    const start = textareaEl.selectionStart;
+    const end = textareaEl.selectionEnd;
+    steadyEditorCaretCollapsed = start === end;
+    if (!steadyEditorCaretCollapsed) return;
+
+    const lineIndex = Math.max(0, cursorLine - 1);
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const linePrefix = fileContent.slice(lineStart, start);
+    steadyEditorCaretLeft = 12 + measureEditorTextWidth(linePrefix) - scrollLeft;
+    steadyEditorCaretTop = 8 + lineIndex * measuredLineHeight - scrollTop;
+  }
+
+  function keepEditorCaretVisibleDuringEdit() {
+    if (!isBrowser || !textareaEl) return;
+
+    steadyEditorCaretVisible = true;
+    syncSteadyEditorCaretPosition();
+    if (steadyEditorCaretTimer) {
+      clearTimeout(steadyEditorCaretTimer);
+    }
+    steadyEditorCaretTimer = setTimeout(() => {
+      steadyEditorCaretVisible = false;
+      steadyEditorCaretTimer = null;
+    }, 700);
+  }
+
   // 폰트 변경 반응성
   $effect(() => {
     const _size = currentFontSize;
@@ -991,6 +1050,7 @@
     cursorLine = linesBefore.length;
     cursorCol = linesBefore[linesBefore.length - 1].length + 1;
     updateEditorCaretColor(pos);
+    syncSteadyEditorCaretPosition();
     updateTabById(activeTabId, {
       cursorLine,
       cursorCol,
@@ -1007,6 +1067,7 @@
     isDirty = true;
     errorMsg = null;
     updateCursorPosition();
+    keepEditorCaretVisibleDuringEdit();
     reconcileInlineColorPickerState();
     updateTabById(activeTabId, {
       fileName,
@@ -1021,6 +1082,7 @@
     isDirty = true;
     errorMsg = null;
     reconcileInlineColorPickerState();
+    keepEditorCaretVisibleDuringEdit();
     updateTabById(activeTabId, {
       fileName,
       fileContent,
@@ -1045,6 +1107,18 @@
       textareaEl.selectionEnd = end;
       updateCursorPosition();
     });
+  }
+
+  function handleEditorBeforeInput() {
+    keepEditorCaretVisibleDuringEdit();
+  }
+
+  function handleEditorBlur() {
+    steadyEditorCaretVisible = false;
+    if (steadyEditorCaretTimer) {
+      clearTimeout(steadyEditorCaretTimer);
+      steadyEditorCaretTimer = null;
+    }
   }
 
   function getSelectedLineBounds(text: string, start: number, end: number): { start: number; end: number } {
@@ -1545,6 +1619,7 @@
           textareaEl.focus();
           textareaEl.selectionStart = textareaEl.selectionEnd = start + text.length;
           updateCursorPosition();
+          keepEditorCaretVisibleDuringEdit();
         }
       }, 0);
     } catch (err) {
@@ -1577,6 +1652,7 @@
         textareaEl.focus();
         textareaEl.selectionStart = textareaEl.selectionEnd = newCursorPos;
         updateCursorPosition();
+        keepEditorCaretVisibleDuringEdit();
       }
     }, 0);
   }
@@ -1620,6 +1696,7 @@
     const target = e.target as HTMLTextAreaElement;
     scrollTop = target.scrollTop;
     scrollLeft = target.scrollLeft;
+    syncSteadyEditorCaretPosition();
     updateTabById(activeTabId, { scrollTop, scrollLeft });
   }
 
@@ -2518,9 +2595,10 @@
           <textarea
             bind:this={textareaEl}
             class="editor-textarea"
-            style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode ? editorCaretColor : 'var(--text-color)'}; cursor: {isRenderMode ? editorCursorStyle : 'text'};"
+            style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {steadyEditorCaretVisible ? 'transparent' : (isRenderMode ? editorCaretColor : 'var(--text-color)')}; cursor: {isRenderMode ? editorCursorStyle : 'text'};"
             bind:value={fileContent}
             onkeydown={handleEditorKeyDown}
+            onbeforeinput={handleEditorBeforeInput}
             oninput={handleInput}
             onscroll={handleScroll}
             onpointerdown={handleEditorPointerDown}
@@ -2529,8 +2607,16 @@
             onmousemove={handleEditorMouseMove}
             onmouseleave={handleEditorMouseLeave}
             onfocus={updateCursorPosition}
+            onblur={handleEditorBlur}
             spellcheck="false"
           ></textarea>
+          {#if steadyEditorCaretVisible && steadyEditorCaretCollapsed}
+            <div
+              class="steady-editor-caret"
+              style="left: {steadyEditorCaretLeft}px; top: {steadyEditorCaretTop}px; height: {measuredLineHeight}px; background-color: {isRenderMode ? editorCaretColor : 'var(--text-color)'};"
+              aria-hidden="true"
+            ></div>
+          {/if}
           <input
             bind:this={inlineColorPickerEl}
             class="color-picker-native inline-color-picker-native"
@@ -3209,6 +3295,13 @@
     caret-color: var(--color-render-text, var(--text-color));
     font-family: var(--font-render-family, var(--font-notepad));
     font-weight: var(--font-render-weight, normal);
+  }
+
+  .steady-editor-caret {
+    position: absolute;
+    width: 1px;
+    z-index: 3;
+    pointer-events: none;
   }
 
   .render-mode .editor-viewport {
