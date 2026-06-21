@@ -1,5 +1,18 @@
 export interface Token {
-  type: 'text' | 'string' | 'code' | 'number' | 'comment' | 'color' | 'paren' | 'bracket' | 'brace';
+  type:
+    | 'text'
+    | 'string'
+    | 'code'
+    | 'number'
+    | 'comment'
+    | 'color'
+    | 'paren'
+    | 'bracket'
+    | 'brace'
+    | 'key'
+    | 'literal'
+    | 'punctuation'
+    | 'invalid';
   text?: string;
   children?: Token[];
   depth?: number;

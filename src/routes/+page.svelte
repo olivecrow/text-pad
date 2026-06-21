@@ -7,12 +7,12 @@
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { ChevronDown, Copy, FileCode2, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, X } from "@lucide/svelte";
   import {
-    getCommentSyntaxForPath,
-    tokenizeLineWithState,
-    type CommentSyntax,
-    type Token,
-    type TokenizeState
-  } from "$lib/render-tokenizer";
+    getSuggestedFileExtensionForContent,
+    openFileDialogFilters,
+    parseDocumentForRender,
+    saveFileDialogFilters
+  } from "$lib/document-formats";
+  import type { Token } from "$lib/render-tokenizer";
   import { untrack } from "svelte";
 
   interface EditorTab {
@@ -73,13 +73,18 @@
   }
 
   function getUnsavedFileNameFromContent(content: string): string {
-    const fileNameBase = getFirstLineTitle(content)
+    const suggestedExtension = getSuggestedFileExtensionForContent(content);
+    const firstLineTitle = getFirstLineTitle(content);
+    const suggestedTitle = suggestedExtension === "json" && /^[{\[]\s*$/.test(firstLineTitle)
+      ? untitledFileName
+      : firstLineTitle;
+    const fileNameBase = suggestedTitle
       .replace(invalidFileNameCharsPattern, " ")
       .replace(/\s+/g, " ")
       .trim()
       .replace(/[. ]+$/g, "") || untitledFileName;
 
-    return /\.[^./\\]+$/.test(fileNameBase) ? fileNameBase : `${fileNameBase}.txt`;
+    return /\.[^./\\]+$/.test(fileNameBase) ? fileNameBase : `${fileNameBase}.${suggestedExtension}`;
   }
 
   function getSuggestedSaveFileName(tab: EditorTab): string {
@@ -241,12 +246,7 @@
   );
 
   let canPersistPreferences = $state<boolean>(false);
-  const textSaveFilters = [
-    {
-      name: "Text Files",
-      extensions: ["txt"]
-    }
-  ];
+  const textSaveFilters = saveFileDialogFilters;
   const closeSaveButtons = {
     yes: "저장",
     no: "저장 안 함",
@@ -805,33 +805,6 @@
   let lineCount = $derived(fileContent.split(/\r?\n/).length);
   let charCount = $derived(fileContent.length);
 
-  interface ParsedLine {
-    id: number;
-    indentLevel: number;
-    extraIndentSpaces: number;
-    tokens: Token[];
-  }
-
-  function annotateTokenOffsets(tokens: Token[], lineStartOffset: number) {
-    let cursorOffset = 0;
-
-    const visit = (token: Token) => {
-      if (token.children && token.children.length > 0) {
-        token.children.forEach(visit);
-        return;
-      }
-
-      const text = token.text || '';
-      if (token.type === 'color') {
-        token.start = lineStartOffset + cursorOffset;
-        token.end = token.start + text.length;
-      }
-      cursorOffset += text.length;
-    };
-
-    tokens.forEach(visit);
-  }
-
   function getLineStartOffsets(content: string): number[] {
     const offsets = [0];
     const newlineRegex = /\r?\n/g;
@@ -844,62 +817,17 @@
     return offsets;
   }
 
-  function parseLine(
-    lineText: string,
-    id: number,
-    tabSize: number,
-    comments: CommentSyntax | null,
-    state: TokenizeState | null,
-    lineStartOffset: number
-  ): { line: ParsedLine; state: TokenizeState | null } {
-    const match = lineText.match(/^([ \t]*)/);
-    const indentStr = match ? match[0] : "";
-
-    let totalSpaces = 0;
-    for (let j = 0; j < indentStr.length; j++) {
-      if (indentStr[j] === '\t') {
-        totalSpaces += tabSize;
-      } else {
-        totalSpaces += 1;
-      }
-    }
-
-    const indentLevel = Math.floor(totalSpaces / tabSize);
-    const extraIndentSpaces = totalSpaces % tabSize;
-    const tokenized = tokenizeLineWithState(lineText, { comments, state });
-    annotateTokenOffsets(tokenized.tokens, lineStartOffset);
-
-    return {
-      line: {
-        id,
-        indentLevel,
-        extraIndentSpaces,
-        tokens: tokenized.tokens
-      },
-      state: tokenized.state
-    };
-  }
-
-  function parseLines(
-    lines: string[],
-    tabSize: number,
-    comments: CommentSyntax | null,
-    lineStartOffsets: number[]
-  ): ParsedLine[] {
-    let state: TokenizeState | null = null;
-
-    return lines.map((lineText, idx) => {
-      const parsed = parseLine(lineText, idx, tabSize, comments, state, lineStartOffsets[idx] ?? 0);
-      state = parsed.state;
-      return parsed.line;
-    });
-  }
-
   // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
   let rawLines = $derived(fileContent.split(/\r?\n/));
   let lineStartOffsets = $derived(getLineStartOffsets(fileContent));
-  let activeCommentSyntax = $derived(getCommentSyntaxForPath(filePath || fileName));
-  let parsedLines = $derived(parseLines(rawLines, tabSize, activeCommentSyntax, lineStartOffsets));
+  let documentRender = $derived(parseDocumentForRender(fileContent, {
+    pathOrName: filePath || fileName,
+    tabSize,
+    lineStartOffsets
+  }));
+  let activeDocumentFormat = $derived(documentRender.format);
+  let documentDiagnostic = $derived(documentRender.diagnostic);
+  let parsedLines = $derived(documentRender.lines);
 
   // 가상화 범위 계산
   let startLine = $derived(Math.max(0, Math.floor(scrollTop / measuredLineHeight) - 8));
@@ -1355,12 +1283,7 @@
       const selected = await open({
         multiple: false,
         directory: false,
-        filters: [
-          {
-            name: "Text Files",
-            extensions: ["txt", "md", "json", "csv", "tsv", "yaml", "yml", "ini", "cfg", "log", "js", "ts", "rs", "html", "css"]
-          }
-        ]
+        filters: openFileDialogFilters
       });
 
       if (selected && typeof selected === "string") {
@@ -2512,8 +2435,14 @@
         </div>
 
         <!-- 에러 표시 간소화 -->
-        {#if errorMsg}
-          <div class="menu-error-indicator" title={errorMsg}>⚠️ {errorMsg}</div>
+        {#if errorMsg || documentDiagnostic}
+          <div
+            class="menu-error-indicator"
+            class:syntax-error={!errorMsg && !!documentDiagnostic}
+            title={errorMsg || documentDiagnostic?.message}
+          >
+            ⚠️ {errorMsg || documentDiagnostic?.message}
+          </div>
         {/if}
       </div>
 
@@ -2568,6 +2497,7 @@
                 {@const lineIdx = startLine + idx}
                 <div
                   class="gutter-line-number"
+                  class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1}
                   style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt;"
                 >
                   {lineIdx + 1}
@@ -2590,7 +2520,7 @@
                   {@const lineIdx = startLine + idx}
                   {@const line = parsedLines[lineIdx]}
                   {#if line}
-                    <div class="backdrop-line" style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; left: 0; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
+                    <div class="backdrop-line" class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; left: 0; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
                   {/if}
                 {/each}
               </div>
@@ -2645,6 +2575,19 @@
         {/if}
       </div>
       <div class="status-right">
+        {#if activeDocumentFormat.validatesSyntax}
+          <span
+            class="status-item"
+            class:status-error={!!documentDiagnostic}
+            title={documentDiagnostic?.message || "JSON 문법 문제가 없습니다"}
+          >
+            {#if documentDiagnostic}
+              JSON 오류 {documentDiagnostic.line}:{documentDiagnostic.column}
+            {:else}
+              JSON 정상
+            {/if}
+          </span>
+        {/if}
         <span class="status-item">Ln {cursorLine}, Col {cursorCol}</span>
         <span class="status-item">100%</span>
         <span class="status-item">Windows (CRLF)</span>
@@ -2733,6 +2676,20 @@
   }
   :global(.hl-number) {
     color: var(--color-hl-number);
+  }
+  :global(.hl-key) {
+    color: var(--color-hl-code-text);
+  }
+  :global(.hl-literal) {
+    color: var(--color-hl-number);
+  }
+  :global(.hl-punctuation) {
+    color: var(--text-muted);
+  }
+  :global(.hl-invalid) {
+    color: #dc2626;
+    background-color: rgba(220, 38, 38, 0.12);
+    box-shadow: inset 0 -1px 0 #dc2626;
   }
   :global(.hl-color) {
     border-radius: 2px;
@@ -3165,6 +3122,10 @@
     max-width: 250px;
   }
 
+  .menu-error-indicator.syntax-error {
+    color: #dc2626;
+  }
+
   /* 메인 편집기 공간 */
   .editor-area {
     flex: 1;
@@ -3208,6 +3169,11 @@
     font-family: var(--font-render-family, var(--font-notepad));
   }
 
+  .gutter-line-number.diagnostic-line {
+    color: #dc2626;
+    font-weight: 700;
+  }
+
   .editor-viewport {
     flex: 1;
     height: 100%;
@@ -3249,6 +3215,10 @@
     -webkit-font-smoothing: subpixel-antialiased;
     -moz-osx-font-smoothing: auto;
     font-weight: var(--font-render-weight, normal);
+  }
+
+  .backdrop-line.diagnostic-line {
+    background-color: rgba(220, 38, 38, 0.07);
   }
 
   .guide-line {
@@ -3672,6 +3642,11 @@
     align-items: center;
     height: 100%;
     white-space: nowrap;
+  }
+
+  .status-item.status-error {
+    color: #dc2626;
+    font-weight: 600;
   }
 
   .status-item:first-child {
