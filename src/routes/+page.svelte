@@ -967,8 +967,19 @@
     steadyEditorCaretTop = 8 + lineIndex * measuredLineHeight - scrollTop;
   }
 
+  function hideSteadyEditorCaret() {
+    steadyEditorCaretVisible = false;
+    if (steadyEditorCaretTimer) {
+      clearTimeout(steadyEditorCaretTimer);
+      steadyEditorCaretTimer = null;
+    }
+  }
+
   function keepEditorCaretVisibleDuringEdit() {
-    if (!isBrowser || !textareaEl) return;
+    if (!isBrowser || !textareaEl || !isRenderMode) {
+      hideSteadyEditorCaret();
+      return;
+    }
 
     steadyEditorCaretVisible = true;
     syncSteadyEditorCaretPosition();
@@ -1164,15 +1175,12 @@
   }
 
   function handleEditorBeforeInput() {
+    if (!isRenderMode) return;
     keepEditorCaretVisibleDuringEdit();
   }
 
   function handleEditorBlur() {
-    steadyEditorCaretVisible = false;
-    if (steadyEditorCaretTimer) {
-      clearTimeout(steadyEditorCaretTimer);
-      steadyEditorCaretTimer = null;
-    }
+    hideSteadyEditorCaret();
   }
 
   function getSelectedLineBounds(text: string, start: number, end: number): { start: number; end: number } {
@@ -1216,8 +1224,8 @@
     return (block.match(/\r\n|\n|\r/g)?.length ?? 0) + 1;
   }
 
-  function handleEditorTabIndent(event: KeyboardEvent): boolean {
-    if (!textareaEl || event.isComposing) return false;
+  function handleRenderTabIndent(event: KeyboardEvent): boolean {
+    if (!isRenderMode || !textareaEl || event.isComposing) return false;
     if (event.key !== 'Tab') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
@@ -1279,8 +1287,8 @@
     return true;
   }
 
-  function handleEditorIndentBackspace(event: KeyboardEvent): boolean {
-    if (!textareaEl || event.isComposing) return false;
+  function handleRenderIndentBackspace(event: KeyboardEvent): boolean {
+    if (!isRenderMode || !textareaEl || event.isComposing) return false;
     if (event.key !== 'Backspace') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
@@ -1475,10 +1483,11 @@
   }
 
   function handleEditorKeyDown(event: KeyboardEvent) {
+    if (!isRenderMode) return;
     if (handleRenderPreserveIndentEnter(event)) return;
     if (handleRenderEmptyIndentedLineBackspace(event)) return;
-    if (handleEditorTabIndent(event)) return;
-    if (handleEditorIndentBackspace(event)) return;
+    if (handleRenderTabIndent(event)) return;
+    if (handleRenderIndentBackspace(event)) return;
     if (handleRenderAutoPairBackspace(event)) return;
     if (handleRenderAutoSubstitutionSpace(event)) return;
     handleRenderAutoPairInput(event);
@@ -2247,6 +2256,7 @@
   function toggleRenderMode() {
     isRenderMode = !isRenderMode;
     editorCursorStyle = 'text';
+    hideSteadyEditorCaret();
     clearInlineColorPickerState();
     requestAnimationFrame(() => updateCursorPosition());
   }
