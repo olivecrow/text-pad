@@ -1857,9 +1857,23 @@
   function toggleDataBoolean(range: DataBooleanRange) {
     const nextValue = range.value === 'true' ? 'false' : 'true';
     const nextContent = `${fileContent.slice(0, range.start)}${nextValue}${fileContent.slice(range.end)}`;
+    const selectionStart = textareaEl?.selectionStart ?? caretOffset;
+    const selectionEnd = textareaEl?.selectionEnd ?? caretOffset;
+    const nextSelectionStart = adjustOffsetAfterReplacement(selectionStart, range, nextValue.length);
+    const nextSelectionEnd = adjustOffsetAfterReplacement(selectionEnd, range, nextValue.length);
 
     applyEditorContentChange(nextContent);
-    placeEditorCaret(range.start + nextValue.length);
+    placeEditorSelection(nextSelectionStart, nextSelectionEnd);
+  }
+
+  function adjustOffsetAfterReplacement(offset: number, range: { start: number; end: number }, replacementLength: number) {
+    if (offset <= range.start) return offset;
+
+    const replacedLength = range.end - range.start;
+    const delta = replacementLength - replacedLength;
+    if (offset >= range.end) return offset + delta;
+
+    return range.start + Math.min(offset - range.start, replacementLength);
   }
 
   function findColorCodeAtPoint(clientX: number, clientY: number): { start: number; end: number; value: string } | null {
