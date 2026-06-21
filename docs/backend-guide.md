@@ -17,11 +17,14 @@
 - `read_file_content(path: String) -> Result<String, FileCommandError>`
   - 지정한 파일을 UTF-8 문자열로 읽는다.
   - 실패하면 파일 명령 오류인 `FileCommandError`를 반환한다.
+- `get_startup_file_paths() -> Vec<String>`
+  - 운영체제가 앱 실행 인자로 넘긴 값 중 실제 파일인 경로만 반환한다.
+  - 파일 직접 열기나 기본 앱 연결로 실행된 경우 프론트엔드가 이 목록을 읽어 시작 탭으로 연다.
 - `write_file_content(path: String, content: String) -> Result<(), FileCommandError>`
   - 지정한 파일에 문자열을 저장한다.
   - 실패하면 파일 명령 오류인 `FileCommandError`를 반환한다.
 
-새 파일 입출력 기능을 추가할 때는 사용자가 선택한 경로만 다루고, 실패를 `Result`로 반환한다.
+새 파일 입출력 기능을 추가할 때는 사용자가 대화상자로 선택했거나 운영체제가 파일 열기 의도로 넘긴 경로만 다루고, 실패를 `Result`로 반환한다.
 `FileCommandError`는 `code`와 `message`를 가진다. `code`는 오류 종류를 분기하기 위한 짧은 코드이고, `message`는 사용자에게 보여줄 수 있는 설명이다.
 
 ## 창과 권한

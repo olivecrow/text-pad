@@ -123,6 +123,7 @@
   let isHandlingCloseRequest = false;
   let hasFocusedEditorOnStartup = false;
   let hasShownMainWindowOnStartup = false;
+  let hasLoadedStartupFiles = false;
   let isWindowMaximized = $state<boolean>(false);
 
   // 커서 상태 추적
@@ -925,6 +926,44 @@
     return () => observer.disconnect();
   });
 
+  async function openFilePath(selected: string) {
+    const content = await invoke<string>("read_file_content", { path: selected });
+    const openedTab = createEditorTab({
+      filePath: selected,
+      fileName: getFileNameFromPath(selected),
+      fileContent: content,
+      isDirty: false
+    });
+    const activeTab = getActiveTab();
+
+    if (activeTab && isCleanUntitledTab(activeTab)) {
+      replaceActiveTabWith(openedTab);
+    } else {
+      addTab(openedTab);
+    }
+  }
+
+  async function loadStartupFiles() {
+    if (hasLoadedStartupFiles || !hasTauriRuntime() || isSettingsWindow) return;
+    hasLoadedStartupFiles = true;
+
+    try {
+      const startupPaths = await invoke<string[]>("get_startup_file_paths");
+      if (!startupPaths.length) return;
+
+      isLoading = true;
+      errorMsg = null;
+      syncActiveTabState();
+      for (const startupPath of startupPaths) {
+        await openFilePath(startupPath);
+      }
+    } catch (err: any) {
+      errorMsg = typeof err === "string" ? err : err.message || String(err);
+    } finally {
+      isLoading = false;
+    }
+  }
+
   function focusEditorOnStartup() {
     if (!textareaEl || hasFocusedEditorOnStartup) return;
     textareaEl.focus({ preventScroll: true });
@@ -946,6 +985,11 @@
     }
   }
 
+  async function initializeMainWindowAfterStartup() {
+    await loadStartupFiles();
+    await showMainWindowAfterStartup();
+  }
+
   $effect(() => {
     if (!textareaEl || isSettingsWindow || hasShownMainWindowOnStartup) return;
     hasShownMainWindowOnStartup = true;
@@ -956,7 +1000,7 @@
     }
 
     setTimeout(() => {
-      void showMainWindowAfterStartup();
+      void initializeMainWindowAfterStartup();
     }, 0);
   });
 
@@ -1287,20 +1331,7 @@
       });
 
       if (selected && typeof selected === "string") {
-        const content = await invoke<string>("read_file_content", { path: selected });
-        const openedTab = createEditorTab({
-          filePath: selected,
-          fileName: getFileNameFromPath(selected),
-          fileContent: content,
-          isDirty: false
-        });
-        const activeTab = getActiveTab();
-
-        if (activeTab && isCleanUntitledTab(activeTab)) {
-          replaceActiveTabWith(openedTab);
-        } else {
-          addTab(openedTab);
-        }
+        await openFilePath(selected);
       }
     } catch (err: any) {
       errorMsg = typeof err === "string" ? err : err.message || String(err);

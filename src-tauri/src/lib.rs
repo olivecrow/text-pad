@@ -3,7 +3,7 @@ mod file_commands;
 #[cfg(target_os = "windows")]
 mod windows_wheel;
 
-use file_commands::{read_file_content, write_file_content};
+use file_commands::{get_startup_file_paths, read_file_content, write_file_content};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -35,6 +35,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_startup_file_paths,
             read_file_content,
             write_file_content
         ])

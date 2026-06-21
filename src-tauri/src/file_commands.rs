@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::{fs, io, path::Path};
+use std::{env, fs, io, path::Path};
 
 #[derive(Debug, Serialize)]
 pub struct FileCommandError {
@@ -32,6 +32,19 @@ pub fn read_file_content(path: String) -> Result<String, FileCommandError> {
     let file_path = Path::new(&path);
     fs::read_to_string(file_path)
         .map_err(|err| FileCommandError::from_io("파일을 읽을 수 없습니다", err))
+}
+
+#[tauri::command]
+pub fn get_startup_file_paths() -> Vec<String> {
+    env::args_os()
+        .skip(1)
+        .filter_map(|arg| {
+            let file_path = Path::new(&arg);
+            file_path
+                .is_file()
+                .then(|| file_path.to_string_lossy().into_owned())
+        })
+        .collect()
 }
 
 #[tauri::command]
