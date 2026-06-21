@@ -1859,7 +1859,7 @@
     const nextContent = `${fileContent.slice(0, range.start)}${nextValue}${fileContent.slice(range.end)}`;
 
     applyEditorContentChange(nextContent);
-    placeEditorSelection(range.start, range.start + nextValue.length);
+    placeEditorCaret(range.start + nextValue.length);
   }
 
   function findColorCodeAtPoint(clientX: number, clientY: number): { start: number; end: number; value: string } | null {
@@ -2775,6 +2775,8 @@
   }
   :global(.hl-boolean) {
     border-radius: 3px;
+    margin-inline: -0.16em;
+    padding-inline: 0.16em;
     box-shadow: inset 0 0 0 1px rgba(107, 114, 128, 0.35);
     box-decoration-break: clone;
     -webkit-box-decoration-break: clone;
