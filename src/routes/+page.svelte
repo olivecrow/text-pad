@@ -1722,6 +1722,13 @@
 
   function getTokenClass(token: Token): string {
     const classes = [`hl-${token.type}`];
+    if (token.type === 'boolean') {
+      if (token.text === 'true') {
+        classes.push('hl-boolean-true');
+      } else if (token.text === 'false') {
+        classes.push('hl-boolean-false');
+      }
+    }
     if (token.depth !== undefined) {
       classes.push(`hl-depth-${token.depth % depthColorCount}`);
     }
@@ -1731,10 +1738,16 @@
   let inlineColorPickerEl = $state<HTMLInputElement | null>(null);
   let inlineColorPickerValue = $state<string>('#000000');
   let pendingInlineColorReplacement = $state<{ start: number; end: number } | null>(null);
-  let suppressNextEditorClickAfterColorOpen = false;
+  let suppressNextEditorClickAfterRenderAction = false;
   const parkedInlineColorPickerPosition = { left: -10000, top: -10000 };
   let inlineColorPickerPosition = $state<{ left: number; top: number }>({ ...parkedInlineColorPickerPosition });
   const hexColorInContentRegex = /#[0-9a-fA-F]{6}/g;
+  type DataBooleanValue = 'true' | 'false';
+  interface DataBooleanRange {
+    start: number;
+    end: number;
+    value: DataBooleanValue;
+  }
 
   function hasWhitespaceWordBoundary(text: string, start: number, end: number): boolean {
     const previousChar = text[start - 1];
@@ -1813,6 +1826,40 @@
     return document.querySelector(
       `.hl-color[data-color-start="${range.start}"][data-color-end="${range.end}"]`
     ) as HTMLElement | null;
+  }
+
+  function getDataBooleanValue(text: string): DataBooleanValue | null {
+    return text === 'true' || text === 'false' ? text : null;
+  }
+
+  function findDataBooleanAtPoint(clientX: number, clientY: number): DataBooleanRange | null {
+    if (!isBrowser || !isRenderMode) return null;
+    const elements = document.querySelectorAll<HTMLElement>('.hl-boolean[data-boolean-start][data-boolean-end]');
+
+    for (const element of elements) {
+      const rect = element.getBoundingClientRect();
+      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) continue;
+
+      const start = Number(element.dataset.booleanStart);
+      const end = Number(element.dataset.booleanEnd);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+
+      const value = getDataBooleanValue(fileContent.slice(start, end))
+        ?? getDataBooleanValue(element.dataset.booleanValue || '');
+      if (!value) continue;
+
+      return { start, end, value };
+    }
+
+    return null;
+  }
+
+  function toggleDataBoolean(range: DataBooleanRange) {
+    const nextValue = range.value === 'true' ? 'false' : 'true';
+    const nextContent = `${fileContent.slice(0, range.start)}${nextValue}${fileContent.slice(range.end)}`;
+
+    applyEditorContentChange(nextContent);
+    placeEditorSelection(range.start, range.start + nextValue.length);
   }
 
   function findColorCodeAtPoint(clientX: number, clientY: number): { start: number; end: number; value: string } | null {
@@ -1909,11 +1956,21 @@
   function handleEditorPointerDown(event: PointerEvent) {
     if (!isRenderMode || !textareaEl || event.button !== 0) return;
 
+    const booleanRange = findDataBooleanAtPoint(event.clientX, event.clientY);
+    if (booleanRange) {
+      event.preventDefault();
+      suppressNextEditorClickAfterRenderAction = true;
+      textareaEl.focus({ preventScroll: true });
+      clearInlineColorPickerState();
+      toggleDataBoolean(booleanRange);
+      return;
+    }
+
     const range = findColorCodeAtPoint(event.clientX, event.clientY);
     if (!range) return;
 
     event.preventDefault();
-    suppressNextEditorClickAfterColorOpen = true;
+    suppressNextEditorClickAfterRenderAction = true;
     textareaEl.focus({ preventScroll: true });
     textareaEl.selectionStart = range.start;
     textareaEl.selectionEnd = range.end;
@@ -1923,8 +1980,8 @@
 
   function handleEditorClick(event: MouseEvent) {
     updateCursorPosition();
-    if (suppressNextEditorClickAfterColorOpen) {
-      suppressNextEditorClickAfterColorOpen = false;
+    if (suppressNextEditorClickAfterRenderAction) {
+      suppressNextEditorClickAfterRenderAction = false;
       return;
     }
     if (!isRenderMode || !textareaEl) return;
@@ -1940,7 +1997,9 @@
   }
 
   function handleEditorMouseMove(event: MouseEvent) {
-    editorCursorStyle = findColorCodeAtPoint(event.clientX, event.clientY) ? 'pointer' : 'text';
+    editorCursorStyle = findDataBooleanAtPoint(event.clientX, event.clientY) || findColorCodeAtPoint(event.clientX, event.clientY)
+      ? 'pointer'
+      : 'text';
   }
 
   function handleEditorMouseLeave() {
@@ -1985,7 +2044,7 @@
 
 <svelte:window onkeydown={handleKeyDown} onclick={closeAllDropdown} />
 
-{#snippet renderToken(token: Token)}{#if token.children && token.children.length > 0}<span class={getTokenClass(token)}>{#each token.children as child}{@render renderToken(child)}{/each}</span>{:else if token.type === 'color'}<span class={getTokenClass(token)} style={getColorCodeStyle(token.text || '')} data-color-start={token.start} data-color-end={token.end}>{token.text || ''}</span>{:else}<span class={getTokenClass(token)}>{token.text || ''}</span>{/if}{/snippet}
+{#snippet renderToken(token: Token)}{#if token.children && token.children.length > 0}<span class={getTokenClass(token)}>{#each token.children as child}{@render renderToken(child)}{/each}</span>{:else if token.type === 'boolean'}<span class={getTokenClass(token)} data-boolean-start={token.start} data-boolean-end={token.end} data-boolean-value={token.text}>{token.text || ''}</span>{:else if token.type === 'color'}<span class={getTokenClass(token)} style={getColorCodeStyle(token.text || '')} data-color-start={token.start} data-color-end={token.end}>{token.text || ''}</span>{:else}<span class={getTokenClass(token)}>{token.text || ''}</span>{/if}{/snippet}
 
 {#snippet colorSettingRow(id: string, labelText: string, colors: ThemeColors, field: ColorField)}
   {@const pickerId = `${id}-picker`}
@@ -2713,6 +2772,30 @@
   }
   :global(.hl-literal) {
     color: var(--color-hl-number);
+  }
+  :global(.hl-boolean) {
+    border-radius: 3px;
+    box-shadow: inset 0 0 0 1px rgba(107, 114, 128, 0.35);
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+  :global(.hl-boolean-true) {
+    color: #166534;
+    background-color: #dcfce7;
+  }
+  :global(.hl-boolean-false) {
+    color: #991b1b;
+    background-color: #fee2e2;
+  }
+  :global(.theme-dark .hl-boolean-true) {
+    color: #bbf7d0;
+    background-color: rgba(34, 197, 94, 0.22);
+    box-shadow: inset 0 0 0 1px rgba(134, 239, 172, 0.45);
+  }
+  :global(.theme-dark .hl-boolean-false) {
+    color: #fecaca;
+    background-color: rgba(239, 68, 68, 0.22);
+    box-shadow: inset 0 0 0 1px rgba(252, 165, 165, 0.45);
   }
   :global(.hl-punctuation) {
     color: var(--text-muted);

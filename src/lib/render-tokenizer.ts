@@ -10,6 +10,7 @@ export interface Token {
     | 'bracket'
     | 'brace'
     | 'key'
+    | 'boolean'
     | 'literal'
     | 'punctuation'
     | 'invalid';

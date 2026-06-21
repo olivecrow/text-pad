@@ -237,7 +237,12 @@ function readJsonLiteralToken(content: string, start: number): FlatToken | null 
   for (const literal of ['true', 'false', 'null']) {
     if (content.startsWith(literal, start) && isJsonLiteralBoundary(content[start + literal.length])) {
       const end = start + literal.length;
-      return { type: 'literal', text: content.slice(start, end), start, end };
+      return {
+        type: literal === 'null' ? 'literal' : 'boolean',
+        text: content.slice(start, end),
+        start,
+        end
+      };
     }
   }
 
