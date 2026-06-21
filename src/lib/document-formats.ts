@@ -9,6 +9,7 @@ import {
 export interface ParsedLine {
   id: number;
   indentLevel: number;
+  indentColumns: number;
   extraIndentSpaces: number;
   tokens: Token[];
 }
@@ -151,6 +152,7 @@ function getIndentInfo(lineText: string, tabSize: number) {
 
   return {
     indentLevel: Math.floor(totalSpaces / tabSize),
+    indentColumns: totalSpaces,
     extraIndentSpaces: totalSpaces % tabSize
   };
 }
@@ -441,13 +443,46 @@ function scanJsonTokens(content: string, range?: { start: number; end: number })
   return tokens;
 }
 
-function getJsonRenderDepth(token: FlatToken, lineIndentLevel: number): number | undefined {
+function inferIndentUnit(content: string, lineStartOffsets: number[], tabSize: number): number {
+  let minPositiveIndent = Number.POSITIVE_INFINITY;
+
+  for (let lineIndex = 0; lineIndex < lineStartOffsets.length; lineIndex += 1) {
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const lineEnd = getLineContentEndOffset(content, lineStartOffsets, lineIndex);
+    let indentColumns = 0;
+
+    for (let i = lineStart; i < lineEnd; i += 1) {
+      const char = content[i];
+      if (char === ' ') {
+        indentColumns += 1;
+      } else if (char === '\t') {
+        indentColumns += tabSize;
+      } else {
+        break;
+      }
+    }
+
+    if (indentColumns > 0 && indentColumns < minPositiveIndent) {
+      minPositiveIndent = indentColumns;
+      if (minPositiveIndent === 1) return 1;
+    }
+  }
+
+  return Number.isFinite(minPositiveIndent) ? minPositiveIndent : tabSize;
+}
+
+function getJsonLineDepth(line: ParsedLine, indentUnit: number): number {
+  if (line.indentColumns <= 0 || indentUnit <= 0) return 0;
+  return Math.max(Math.floor(line.indentColumns / indentUnit) - 1, 0);
+}
+
+function getJsonRenderDepth(token: FlatToken, line: ParsedLine, indentUnit: number): number | undefined {
   if (token.type === 'key') {
-    return Math.max(lineIndentLevel - 1, 0);
+    return getJsonLineDepth(line, indentUnit);
   }
 
   if (token.type === 'brace' || token.type === 'bracket') {
-    return Math.max(lineIndentLevel, 0);
+    return Math.max(getJsonLineDepth(line, indentUnit), 0);
   }
 
   return token.depth;
@@ -479,6 +514,7 @@ function splitFlatTokensIntoLines(
 ): ParsedLine[] {
   const lineRangeOffsets = getLineRangeOffsets(content, lineStartOffsets, lineRange);
   const lines: ParsedLine[] = [];
+  const jsonIndentUnit = inferIndentUnit(content, lineStartOffsets, tabSize);
 
   for (let lineIndex = lineRange.startLine; lineIndex <= lineRange.endLine; lineIndex++) {
     const lineText = getLineText(content, lineStartOffsets, lineIndex);
@@ -508,7 +544,7 @@ function splitFlatTokensIntoLines(
         outputLine.tokens.push({
           type: token.type,
           text: content.slice(start, segmentEnd),
-          depth: getJsonRenderDepth(token, outputLine.indentLevel),
+          depth: getJsonRenderDepth(token, outputLine, jsonIndentUnit),
           start,
           end: segmentEnd
         });
