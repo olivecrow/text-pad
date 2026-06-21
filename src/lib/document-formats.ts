@@ -318,8 +318,21 @@ function scanJsonTokens(content: string): FlatToken[] {
 }
 
 function classifyJsonKeys(tokens: FlatToken[]) {
+  const stack: Token['type'][] = [];
+
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+
+    if ((token.type === 'brace' && token.text === '}') || (token.type === 'bracket' && token.text === ']')) {
+      stack.pop();
+      continue;
+    }
+
+    if ((token.type === 'brace' && token.text === '{') || (token.type === 'bracket' && token.text === '[')) {
+      stack.push(token.type);
+      continue;
+    }
+
     if (token.type !== 'string') continue;
 
     let nextIndex = i + 1;
@@ -327,6 +340,7 @@ function classifyJsonKeys(tokens: FlatToken[]) {
 
     if (tokens[nextIndex]?.type === 'punctuation' && tokens[nextIndex].text === ':') {
       token.type = 'key';
+      token.depth = Math.max(stack.length - 1, 0);
     }
   }
 }

@@ -177,6 +177,9 @@
   interface ThemeColors {
     codeBg: string;
     codeText: string;
+    keyStrong: string;
+    keyMedium: string;
+    keyLight: string;
     string: string;
     number: string;
     comment: string;
@@ -200,6 +203,9 @@
       renderFontWeight: '400',
       codeBg: '#1e293b',
       codeText: '#38bdf8',
+      keyStrong: '#0284c7',
+      keyMedium: '#38bdf8',
+      keyLight: '#7dd3fc',
       string: '#F3AF82',
       number: '#dffe8b',
       comment: '#64748b',
@@ -213,6 +219,9 @@
       renderFontWeight: '500',
       codeBg: '#f1f5f9',
       codeText: '#0284c7',
+      keyStrong: '#0369a1',
+      keyMedium: '#0284c7',
+      keyLight: '#38bdf8',
       string: '#b91c1c',
       number: '#d97706',
       comment: '#475569',
@@ -469,6 +478,9 @@
       return {
         codeBg: localStorage.getItem(`${prefix}codeBg`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_code_bg') : null) || defaults.codeBg,
         codeText: localStorage.getItem(`${prefix}codeText`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_code_text') : null) || defaults.codeText,
+        keyStrong: localStorage.getItem(`${prefix}keyStrong`) || defaults.keyStrong,
+        keyMedium: localStorage.getItem(`${prefix}keyMedium`) || defaults.keyMedium,
+        keyLight: localStorage.getItem(`${prefix}keyLight`) || defaults.keyLight,
         string: localStorage.getItem(`${prefix}string`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_string') : null) || defaults.string,
         number: localStorage.getItem(`${prefix}number`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_number') : null) || defaults.number,
         comment: localStorage.getItem(`${prefix}comment`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_comment') : null) || defaults.comment,
@@ -1719,6 +1731,7 @@
   }
 
   const depthColorCount = 5;
+  const keyDepthColorCount = 3;
 
   function getTokenClass(token: Token): string {
     const classes = [`hl-${token.type}`];
@@ -1729,7 +1742,9 @@
         classes.push('hl-boolean-false');
       }
     }
-    if (token.depth !== undefined) {
+    if (token.type === 'key') {
+      classes.push(`hl-key-depth-${(token.depth ?? 0) % keyDepthColorCount}`);
+    } else if (token.depth !== undefined) {
       classes.push(`hl-depth-${token.depth % depthColorCount}`);
     }
     return classes.join(' ');
@@ -2093,6 +2108,9 @@
   <div class="settings-window-container" style="
     --color-hl-code-bg: {activeColors.codeBg};
     --color-hl-code-text: {activeColors.codeText};
+    --color-hl-key-strong: {activeColors.keyStrong};
+    --color-hl-key-medium: {activeColors.keyMedium};
+    --color-hl-key-light: {activeColors.keyLight};
     --color-hl-string: {activeColors.string};
     --color-hl-number: {activeColors.number};
     --color-hl-comment: {activeColors.comment};
@@ -2269,6 +2287,9 @@
 
               {@render colorSettingRow('color-hl-code-bg-window-dark', '코드 백그라운드 색상', darkColors, 'codeBg')}
               {@render colorSettingRow('color-hl-code-text-window-dark', '코드 글자 색상', darkColors, 'codeText')}
+              {@render colorSettingRow('color-hl-key-strong-window-dark', '키 색상 1단계 (진한색)', darkColors, 'keyStrong')}
+              {@render colorSettingRow('color-hl-key-medium-window-dark', '키 색상 2단계 (중간색)', darkColors, 'keyMedium')}
+              {@render colorSettingRow('color-hl-key-light-window-dark', '키 색상 3단계 (연한색)', darkColors, 'keyLight')}
               {@render colorSettingRow('color-hl-string-window-dark', `문자열 색상 ('...', "...")`, darkColors, 'string')}
               {@render colorSettingRow('color-hl-number-window-dark', '숫자 색상 (0-9)', darkColors, 'number')}
               {@render colorSettingRow('color-hl-comment-window-dark', '파일 형식별 주석 색상', darkColors, 'comment')}
@@ -2293,6 +2314,9 @@
 
               {@render colorSettingRow('color-hl-code-bg-window-light', '코드 백그라운드 색상', lightColors, 'codeBg')}
               {@render colorSettingRow('color-hl-code-text-window-light', '코드 글자 색상', lightColors, 'codeText')}
+              {@render colorSettingRow('color-hl-key-strong-window-light', '키 색상 1단계 (진한색)', lightColors, 'keyStrong')}
+              {@render colorSettingRow('color-hl-key-medium-window-light', '키 색상 2단계 (중간색)', lightColors, 'keyMedium')}
+              {@render colorSettingRow('color-hl-key-light-window-light', '키 색상 3단계 (연한색)', lightColors, 'keyLight')}
               {@render colorSettingRow('color-hl-string-window-light', `문자열 색상 ('...', "...")`, lightColors, 'string')}
               {@render colorSettingRow('color-hl-number-window-light', '숫자 색상 (0-9)', lightColors, 'number')}
               {@render colorSettingRow('color-hl-comment-window-light', '파일 형식별 주석 색상', lightColors, 'comment')}
@@ -2344,6 +2368,9 @@
   <div class="app-container" style="
     --color-hl-code-bg: {activeColors.codeBg};
     --color-hl-code-text: {activeColors.codeText};
+    --color-hl-key-strong: {activeColors.keyStrong};
+    --color-hl-key-medium: {activeColors.keyMedium};
+    --color-hl-key-light: {activeColors.keyLight};
     --color-hl-string: {activeColors.string};
     --color-hl-number: {activeColors.number};
     --color-hl-comment: {activeColors.comment};
@@ -2730,6 +2757,9 @@
     /* 렌더 모드 하이라이팅 색상 */
     --color-hl-code-bg: rgba(0, 120, 212, 0.08);
     --color-hl-code-text: #0078d4;
+    --color-hl-key-strong: #0369a1;
+    --color-hl-key-medium: #0284c7;
+    --color-hl-key-light: #38bdf8;
     --color-hl-string: #a31515;
     --color-hl-number: #098658;
     --color-hl-comment: #008000;
@@ -2761,6 +2791,9 @@
     /* 다크모드 하이라이팅 색상 */
     --color-hl-code-bg: rgba(86, 156, 214, 0.15);
     --color-hl-code-text: #4fc1ff;
+    --color-hl-key-strong: #0284c7;
+    --color-hl-key-medium: #38bdf8;
+    --color-hl-key-light: #7dd3fc;
     --color-hl-string: #ce9178;
     --color-hl-number: #b5cea8;
     --color-hl-comment: #6a9955;
@@ -2782,7 +2815,16 @@
     color: var(--color-hl-number);
   }
   :global(.hl-key) {
-    color: var(--color-hl-code-text);
+    color: var(--color-hl-key-medium);
+  }
+  :global(.hl-key-depth-0) {
+    color: var(--color-hl-key-strong);
+  }
+  :global(.hl-key-depth-1) {
+    color: var(--color-hl-key-medium);
+  }
+  :global(.hl-key-depth-2) {
+    color: var(--color-hl-key-light);
   }
   :global(.hl-literal) {
     color: var(--color-hl-number);
