@@ -371,8 +371,7 @@ function findNextNonJsonWhitespace(content: string, start: number): number {
 
 function scanJsonTokens(content: string, range?: { start: number; end: number }): FlatToken[] {
   const tokens: FlatToken[] = [];
-  const stack: Array<'brace' | 'bracket'> = [];
-  let i = 0;
+  let i = range ? Math.max(0, Math.min(range.start, content.length)) : 0;
   const scanEnd = range ? Math.min(range.end, content.length) : content.length;
 
   while (i < scanEnd) {
@@ -381,7 +380,7 @@ function scanJsonTokens(content: string, range?: { start: number; end: number })
     if (isJsonWhitespaceChar(char)) {
       const start = i;
       i += 1;
-      while (i < content.length && isJsonWhitespaceChar(content[i])) i += 1;
+      while (i < scanEnd && isJsonWhitespaceChar(content[i])) i += 1;
       const token = { type: 'text', text: content.slice(start, i), start, end: i } satisfies FlatToken;
       if (shouldKeepToken(token, range)) tokens.push(token);
       continue;
@@ -391,7 +390,6 @@ function scanJsonTokens(content: string, range?: { start: number; end: number })
       const token = readJsonStringToken(content, i);
       if (token.type === 'string' && content[findNextNonJsonWhitespace(content, token.end)] === ':') {
         token.type = 'key';
-        token.depth = Math.max(stack.length - 1, 0);
       }
       if (shouldKeepToken(token, range)) tokens.push(token);
       i = token.end;
@@ -414,18 +412,15 @@ function scanJsonTokens(content: string, range?: { start: number; end: number })
 
     if (char === '{' || char === '[') {
       const type = char === '{' ? 'brace' : 'bracket';
-      const token = { type, text: char, start: i, end: i + 1, depth: stack.length } satisfies FlatToken;
+      const token = { type, text: char, start: i, end: i + 1 } satisfies FlatToken;
       if (shouldKeepToken(token, range)) tokens.push(token);
-      stack.push(type);
       i += 1;
       continue;
     }
 
     if (char === '}' || char === ']') {
       const expected = char === '}' ? 'brace' : 'bracket';
-      const depth = Math.max(stack.length - 1, 0);
-      if (stack[stack.length - 1] === expected) stack.pop();
-      const token = { type: expected, text: char, start: i, end: i + 1, depth } satisfies FlatToken;
+      const token = { type: expected, text: char, start: i, end: i + 1 } satisfies FlatToken;
       if (shouldKeepToken(token, range)) tokens.push(token);
       i += 1;
       continue;
@@ -444,6 +439,18 @@ function scanJsonTokens(content: string, range?: { start: number; end: number })
   }
 
   return tokens;
+}
+
+function getJsonRenderDepth(token: FlatToken, lineIndentLevel: number): number | undefined {
+  if (token.type === 'key') {
+    return Math.max(lineIndentLevel - 1, 0);
+  }
+
+  if (token.type === 'brace' || token.type === 'bracket') {
+    return Math.max(lineIndentLevel, 0);
+  }
+
+  return token.depth;
 }
 
 function findLineIndexForOffset(lineStartOffsets: number[], offset: number): number {
@@ -501,7 +508,7 @@ function splitFlatTokensIntoLines(
         outputLine.tokens.push({
           type: token.type,
           text: content.slice(start, segmentEnd),
-          depth: token.depth,
+          depth: getJsonRenderDepth(token, outputLine.indentLevel),
           start,
           end: segmentEnd
         });

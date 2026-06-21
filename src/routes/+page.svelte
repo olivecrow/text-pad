@@ -144,6 +144,9 @@
   let steadyEditorCaretLeft = $state<number>(12);
   let steadyEditorCaretTop = $state<number>(8);
   let steadyEditorCaretTimer: ReturnType<typeof setTimeout> | null = null;
+  let editorTextMeasureCanvas: HTMLCanvasElement | null = null;
+  let editorTextMeasureContext: CanvasRenderingContext2D | null = null;
+  let editorTextMeasureFont = '';
 
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | null>(null);
@@ -249,6 +252,7 @@
   // 설정창이 독립 윈도우로 떴는지 감지하는 상태
   let isSettingsWindow = $state<boolean>(getInitialIsSettingsWindow());
 
+  const notepadFontFamilyCSS = '"Consolas", "Courier New", "Malgun Gothic", monospace';
   let renderFontFamily = $state<string>('nanum-gothic');
   let currentRenderFontFamilyCSS = $derived(
     renderFontFamily === 'nanum-gothic' ? "'Nanum Gothic', 'NanumGothic', 'Malgun Gothic', sans-serif" :
@@ -259,7 +263,7 @@
     renderFontFamily === 'nanum-gothic-coding' ? "'Nanum Gothic Coding', 'D2Coding', monospace" :
     renderFontFamily === 'cascadia-mono' ? "'Cascadia Mono', 'Cascadia Code', 'D2Coding', 'Nanum Gothic Coding', monospace" :
     renderFontFamily === 'consolas' ? "'Consolas', 'D2Coding', 'Nanum Gothic Coding', monospace" :
-    renderFontFamily === 'notepad' ? "var(--font-notepad)" :
+    renderFontFamily === 'notepad' ? notepadFontFamilyCSS :
     "'Nanum Gothic', 'NanumGothic', 'Malgun Gothic', sans-serif"
   );
 
@@ -894,28 +898,57 @@
     document.body.removeChild(testEl);
   }
 
+  function getEditorTextMeasureContext(): CanvasRenderingContext2D | null {
+    if (!isBrowser) return null;
+
+    if (!editorTextMeasureCanvas) {
+      editorTextMeasureCanvas = document.createElement('canvas');
+      editorTextMeasureContext = editorTextMeasureCanvas.getContext('2d');
+    }
+
+    if (!editorTextMeasureContext) return null;
+
+    const fontFamily = isRenderMode ? currentRenderFontFamilyCSS : notepadFontFamilyCSS;
+    const fontWeight = isRenderMode ? activeColors.renderFontWeight : '400';
+    const font = `${fontWeight} ${currentFontSize}pt ${fontFamily}`;
+    if (font !== editorTextMeasureFont) {
+      editorTextMeasureFont = font;
+      editorTextMeasureContext.font = font;
+    }
+
+    return editorTextMeasureContext;
+  }
+
   function measureEditorTextWidth(text: string): number {
-    if (!isBrowser || !editorViewportEl || text.length === 0) return 0;
+    if (!isBrowser || text.length === 0) return 0;
 
-    const measureEl = document.createElement('span');
-    measureEl.style.position = 'absolute';
-    measureEl.style.visibility = 'hidden';
-    measureEl.style.whiteSpace = 'pre';
-    measureEl.style.fontFamily = isRenderMode ? currentRenderFontFamilyCSS : 'var(--font-notepad)';
-    measureEl.style.fontSize = `${currentFontSize}pt`;
-    measureEl.style.fontWeight = isRenderMode ? activeColors.renderFontWeight : 'normal';
-    measureEl.style.lineHeight = `${measuredLineHeight}px`;
-    measureEl.style.tabSize = `${tabSize}`;
-    measureEl.style.setProperty('-moz-tab-size', `${tabSize}`);
-    measureEl.style.letterSpacing = 'normal';
-    measureEl.style.wordSpacing = 'normal';
-    measureEl.style.fontVariantLigatures = 'none';
-    measureEl.style.fontFeatureSettings = '"liga" 0';
-    measureEl.textContent = text;
+    const context = getEditorTextMeasureContext();
+    if (!context) return 0;
 
-    editorViewportEl.appendChild(measureEl);
-    const width = measureEl.getBoundingClientRect().width;
-    editorViewportEl.removeChild(measureEl);
+    if (!text.includes('\t')) {
+      return context.measureText(text).width;
+    }
+
+    const tabWidth = context.measureText(' '.repeat(tabSize)).width || 1;
+    let width = 0;
+    let segmentStart = 0;
+
+    for (let i = 0; i < text.length; i += 1) {
+      if (text[i] !== '\t') continue;
+
+      if (segmentStart < i) {
+        width += context.measureText(text.slice(segmentStart, i)).width;
+      }
+
+      const tabRemainder = width % tabWidth;
+      width += tabRemainder === 0 ? tabWidth : tabWidth - tabRemainder;
+      segmentStart = i + 1;
+    }
+
+    if (segmentStart < text.length) {
+      width += context.measureText(text.slice(segmentStart)).width;
+    }
+
     return width;
   }
 
@@ -1970,26 +2003,53 @@
     return text === 'true' || text === 'false' ? text : null;
   }
 
-  function findDataBooleanAtPoint(clientX: number, clientY: number): DataBooleanRange | null {
-    if (!isBrowser || !isRenderMode) return null;
-    const elements = document.querySelectorAll<HTMLElement>('.hl-boolean[data-boolean-start][data-boolean-end]');
+  function getRenderedLineElementAtPoint(clientY: number): HTMLElement | null {
+    if (!isBrowser || !editorViewportEl || measuredLineHeight <= 0) return null;
 
+    const viewportRect = editorViewportEl.getBoundingClientRect();
+    const lineIndex = Math.floor((clientY - viewportRect.top + scrollTop - 8) / measuredLineHeight);
+    if (lineIndex < startLine || lineIndex > endLine) return null;
+
+    return document.querySelector(`.backdrop-line[data-line-index="${lineIndex}"]`) as HTMLElement | null;
+  }
+
+  function findRenderedTokenElementAtPoint(
+    clientX: number,
+    clientY: number,
+    selector: string
+  ): HTMLElement | null {
+    const lineElement = getRenderedLineElementAtPoint(clientY);
+    if (!lineElement) return null;
+
+    const elements = lineElement.querySelectorAll<HTMLElement>(selector);
     for (const element of elements) {
       const rect = element.getBoundingClientRect();
-      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) continue;
-
-      const start = Number(element.dataset.booleanStart);
-      const end = Number(element.dataset.booleanEnd);
-      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
-
-      const value = getDataBooleanValue(fileContent.slice(start, end))
-        ?? getDataBooleanValue(element.dataset.booleanValue || '');
-      if (!value) continue;
-
-      return { start, end, value };
+      if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
+        return element;
+      }
     }
 
     return null;
+  }
+
+  function findDataBooleanAtPoint(clientX: number, clientY: number): DataBooleanRange | null {
+    if (!isBrowser || !isRenderMode) return null;
+    const element = findRenderedTokenElementAtPoint(
+      clientX,
+      clientY,
+      '.hl-boolean[data-boolean-start][data-boolean-end]'
+    );
+    if (!element) return null;
+
+    const start = Number(element.dataset.booleanStart);
+    const end = Number(element.dataset.booleanEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+
+    const value = getDataBooleanValue(fileContent.slice(start, end))
+      ?? getDataBooleanValue(element.dataset.booleanValue || '');
+    if (!value) return null;
+
+    return { start, end, value };
   }
 
   function toggleDataBoolean(range: DataBooleanRange) {
@@ -2016,24 +2076,22 @@
 
   function findColorCodeAtPoint(clientX: number, clientY: number): { start: number; end: number; value: string } | null {
     if (!isBrowser || !isRenderMode) return null;
-    const elements = document.querySelectorAll<HTMLElement>('.hl-color[data-color-start][data-color-end]');
+    const element = findRenderedTokenElementAtPoint(
+      clientX,
+      clientY,
+      '.hl-color[data-color-start][data-color-end]'
+    );
+    if (!element) return null;
 
-    for (const element of elements) {
-      const rect = element.getBoundingClientRect();
-      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) continue;
+    const start = Number(element.dataset.colorStart);
+    const end = Number(element.dataset.colorEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
 
-      const start = Number(element.dataset.colorStart);
-      const end = Number(element.dataset.colorEnd);
-      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
-
-      return {
-        start,
-        end,
-        value: element.textContent || fileContent.slice(start, end)
-      };
-    }
-
-    return null;
+    return {
+      start,
+      end,
+      value: element.textContent || fileContent.slice(start, end)
+    };
   }
 
   function clamp(value: number, min: number, max: number) {
@@ -2786,7 +2844,7 @@
                   {@const lineIdx = startLine + idx}
                   {@const line = parsedLines[idx]}
                   {#if line}
-                    <div class="backdrop-line" class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; left: 0; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
+                    <div class="backdrop-line" data-line-index={lineIdx} class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; left: 0; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
                   {/if}
                 {/each}
               </div>
