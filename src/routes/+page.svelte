@@ -7,11 +7,14 @@
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { ChevronDown, Copy, FileCode2, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, X } from "@lucide/svelte";
   import {
+    getDocumentDiagnostic,
+    getDocumentFormatForContent,
     getSuggestedFileExtensionForContent,
     openFileDialogFilters,
     parseDocumentForRender,
     saveFileDialogFilters
   } from "$lib/document-formats";
+  import type { DocumentDiagnostic } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
   import { untrack } from "svelte";
 
@@ -64,7 +67,11 @@
   }
 
   function getFirstLineTitle(content: string): string {
-    const firstLine = content.split(/\r?\n/, 1)[0]?.trim() ?? "";
+    const lfIndex = content.indexOf('\n');
+    const firstLineEnd = lfIndex === -1
+      ? content.length
+      : (lfIndex > 0 && content[lfIndex - 1] === '\r' ? lfIndex - 1 : lfIndex);
+    const firstLine = content.slice(0, firstLineEnd).trim();
     return firstLine || untitledFileName;
   }
 
@@ -818,37 +825,56 @@
     event.preventDefault();
     openColorPicker(inputId);
   }
-  // 반응형 상태
-  let lineCount = $derived(fileContent.split(/\r?\n/).length);
-  let charCount = $derived(fileContent.length);
-
   function getLineStartOffsets(content: string): number[] {
-    const offsets = [0];
+    const lineStartOffsets = [0];
     const newlineRegex = /\r?\n/g;
     let match: RegExpExecArray | null;
 
     while ((match = newlineRegex.exec(content)) !== null) {
-      offsets.push(match.index + match[0].length);
+      lineStartOffsets.push(match.index + match[0].length);
     }
 
-    return offsets;
+    return lineStartOffsets;
   }
 
-  // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
-  let rawLines = $derived(fileContent.split(/\r?\n/));
+  // 반응형 상태
   let lineStartOffsets = $derived(getLineStartOffsets(fileContent));
-  let documentRender = $derived(parseDocumentForRender(fileContent, {
-    pathOrName: filePath || fileName,
-    tabSize,
-    lineStartOffsets
-  }));
-  let activeDocumentFormat = $derived(documentRender.format);
-  let documentDiagnostic = $derived(documentRender.diagnostic);
-  let parsedLines = $derived(documentRender.lines);
+  let lineCount = $derived(lineStartOffsets.length);
+  let charCount = $derived(fileContent.length);
 
   // 가상화 범위 계산
   let startLine = $derived(Math.max(0, Math.floor(scrollTop / measuredLineHeight) - 8));
-  let endLine = $derived(Math.min(rawLines.length - 1, Math.floor((scrollTop + clientHeight) / measuredLineHeight) + 8));
+  let endLine = $derived(Math.min(lineCount - 1, Math.floor((scrollTop + clientHeight) / measuredLineHeight) + 8));
+
+  // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
+  let activeDocumentFormat = $derived(getDocumentFormatForContent(fileContent, filePath || fileName));
+  let documentDiagnostic = $state<DocumentDiagnostic | null>(null);
+  let documentRender = $derived(parseDocumentForRender(fileContent, {
+    pathOrName: filePath || fileName,
+    tabSize,
+    lineStartOffsets,
+    lineRange: { startLine, endLine }
+  }));
+  let parsedLines = $derived(documentRender.lines);
+
+  const syntaxDiagnosticDelayMs = 500;
+
+  $effect(() => {
+    const content = fileContent;
+    const pathOrName = filePath || fileName;
+    const format = activeDocumentFormat;
+
+    if (!format.validatesSyntax) {
+      documentDiagnostic = null;
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      documentDiagnostic = getDocumentDiagnostic(content, { pathOrName });
+    }, syntaxDiagnosticDelayMs);
+
+    return () => clearTimeout(timer);
+  });
 
   // 줄 높이 실측 로직
   function measureLineHeight() {
@@ -1029,23 +1055,32 @@
   });
 
   // 커서 위치 업데이트
+  function findLineIndexForOffset(offset: number): number {
+    let low = 0;
+    let high = lineStartOffsets.length - 1;
+
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const current = lineStartOffsets[mid] ?? 0;
+      const next = lineStartOffsets[mid + 1] ?? Number.POSITIVE_INFINITY;
+
+      if (offset >= current && offset < next) return mid;
+      if (offset < current) high = mid - 1;
+      else low = mid + 1;
+    }
+
+    return Math.max(0, lineStartOffsets.length - 1);
+  }
+
   function updateCursorPosition() {
     if (!textareaEl) return;
     const pos = textareaEl.selectionStart;
     caretOffset = pos;
-    const textBeforeCursor = fileContent.substring(0, pos);
-    const linesBefore = textBeforeCursor.split(/\r?\n/);
-    cursorLine = linesBefore.length;
-    cursorCol = linesBefore[linesBefore.length - 1].length + 1;
+    const lineIndex = findLineIndexForOffset(pos);
+    cursorLine = lineIndex + 1;
+    cursorCol = pos - (lineStartOffsets[lineIndex] ?? 0) + 1;
     updateEditorCaretColor(pos);
     syncSteadyEditorCaretPosition();
-    updateTabById(activeTabId, {
-      cursorLine,
-      cursorCol,
-      caretOffset,
-      selectionStart: textareaEl.selectionStart,
-      selectionEnd: textareaEl.selectionEnd
-    });
   }
 
   // 변경 감지
@@ -1059,7 +1094,6 @@
     reconcileInlineColorPickerState();
     updateTabById(activeTabId, {
       fileName,
-      fileContent,
       isDirty: true
     });
   }
@@ -1073,7 +1107,6 @@
     keepEditorCaretVisibleDuringEdit();
     updateTabById(activeTabId, {
       fileName,
-      fileContent,
       isDirty: true
     });
   }
@@ -1744,14 +1777,12 @@
       // 일반 브라우저 환경에서 가로 휠 동작 시 스크롤 속도를 보정하기 위해 배율(x3) 적용
       textareaEl.scrollLeft += e.deltaX * 3;
       scrollLeft = textareaEl.scrollLeft;
-      updateTabById(activeTabId, { scrollLeft });
       e.preventDefault();
     }
     // Shift 키를 누르고 세로 휠을 돌릴 때 가로 스크롤 매핑
     else if (e.shiftKey && e.deltaY !== 0) {
       textareaEl.scrollLeft += e.deltaY;
       scrollLeft = textareaEl.scrollLeft;
-      updateTabById(activeTabId, { scrollLeft });
       e.preventDefault();
     }
   }
@@ -1762,7 +1793,6 @@
     scrollTop = target.scrollTop;
     scrollLeft = target.scrollLeft;
     syncSteadyEditorCaretPosition();
-    updateTabById(activeTabId, { scrollTop, scrollLeft });
   }
 
   // passive: false 리스너로 등록하여 preventDefault() 오동작 차단 및 Rust 네이티브 가로 휠 이벤트 통합
@@ -1786,7 +1816,6 @@
           textareaEl.scrollLeft += delta;
           scrollTop = textareaEl.scrollTop;
           scrollLeft = textareaEl.scrollLeft;
-          updateTabById(activeTabId, { scrollTop, scrollLeft });
 
           // 디버그 텍스트 갱신
           wheelDebug = `Native dX: ${delta}`;
@@ -1850,7 +1879,6 @@
   let suppressNextEditorClickAfterRenderAction = false;
   const parkedInlineColorPickerPosition = { left: -10000, top: -10000 };
   let inlineColorPickerPosition = $state<{ left: number; top: number }>({ ...parkedInlineColorPickerPosition });
-  const hexColorInContentRegex = /#[0-9a-fA-F]{6}/g;
   type DataBooleanValue = 'true' | 'false';
   interface DataBooleanRange {
     start: number;
@@ -1891,36 +1919,37 @@
     }
   }
 
-  function findColorCodeAtOffset(text: string, offset: number): { start: number; end: number; value: string } | null {
-    hexColorInContentRegex.lastIndex = 0;
-    let match: RegExpExecArray | null;
+  function findColorCodeNearOffset(
+    text: string,
+    offset: number,
+    requireCaretInside: boolean
+  ): { start: number; end: number; value: string } | null {
+    const colorCodeLength = 7;
+    const maxStart = Math.min(
+      offset - (requireCaretInside ? 1 : 0),
+      text.length - colorCodeLength
+    );
+    const minStart = Math.max(0, offset - colorCodeLength + 1);
 
-    while ((match = hexColorInContentRegex.exec(text)) !== null) {
-      const start = match.index;
-      const end = start + match[0].length;
+    for (let start = minStart; start <= maxStart; start++) {
+      const end = start + colorCodeLength;
+      const value = text.slice(start, end);
+      if (!hexColorRegex.test(value)) continue;
       if (!hasWhitespaceWordBoundary(text, start, end)) continue;
-      if (offset >= start && offset < end) {
-        return { start, end, value: match[0] };
+      if (requireCaretInside ? offset > start && offset < end : offset >= start && offset < end) {
+        return { start, end, value };
       }
     }
 
     return null;
   }
 
+  function findColorCodeAtOffset(text: string, offset: number): { start: number; end: number; value: string } | null {
+    return findColorCodeNearOffset(text, offset, false);
+  }
+
   function findColorCodeAtCaretOffset(text: string, offset: number): { start: number; end: number; value: string } | null {
-    hexColorInContentRegex.lastIndex = 0;
-    let match: RegExpExecArray | null;
-
-    while ((match = hexColorInContentRegex.exec(text)) !== null) {
-      const start = match.index;
-      const end = start + match[0].length;
-      if (!hasWhitespaceWordBoundary(text, start, end)) continue;
-      if (offset > start && offset < end) {
-        return { start, end, value: match[0] };
-      }
-    }
-
-    return null;
+    return findColorCodeNearOffset(text, offset, true);
   }
 
   function updateEditorCaretColor(offset: number) {
@@ -2755,7 +2784,7 @@
               <div class="backdrop-scroll-container" style="transform: translate3d(-{scrollLeft}px, -{scrollTop}px, 0);">
                 {#each Array(endLine - startLine + 1) as _, idx}
                   {@const lineIdx = startLine + idx}
-                  {@const line = parsedLines[lineIdx]}
+                  {@const line = parsedLines[idx]}
                   {#if line}
                     <div class="backdrop-line" class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; left: 0; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
                   {/if}

@@ -35,10 +35,16 @@ export interface DocumentRenderResult {
   diagnostic: DocumentDiagnostic | null;
 }
 
+export interface DocumentLineRange {
+  startLine: number;
+  endLine: number;
+}
+
 interface ParseDocumentOptions {
   pathOrName: string | null | undefined;
   tabSize: number;
   lineStartOffsets: number[];
+  lineRange?: DocumentLineRange;
 }
 
 interface FlatToken extends Token {
@@ -122,6 +128,14 @@ export function looksLikeJsonContent(content: string): boolean {
   return firstChar === '{' || firstChar === '[';
 }
 
+export function getDocumentFormatForContent(
+  content: string,
+  pathOrName: string | null | undefined
+): DocumentFormat {
+  const namedFormat = getDocumentFormatForPath(pathOrName);
+  return namedFormat.id === 'plain' && looksLikeJsonContent(content) ? jsonFormat : namedFormat;
+}
+
 export function getSuggestedFileExtensionForContent(content: string): string {
   return looksLikeJsonContent(content) ? jsonFormat.defaultExtension : plainTextFormat.defaultExtension;
 }
@@ -183,24 +197,92 @@ function parsePlainLine(
   };
 }
 
+function normalizeLineRange(lineCount: number, lineRange?: DocumentLineRange): DocumentLineRange {
+  if (lineCount <= 0) return { startLine: 0, endLine: 0 };
+
+  const startLine = Math.max(0, Math.min(lineRange?.startLine ?? 0, lineCount - 1));
+  const endLine = Math.max(startLine, Math.min(lineRange?.endLine ?? lineCount - 1, lineCount - 1));
+
+  return { startLine, endLine };
+}
+
+function getLineRangeOffsets(
+  content: string,
+  lineStartOffsets: number[],
+  lineRange: DocumentLineRange
+): { start: number; end: number } {
+  return {
+    start: lineStartOffsets[lineRange.startLine] ?? 0,
+    end: lineStartOffsets[lineRange.endLine + 1] ?? content.length
+  };
+}
+
+function getLineText(content: string, lineStartOffsets: number[], lineIndex: number): string {
+  const lineStart = lineStartOffsets[lineIndex] ?? 0;
+  const nextLineStart = lineStartOffsets[lineIndex + 1];
+  let lineEnd = nextLineStart ?? content.length;
+
+  if (nextLineStart !== undefined && content[lineEnd - 1] === '\n') {
+    lineEnd -= 1;
+    if (lineEnd > lineStart && content[lineEnd - 1] === '\r') {
+      lineEnd -= 1;
+    }
+  }
+
+  return content.slice(lineStart, lineEnd);
+}
+
+function getLineContentEndOffset(content: string, lineStartOffsets: number[], lineIndex: number): number {
+  const lineStart = lineStartOffsets[lineIndex] ?? 0;
+  const nextLineStart = lineStartOffsets[lineIndex + 1];
+  let lineEnd = nextLineStart ?? content.length;
+
+  if (nextLineStart !== undefined && content[lineEnd - 1] === '\n') {
+    lineEnd -= 1;
+    if (lineEnd > lineStart && content[lineEnd - 1] === '\r') {
+      lineEnd -= 1;
+    }
+  }
+
+  return lineEnd;
+}
+
 function parsePlainLines(
   content: string,
   tabSize: number,
   comments: CommentSyntax | null,
-  lineStartOffsets: number[]
+  lineStartOffsets: number[],
+  lineRange: DocumentLineRange
 ): ParsedLine[] {
-  const lines = content.split(/\r?\n/);
   let state: TokenizeState | null = null;
+  const parsedLines: ParsedLine[] = [];
 
-  return lines.map((lineText, idx) => {
+  for (let idx = 0; idx <= lineRange.endLine; idx++) {
+    const lineText = getLineText(content, lineStartOffsets, idx);
     const parsed = parsePlainLine(lineText, idx, tabSize, comments, state, lineStartOffsets[idx] ?? 0);
     state = parsed.state;
-    return parsed.line;
-  });
+    if (idx >= lineRange.startLine) {
+      parsedLines.push(parsed.line);
+    }
+  }
+
+  return parsedLines;
 }
 
 function isJsonLiteralBoundary(char: string | undefined): boolean {
-  return !char || /[\s,\]}:]/u.test(char);
+  return !char
+    || char === ' '
+    || char === '\t'
+    || char === '\r'
+    || char === '\n'
+    || char === ','
+    || char === ']'
+    || char === '}'
+    || char === ':';
+}
+
+function isJsonWhitespaceChar(char: string | undefined): boolean {
+  return char === ' ' || char === '\t' || char === '\r' || char === '\n';
 }
 
 function readJsonStringToken(content: string, start: number): FlatToken {
@@ -224,13 +306,41 @@ function readJsonStringToken(content: string, start: number): FlatToken {
 }
 
 function readJsonNumberToken(content: string, start: number): FlatToken {
-  const match = content.slice(start).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/);
-  if (!match) {
+  let i = start;
+
+  if (content[i] === '-') i += 1;
+
+  if (content[i] === '0') {
+    i += 1;
+  } else if (content[i] && content[i] >= '1' && content[i] <= '9') {
+    i += 1;
+    while (content[i] && content[i] >= '0' && content[i] <= '9') i += 1;
+  } else {
     return { type: 'invalid', text: content[start], start, end: start + 1 };
   }
 
-  const end = start + match[0].length;
-  return { type: 'number', text: content.slice(start, end), start, end };
+  if (content[i] === '.') {
+    const decimalStart = i;
+    i += 1;
+    const digitStart = i;
+    while (content[i] && content[i] >= '0' && content[i] <= '9') i += 1;
+    if (digitStart === i) {
+      return { type: 'invalid', text: content.slice(start, decimalStart + 1), start, end: decimalStart + 1 };
+    }
+  }
+
+  if (content[i] === 'e' || content[i] === 'E') {
+    const exponentStart = i;
+    i += 1;
+    if (content[i] === '+' || content[i] === '-') i += 1;
+    const digitStart = i;
+    while (content[i] && content[i] >= '0' && content[i] <= '9') i += 1;
+    if (digitStart === i) {
+      return { type: 'invalid', text: content.slice(start, exponentStart + 1), start, end: exponentStart + 1 };
+    }
+  }
+
+  return { type: 'number', text: content.slice(start, i), start, end: i };
 }
 
 function readJsonLiteralToken(content: string, start: number): FlatToken | null {
@@ -249,46 +359,63 @@ function readJsonLiteralToken(content: string, start: number): FlatToken | null 
   return null;
 }
 
-function scanJsonTokens(content: string): FlatToken[] {
+function shouldKeepToken(token: FlatToken, range?: { start: number; end: number }): boolean {
+  return !range || (token.end > range.start && token.start < range.end);
+}
+
+function findNextNonJsonWhitespace(content: string, start: number): number {
+  let i = start;
+  while (i < content.length && isJsonWhitespaceChar(content[i])) i += 1;
+  return i;
+}
+
+function scanJsonTokens(content: string, range?: { start: number; end: number }): FlatToken[] {
   const tokens: FlatToken[] = [];
   const stack: Array<'brace' | 'bracket'> = [];
   let i = 0;
+  const scanEnd = range ? Math.min(range.end, content.length) : content.length;
 
-  while (i < content.length) {
+  while (i < scanEnd) {
     const char = content[i];
 
-    if (/\s/u.test(char)) {
+    if (isJsonWhitespaceChar(char)) {
       const start = i;
       i += 1;
-      while (i < content.length && /\s/u.test(content[i])) i += 1;
-      tokens.push({ type: 'text', text: content.slice(start, i), start, end: i });
+      while (i < content.length && isJsonWhitespaceChar(content[i])) i += 1;
+      const token = { type: 'text', text: content.slice(start, i), start, end: i } satisfies FlatToken;
+      if (shouldKeepToken(token, range)) tokens.push(token);
       continue;
     }
 
     if (char === '"') {
       const token = readJsonStringToken(content, i);
-      tokens.push(token);
+      if (token.type === 'string' && content[findNextNonJsonWhitespace(content, token.end)] === ':') {
+        token.type = 'key';
+        token.depth = Math.max(stack.length - 1, 0);
+      }
+      if (shouldKeepToken(token, range)) tokens.push(token);
       i = token.end;
       continue;
     }
 
     if (char === '-' || /\d/u.test(char)) {
       const token = readJsonNumberToken(content, i);
-      tokens.push(token);
+      if (shouldKeepToken(token, range)) tokens.push(token);
       i = token.end;
       continue;
     }
 
     const literalToken = readJsonLiteralToken(content, i);
     if (literalToken) {
-      tokens.push(literalToken);
+      if (shouldKeepToken(literalToken, range)) tokens.push(literalToken);
       i = literalToken.end;
       continue;
     }
 
     if (char === '{' || char === '[') {
       const type = char === '{' ? 'brace' : 'bracket';
-      tokens.push({ type, text: char, start: i, end: i + 1, depth: stack.length });
+      const token = { type, text: char, start: i, end: i + 1, depth: stack.length } satisfies FlatToken;
+      if (shouldKeepToken(token, range)) tokens.push(token);
       stack.push(type);
       i += 1;
       continue;
@@ -298,51 +425,25 @@ function scanJsonTokens(content: string): FlatToken[] {
       const expected = char === '}' ? 'brace' : 'bracket';
       const depth = Math.max(stack.length - 1, 0);
       if (stack[stack.length - 1] === expected) stack.pop();
-      tokens.push({ type: expected, text: char, start: i, end: i + 1, depth });
+      const token = { type: expected, text: char, start: i, end: i + 1, depth } satisfies FlatToken;
+      if (shouldKeepToken(token, range)) tokens.push(token);
       i += 1;
       continue;
     }
 
     if (char === ':' || char === ',') {
-      tokens.push({ type: 'punctuation', text: char, start: i, end: i + 1 });
+      const token = { type: 'punctuation', text: char, start: i, end: i + 1 } satisfies FlatToken;
+      if (shouldKeepToken(token, range)) tokens.push(token);
       i += 1;
       continue;
     }
 
-    tokens.push({ type: 'invalid', text: char, start: i, end: i + 1 });
+    const token = { type: 'invalid', text: char, start: i, end: i + 1 } satisfies FlatToken;
+    if (shouldKeepToken(token, range)) tokens.push(token);
     i += 1;
   }
 
-  classifyJsonKeys(tokens);
   return tokens;
-}
-
-function classifyJsonKeys(tokens: FlatToken[]) {
-  const stack: Token['type'][] = [];
-
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-
-    if ((token.type === 'brace' && token.text === '}') || (token.type === 'bracket' && token.text === ']')) {
-      stack.pop();
-      continue;
-    }
-
-    if ((token.type === 'brace' && token.text === '{') || (token.type === 'bracket' && token.text === '[')) {
-      stack.push(token.type);
-      continue;
-    }
-
-    if (token.type !== 'string') continue;
-
-    let nextIndex = i + 1;
-    while (tokens[nextIndex]?.type === 'text') nextIndex += 1;
-
-    if (tokens[nextIndex]?.type === 'punctuation' && tokens[nextIndex].text === ':') {
-      token.type = 'key';
-      token.depth = Math.max(stack.length - 1, 0);
-    }
-  }
 }
 
 function findLineIndexForOffset(lineStartOffsets: number[], offset: number): number {
@@ -362,25 +463,42 @@ function findLineIndexForOffset(lineStartOffsets: number[], offset: number): num
   return Math.max(0, lineStartOffsets.length - 1);
 }
 
-function splitFlatTokensIntoLines(content: string, flatTokens: FlatToken[], tabSize: number, lineStartOffsets: number[]): ParsedLine[] {
-  const rawLines = content.split(/\r?\n/);
-  const lines = rawLines.map((lineText, id) => ({
-    id,
-    ...getIndentInfo(lineText, tabSize),
-    tokens: [] as Token[]
-  }));
+function splitFlatTokensIntoLines(
+  content: string,
+  flatTokens: FlatToken[],
+  tabSize: number,
+  lineStartOffsets: number[],
+  lineRange: DocumentLineRange
+): ParsedLine[] {
+  const lineRangeOffsets = getLineRangeOffsets(content, lineStartOffsets, lineRange);
+  const lines: ParsedLine[] = [];
+
+  for (let lineIndex = lineRange.startLine; lineIndex <= lineRange.endLine; lineIndex++) {
+    const lineText = getLineText(content, lineStartOffsets, lineIndex);
+    lines.push({
+      id: lineIndex,
+      ...getIndentInfo(lineText, tabSize),
+      tokens: []
+    });
+  }
 
   for (const token of flatTokens) {
-    let start = token.start;
+    let start = Math.max(token.start, lineRangeOffsets.start);
+    const tokenEnd = Math.min(token.end, lineRangeOffsets.end);
 
-    while (start < token.end) {
+    while (start < tokenEnd) {
       const lineIndex = findLineIndexForOffset(lineStartOffsets, start);
+      if (lineIndex < lineRange.startLine || lineIndex > lineRange.endLine) {
+        start = lineStartOffsets[lineIndex + 1] ?? tokenEnd;
+        continue;
+      }
       const lineStart = lineStartOffsets[lineIndex] ?? 0;
-      const lineEnd = lineStart + (rawLines[lineIndex]?.length ?? 0);
-      const segmentEnd = Math.min(token.end, lineEnd);
+      const lineEnd = getLineContentEndOffset(content, lineStartOffsets, lineIndex);
+      const segmentEnd = Math.min(tokenEnd, lineEnd);
+      const outputLine = lines[lineIndex - lineRange.startLine];
 
-      if (segmentEnd > start) {
-        lines[lineIndex]?.tokens.push({
+      if (outputLine && segmentEnd > start) {
+        outputLine.tokens.push({
           type: token.type,
           text: content.slice(start, segmentEnd),
           depth: token.depth,
@@ -389,7 +507,7 @@ function splitFlatTokensIntoLines(content: string, flatTokens: FlatToken[], tabS
         });
         start = segmentEnd;
       } else {
-        start = lineStartOffsets[lineIndex + 1] ?? token.end;
+        start = lineStartOffsets[lineIndex + 1] ?? tokenEnd;
       }
     }
   }
@@ -470,21 +588,43 @@ function getJsonDiagnostic(content: string): DocumentDiagnostic | null {
   }
 }
 
+export function getDocumentDiagnostic(
+  content: string,
+  options: Pick<ParseDocumentOptions, 'pathOrName'>
+): DocumentDiagnostic | null {
+  const format = getDocumentFormatForContent(content, options.pathOrName);
+  if (format.id === 'json') return getJsonDiagnostic(content);
+  return null;
+}
+
 export function parseDocumentForRender(content: string, options: ParseDocumentOptions): DocumentRenderResult {
-  const namedFormat = getDocumentFormatForPath(options.pathOrName);
-  const format = namedFormat.id === 'plain' && looksLikeJsonContent(content) ? jsonFormat : namedFormat;
+  const format = getDocumentFormatForContent(content, options.pathOrName);
+  const lineRange = normalizeLineRange(options.lineStartOffsets.length, options.lineRange);
+  const lineRangeOffsets = getLineRangeOffsets(content, options.lineStartOffsets, lineRange);
 
   if (format.id === 'json') {
     return {
       format,
-      lines: splitFlatTokensIntoLines(content, scanJsonTokens(content), options.tabSize, options.lineStartOffsets),
-      diagnostic: getJsonDiagnostic(content)
+      lines: splitFlatTokensIntoLines(
+        content,
+        scanJsonTokens(content, lineRangeOffsets),
+        options.tabSize,
+        options.lineStartOffsets,
+        lineRange
+      ),
+      diagnostic: null
     };
   }
 
   return {
     format,
-    lines: parsePlainLines(content, options.tabSize, getCommentSyntaxForPath(options.pathOrName), options.lineStartOffsets),
+    lines: parsePlainLines(
+      content,
+      options.tabSize,
+      getCommentSyntaxForPath(options.pathOrName),
+      options.lineStartOffsets,
+      lineRange
+    ),
     diagnostic: null
   };
 }
