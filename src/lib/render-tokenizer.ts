@@ -4,6 +4,7 @@ export interface Token {
     | 'string'
     | 'code'
     | 'number'
+    | 'list-marker'
     | 'comment'
     | 'color'
     | 'paren'
@@ -50,6 +51,8 @@ export interface TokenizeLineResult {
 }
 
 const hexColorAtStartRegex = /^#[0-9a-fA-F]{6}$/;
+const listMarkerAtStartRegex = /^([ \t]*)([A-Za-z]+|\d+)(\.\s+)/;
+const romanNumeralRegex = /^(?=[mdclxvi]+$)m{0,3}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})$/i;
 const wordLikeCharRegex = /[\p{L}\p{M}\p{N}]/u;
 const whitespaceRegex = /\s/u;
 const depthTrackedTypes = new Set<Token['type']>(['string', 'code', 'paren', 'bracket', 'brace']);
@@ -176,6 +179,25 @@ function getHexColorAt(text: string, index: number): string | null {
   if (!hasWhitespaceWordBoundary(text, index, index + candidate.length)) return null;
 
   return candidate;
+}
+
+function isListMarkerLabel(label: string): boolean {
+  if (/^\d+$/.test(label)) return true;
+  if (/^[A-Za-z]$/.test(label)) return true;
+  return romanNumeralRegex.test(label);
+}
+
+function getListMarkerAtStart(text: string): { indent: string; marker: string } | null {
+  const match = text.match(listMarkerAtStartRegex);
+  if (!match) return null;
+
+  const label = match[2] || '';
+  if (!isListMarkerLabel(label)) return null;
+
+  return {
+    indent: match[1] || '',
+    marker: `${label}${match[3] || ''}`
+  };
 }
 
 function parseInlineText(text: string, includeNumbers = true): Token[] {
@@ -455,6 +477,15 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
       }
     }
     return -1;
+  }
+
+  const listMarker = nextState ? null : getListMarkerAtStart(line);
+  if (listMarker) {
+    if (listMarker.indent) {
+      appendChild(getTop().token, { type: 'text', text: listMarker.indent });
+    }
+    appendChild(getTop().token, { type: 'list-marker', text: listMarker.marker });
+    i = listMarker.indent.length + listMarker.marker.length;
   }
 
   while (i < len) {

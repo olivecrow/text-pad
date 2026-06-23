@@ -193,6 +193,7 @@
     keyLight: string;
     string: string;
     number: string;
+    listMarker: string;
     comment: string;
     guide: string;
     renderBg: string;
@@ -219,6 +220,7 @@
       keyLight: '#7dd3fc',
       string: '#F3AF82',
       number: '#dffe8b',
+      listMarker: '#A5B4FC',
       comment: '#64748b',
       guide: '#334155',
       paren: '#ECA7BC',
@@ -235,6 +237,7 @@
       keyLight: '#38bdf8',
       string: '#b91c1c',
       number: '#d97706',
+      listMarker: '#4F46E5',
       comment: '#475569',
       guide: '#cbd5e1',
       paren: '#a57800',
@@ -496,6 +499,7 @@
         keyLight: localStorage.getItem(`${prefix}keyLight`) || defaults.keyLight,
         string: localStorage.getItem(`${prefix}string`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_string') : null) || defaults.string,
         number: localStorage.getItem(`${prefix}number`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_number') : null) || defaults.number,
+        listMarker: localStorage.getItem(`${prefix}listMarker`) || defaults.listMarker,
         comment: localStorage.getItem(`${prefix}comment`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_comment') : null) || defaults.comment,
         guide: localStorage.getItem(`${prefix}guide`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_indent_guide') : null) || defaults.guide,
         renderBg: localStorage.getItem(`${prefix}renderBg`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_render_bg') : null) || defaults.renderBg,
@@ -2319,6 +2323,7 @@
     --color-hl-key-light: {activeColors.keyLight};
     --color-hl-string: {activeColors.string};
     --color-hl-number: {activeColors.number};
+    --color-hl-list-marker: {activeColors.listMarker};
     --color-hl-comment: {activeColors.comment};
     --color-indent-guide: {activeColors.guide};
     --color-render-bg: {activeColors.renderBg};
@@ -2498,6 +2503,7 @@
               {@render colorSettingRow('color-hl-key-light-window-dark', '키 색상 3단계 (연한색)', darkColors, 'keyLight')}
               {@render colorSettingRow('color-hl-string-window-dark', `문자열 색상 ('...', "...")`, darkColors, 'string')}
               {@render colorSettingRow('color-hl-number-window-dark', '숫자 색상 (0-9)', darkColors, 'number')}
+              {@render colorSettingRow('color-hl-list-marker-window-dark', '글머리 기호 색상', darkColors, 'listMarker')}
               {@render colorSettingRow('color-hl-comment-window-dark', '파일 형식별 주석 색상', darkColors, 'comment')}
               {@render colorSettingRow('color-hl-paren-window-dark', '소괄호 색상 ( )', darkColors, 'paren')}
               {@render colorSettingRow('color-hl-bracket-window-dark', '대괄호 색상 [ ]', darkColors, 'bracket')}
@@ -2525,6 +2531,7 @@
               {@render colorSettingRow('color-hl-key-light-window-light', '키 색상 3단계 (연한색)', lightColors, 'keyLight')}
               {@render colorSettingRow('color-hl-string-window-light', `문자열 색상 ('...', "...")`, lightColors, 'string')}
               {@render colorSettingRow('color-hl-number-window-light', '숫자 색상 (0-9)', lightColors, 'number')}
+              {@render colorSettingRow('color-hl-list-marker-window-light', '글머리 기호 색상', lightColors, 'listMarker')}
               {@render colorSettingRow('color-hl-comment-window-light', '파일 형식별 주석 색상', lightColors, 'comment')}
               {@render colorSettingRow('color-hl-paren-window-light', '소괄호 색상 ( )', lightColors, 'paren')}
               {@render colorSettingRow('color-hl-bracket-window-light', '대괄호 색상 [ ]', lightColors, 'bracket')}
@@ -2591,6 +2598,7 @@
     --color-hl-key-light: {activeColors.keyLight};
     --color-hl-string: {activeColors.string};
     --color-hl-number: {activeColors.number};
+    --color-hl-list-marker: {activeColors.listMarker};
     --color-hl-comment: {activeColors.comment};
     --color-indent-guide: {activeColors.guide};
     --color-render-bg: {activeColors.renderBg};
@@ -2980,6 +2988,7 @@
     --color-hl-key-light: #38bdf8;
     --color-hl-string: #a31515;
     --color-hl-number: #098658;
+    --color-hl-list-marker: #4f46e5;
     --color-hl-comment: #008000;
     --color-indent-guide: rgba(0, 0, 0, 0.08);
     --color-gutter-text: #8d8d8d;
@@ -3014,6 +3023,7 @@
     --color-hl-key-light: #7dd3fc;
     --color-hl-string: #ce9178;
     --color-hl-number: #b5cea8;
+    --color-hl-list-marker: #a5b4fc;
     --color-hl-comment: #6a9955;
     --color-indent-guide: rgba(255, 255, 255, 0.08);
     --color-gutter-text: #858585;
@@ -3031,6 +3041,9 @@
   }
   :global(.hl-number) {
     color: var(--color-hl-number);
+  }
+  :global(.hl-list-marker) {
+    color: var(--color-hl-list-marker);
   }
   :global(.hl-key) {
     color: var(--color-hl-key-medium);
