@@ -139,6 +139,7 @@
   let caretOffset = $state<number>(0);
   let editorCaretColor = $state<string>('var(--color-render-text, var(--text-color))');
   let editorCursorStyle = $state<string>('text');
+  let hasEditorSelection = $state<boolean>(false);
   let steadyEditorCaretVisible = $state<boolean>(false);
   let steadyEditorCaretCollapsed = $state<boolean>(true);
   let steadyEditorCaretLeft = $state<number>(12);
@@ -147,6 +148,7 @@
   let editorTextMeasureCanvas: HTMLCanvasElement | null = null;
   let editorTextMeasureContext: CanvasRenderingContext2D | null = null;
   let editorTextMeasureFont = '';
+  let editorTextWidthCache = new Map<string, number>();
 
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | null>(null);
@@ -171,6 +173,10 @@
   let scrollLeft = $state<number>(0);
   let measuredLineHeight = $state<number>(22);
   let clientHeight = $state<number>(500);
+  let editorViewportResizeTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingEditorViewportWidth = 500;
+  let isRenderWrapSettling = $state<boolean>(false);
+  let renderWrapSettleGeneration = 0;
 
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
   let editorViewportEl = $state<HTMLDivElement | null>(null);
@@ -295,6 +301,17 @@
   };
   const renderAutoSubstitutionTriggers = Object.keys(renderAutoSubstitutions).sort((a, b) => b.length - a.length);
   const editorIndentUnit = '    ';
+  const editorHorizontalPadding = 24;
+  const editorTopPadding = 8;
+  const virtualLineOverscan = 8;
+  const editorResizeDebounceMs = 80;
+  const editorTextWidthCacheLimit = 12000;
+
+  interface EditorLineLayout {
+    tops: number[];
+    heights: number[];
+    totalHeight: number;
+  }
 
   function getActiveTabIndex(): number {
     return tabs.findIndex((tab) => tab.id === activeTabId);
@@ -845,14 +862,158 @@
     return lineStartOffsets;
   }
 
+  function getLineTextForLayout(content: string, offsets: number[], lineIndex: number): string {
+    const lineStart = offsets[lineIndex] ?? 0;
+    const nextLineStart = offsets[lineIndex + 1];
+    let lineEnd = nextLineStart ?? content.length;
+
+    if (nextLineStart !== undefined && content[lineEnd - 1] === '\n') {
+      lineEnd -= 1;
+      if (lineEnd > lineStart && content[lineEnd - 1] === '\r') {
+        lineEnd -= 1;
+      }
+    }
+
+    return content.slice(lineStart, lineEnd);
+  }
+
+  function measureEditorTextEndWidth(text: string, startWidth = 0): number {
+    if (!isBrowser || text.length === 0) return startWidth;
+
+    if (!text.includes('\t')) {
+      return startWidth + measureEditorPlainTextWidth(text);
+    }
+
+    const context = getEditorTextMeasureContext();
+    if (!context) return startWidth;
+
+    const tabWidth = context.measureText(' '.repeat(tabSize)).width || 1;
+    let width = startWidth;
+    let segmentStart = 0;
+
+    for (let i = 0; i < text.length; i += 1) {
+      if (text[i] !== '\t') continue;
+
+      if (segmentStart < i) {
+        width += measureEditorPlainTextWidth(text.slice(segmentStart, i));
+      }
+
+      const tabRemainder = width % tabWidth;
+      width += tabRemainder === 0 ? tabWidth : tabWidth - tabRemainder;
+      segmentStart = i + 1;
+    }
+
+    if (segmentStart < text.length) {
+      width += measureEditorPlainTextWidth(text.slice(segmentStart));
+    }
+
+    return width;
+  }
+
+  function countWrappedVisualLines(lineText: string, contentWidth: number): number {
+    if (!isBrowser || contentWidth <= 0 || lineText.length === 0) return 1;
+
+    const segments = lineText.match(/\S+\s*|\s+/g) || [lineText];
+    let visualLineCount = 1;
+    let currentWidth = 0;
+
+    const appendPiece = (piece: string) => {
+      const nextWidth = measureEditorTextEndWidth(piece, currentWidth);
+      if (currentWidth > 0 && nextWidth > contentWidth) {
+        visualLineCount += 1;
+        currentWidth = measureEditorTextEndWidth(piece, 0);
+      } else {
+        currentWidth = nextWidth;
+      }
+    };
+
+    for (const segment of segments) {
+      const segmentWidth = measureEditorTextEndWidth(segment, 0);
+      if (segmentWidth <= contentWidth) {
+        appendPiece(segment);
+        continue;
+      }
+
+      for (const char of Array.from(segment)) {
+        appendPiece(char);
+        if (currentWidth > contentWidth) {
+          visualLineCount += 1;
+          currentWidth = 0;
+        }
+      }
+    }
+
+    return visualLineCount;
+  }
+
+  function getEditorLineLayout(content: string, offsets: number[], contentWidth: number): EditorLineLayout {
+    const lineTotal = offsets.length;
+    const tops: number[] = new Array(lineTotal);
+    const heights: number[] = new Array(lineTotal);
+    let top = 0;
+
+    for (let lineIndex = 0; lineIndex < lineTotal; lineIndex += 1) {
+      const lineText = getLineTextForLayout(content, offsets, lineIndex);
+      const visualLineCount = isRenderMode
+        ? countWrappedVisualLines(lineText, contentWidth)
+        : 1;
+      const height = Math.max(measuredLineHeight, visualLineCount * measuredLineHeight);
+
+      tops[lineIndex] = top;
+      heights[lineIndex] = height;
+      top += height;
+    }
+
+    return { tops, heights, totalHeight: top };
+  }
+
+  function findLineIndexForLayoutOffset(layout: EditorLineLayout, offset: number): number {
+    if (layout.tops.length === 0) return 0;
+
+    const safeOffset = Math.max(0, offset);
+    let low = 0;
+    let high = layout.tops.length - 1;
+
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const top = layout.tops[mid] ?? 0;
+      const bottom = top + (layout.heights[mid] ?? measuredLineHeight);
+
+      if (safeOffset >= top && safeOffset < bottom) return mid;
+      if (safeOffset < top) high = mid - 1;
+      else low = mid + 1;
+    }
+
+    return Math.max(0, Math.min(low, layout.tops.length - 1));
+  }
+
+  function getRenderLineTop(lineIndex: number): number {
+    return renderLineLayout.tops[lineIndex] ?? lineIndex * measuredLineHeight;
+  }
+
+  function getRenderLineHeight(lineIndex: number): number {
+    return renderLineLayout.heights[lineIndex] ?? measuredLineHeight;
+  }
+
   // 반응형 상태
   let lineStartOffsets = $derived(getLineStartOffsets(fileContent));
   let lineCount = $derived(lineStartOffsets.length);
   let charCount = $derived(fileContent.length);
+  let editorViewportWidth = $state<number>(500);
+  let renderWrapContentWidth = $derived(Math.max(1, editorViewportWidth - editorHorizontalPadding));
+  let renderLineLayout = $derived(getEditorLineLayout(fileContent, lineStartOffsets, renderWrapContentWidth));
+  let shouldShowNativeRenderText = $derived(isRenderMode && (hasEditorSelection || isRenderWrapSettling));
+  let shouldRenderHighlightLayer = $derived(isRenderMode && !shouldShowNativeRenderText);
 
   // 가상화 범위 계산
-  let startLine = $derived(Math.max(0, Math.floor(scrollTop / measuredLineHeight) - 8));
-  let endLine = $derived(Math.min(lineCount - 1, Math.floor((scrollTop + clientHeight) / measuredLineHeight) + 8));
+  let startLine = $derived(Math.max(
+    0,
+    findLineIndexForLayoutOffset(renderLineLayout, scrollTop - editorTopPadding) - virtualLineOverscan
+  ));
+  let endLine = $derived(Math.min(
+    lineCount - 1,
+    findLineIndexForLayoutOffset(renderLineLayout, scrollTop + clientHeight - editorTopPadding) + virtualLineOverscan
+  ));
 
   // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
   let activeDocumentFormat = $derived(getDocumentFormatForContent(fileContent, filePath || fileName));
@@ -918,42 +1079,31 @@
     if (font !== editorTextMeasureFont) {
       editorTextMeasureFont = font;
       editorTextMeasureContext.font = font;
+      editorTextWidthCache.clear();
     }
 
     return editorTextMeasureContext;
   }
 
-  function measureEditorTextWidth(text: string): number {
+  function measureEditorPlainTextWidth(text: string): number {
     if (!isBrowser || text.length === 0) return 0;
 
     const context = getEditorTextMeasureContext();
     if (!context) return 0;
 
-    if (!text.includes('\t')) {
-      return context.measureText(text).width;
+    const cachedWidth = editorTextWidthCache.get(text);
+    if (cachedWidth !== undefined) return cachedWidth;
+
+    const width = context.measureText(text).width;
+    if (editorTextWidthCache.size > editorTextWidthCacheLimit) {
+      editorTextWidthCache.clear();
     }
-
-    const tabWidth = context.measureText(' '.repeat(tabSize)).width || 1;
-    let width = 0;
-    let segmentStart = 0;
-
-    for (let i = 0; i < text.length; i += 1) {
-      if (text[i] !== '\t') continue;
-
-      if (segmentStart < i) {
-        width += context.measureText(text.slice(segmentStart, i)).width;
-      }
-
-      const tabRemainder = width % tabWidth;
-      width += tabRemainder === 0 ? tabWidth : tabWidth - tabRemainder;
-      segmentStart = i + 1;
-    }
-
-    if (segmentStart < text.length) {
-      width += context.measureText(text.slice(segmentStart)).width;
-    }
-
+    editorTextWidthCache.set(text, width);
     return width;
+  }
+
+  function measureEditorTextWidth(text: string): number {
+    return measureEditorTextEndWidth(text, 0);
   }
 
   function syncSteadyEditorCaretPosition() {
@@ -980,6 +1130,11 @@
   }
 
   function keepEditorCaretVisibleDuringEdit() {
+    if (isRenderMode) {
+      hideSteadyEditorCaret();
+      return;
+    }
+
     if (!isBrowser || !textareaEl) {
       hideSteadyEditorCaret();
       return;
@@ -1012,16 +1167,76 @@
     measureLineHeight();
   });
 
+  function beginRenderWrapSettling() {
+    if (!isRenderMode) return;
+    renderWrapSettleGeneration += 1;
+    isRenderWrapSettling = true;
+  }
+
+  function finishRenderWrapSettlingAfterPaint() {
+    if (!isBrowser) {
+      isRenderWrapSettling = false;
+      return;
+    }
+
+    const generation = renderWrapSettleGeneration + 1;
+    renderWrapSettleGeneration = generation;
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (renderWrapSettleGeneration === generation) {
+          isRenderWrapSettling = false;
+        }
+      });
+    });
+  }
+
   // 뷰포트 크기 변경 관찰
   $effect(() => {
     if (!editorViewportEl) return;
+
+    pendingEditorViewportWidth = editorViewportEl.clientWidth || editorViewportWidth;
+    editorViewportWidth = pendingEditorViewportWidth;
+    clientHeight = editorViewportEl.clientHeight || clientHeight;
+    let hasObservedViewportResize = false;
+
+    const flushEditorViewportWidth = () => {
+      editorViewportWidth = pendingEditorViewportWidth;
+      editorViewportResizeTimer = null;
+      finishRenderWrapSettlingAfterPaint();
+    };
+
     const observer = new ResizeObserver((entries) => {
+      let widthChanged = false;
+
       for (let entry of entries) {
+        const nextWidth = entry.contentRect.width;
         clientHeight = entry.contentRect.height;
+        widthChanged = widthChanged || Math.abs(nextWidth - pendingEditorViewportWidth) > 0.5;
+        pendingEditorViewportWidth = nextWidth;
       }
+
+      if (hasObservedViewportResize && widthChanged) {
+        beginRenderWrapSettling();
+      }
+
+      if (editorViewportResizeTimer) {
+        clearTimeout(editorViewportResizeTimer);
+      }
+
+      editorViewportResizeTimer = setTimeout(flushEditorViewportWidth, editorResizeDebounceMs);
+      hasObservedViewportResize = true;
     });
     observer.observe(editorViewportEl);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      renderWrapSettleGeneration += 1;
+      isRenderWrapSettling = false;
+      if (editorViewportResizeTimer) {
+        clearTimeout(editorViewportResizeTimer);
+        editorViewportResizeTimer = null;
+      }
+    };
   });
 
   async function openFilePath(selected: string) {
@@ -1128,9 +1343,16 @@
     return Math.max(0, lineStartOffsets.length - 1);
   }
 
+  function updateEditorSelectionState() {
+    hasEditorSelection = textareaEl
+      ? textareaEl.selectionStart !== textareaEl.selectionEnd
+      : false;
+  }
+
   function updateCursorPosition() {
     if (!textareaEl) return;
     const pos = textareaEl.selectionStart;
+    updateEditorSelectionState();
     caretOffset = pos;
     const lineIndex = findLineIndexForOffset(pos);
     cursorLine = lineIndex + 1;
@@ -1195,8 +1417,22 @@
   }
 
   function handleEditorBlur() {
+    updateEditorSelectionState();
     hideSteadyEditorCaret();
   }
+
+  $effect(() => {
+    if (!isBrowser || !textareaEl) return;
+
+    const handleDocumentSelectionChange = () => {
+      if (document.activeElement === textareaEl) {
+        updateCursorPosition();
+      }
+    };
+
+    document.addEventListener('selectionchange', handleDocumentSelectionChange);
+    return () => document.removeEventListener('selectionchange', handleDocumentSelectionChange);
+  });
 
   function getSelectedLineBounds(text: string, start: number, end: number): { start: number; end: number } {
     const lineStart = text.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
@@ -2032,10 +2268,11 @@
   }
 
   function getRenderedLineElementAtPoint(clientY: number): HTMLElement | null {
-    if (!isBrowser || !editorViewportEl || measuredLineHeight <= 0) return null;
+    if (!shouldRenderHighlightLayer || !isBrowser || !editorViewportEl || measuredLineHeight <= 0) return null;
 
     const viewportRect = editorViewportEl.getBoundingClientRect();
-    const lineIndex = Math.floor((clientY - viewportRect.top + scrollTop - 8) / measuredLineHeight);
+    const layoutOffset = clientY - viewportRect.top + scrollTop - editorTopPadding;
+    const lineIndex = findLineIndexForLayoutOffset(renderLineLayout, layoutOffset);
     if (lineIndex < startLine || lineIndex > endLine) return null;
 
     return document.querySelector(`.backdrop-line[data-line-index="${lineIndex}"]`) as HTMLElement | null;
@@ -2844,23 +3081,31 @@
     </nav>
 
     <!-- 편집 공간 -->
-    <main class="editor-area" class:render-mode={isRenderMode}>
+    <main
+      class="editor-area"
+      class:render-mode={isRenderMode}
+      class:render-selection-active={isRenderMode && hasEditorSelection}
+      class:render-wrap-settling={isRenderMode && isRenderWrapSettling}
+      class:render-native-text-visible={shouldShowNativeRenderText}
+    >
       <div class="editor-container">
         <!-- 라인 번호 Gutter -->
         {#if isRenderMode}
           <div class="editor-gutter" style="background-color: var(--color-render-bg); border-right: 1px solid var(--border-color);">
-            <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
-              {#each Array(endLine - startLine + 1) as _, idx}
-                {@const lineIdx = startLine + idx}
-                <div
-                  class="gutter-line-number"
-                  class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1}
-                  style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt;"
-                >
-                  {lineIdx + 1}
-                </div>
-              {/each}
-            </div>
+            {#if !isRenderWrapSettling}
+              <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
+                {#each Array(endLine - startLine + 1) as _, idx}
+                  {@const lineIdx = startLine + idx}
+                  <div
+                    class="gutter-line-number"
+                    class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1}
+                    style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; height: {getRenderLineHeight(lineIdx)}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt;"
+                  >
+                    {lineIdx + 1}
+                  </div>
+                {/each}
+              </div>
+            {/if}
           </div>
         {/if}
 
@@ -2870,14 +3115,14 @@
           bind:this={editorViewportEl}
         >
           <!-- 렌더 모드 Backdrop -->
-          {#if isRenderMode}
+          {#if shouldRenderHighlightLayer}
             <div class="editor-backdrop">
-              <div class="backdrop-scroll-container" style="transform: translate3d(-{scrollLeft}px, -{scrollTop}px, 0);">
+              <div class="backdrop-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
                 {#each Array(endLine - startLine + 1) as _, idx}
                   {@const lineIdx = startLine + idx}
                   {@const line = parsedLines[idx]}
                   {#if line}
-                    <div class="backdrop-line" data-line-index={lineIdx} class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} style="position: absolute; top: {lineIdx * measuredLineHeight + 8}px; left: 0; height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
+                    <div class="backdrop-line" data-line-index={lineIdx} class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; min-height: {getRenderLineHeight(lineIdx)}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
                   {/if}
                 {/each}
               </div>
@@ -2888,6 +3133,7 @@
             bind:this={textareaEl}
             class="editor-textarea"
             style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {steadyEditorCaretVisible ? 'transparent' : (isRenderMode ? editorCaretColor : 'var(--text-color)')}; cursor: {isRenderMode ? editorCursorStyle : 'text'};"
+            wrap={isRenderMode ? 'soft' : 'off'}
             bind:value={fileContent}
             onkeydown={handleEditorKeyDown}
             onbeforeinput={handleEditorBeforeInput}
@@ -2895,6 +3141,7 @@
             onscroll={handleScroll}
             onpointerdown={handleEditorPointerDown}
             onkeyup={updateCursorPosition}
+            onselect={updateCursorPosition}
             onclick={handleEditorClick}
             onmousemove={handleEditorMouseMove}
             onmouseleave={handleEditorMouseLeave}
@@ -3604,9 +3851,11 @@
   }
 
   .backdrop-line {
-    min-width: 100%;
-    width: max-content;
-    white-space: pre;
+    width: 100%;
+    min-width: 0;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: normal;
     font-family: var(--font-render-family, var(--font-notepad));
     padding: 0 12px;
     box-sizing: border-box;
@@ -3633,8 +3882,7 @@
   }
 
   .line-content {
-    display: inline-block;
-    vertical-align: top;
+    display: inline;
     color: var(--color-render-text, var(--text-color));
   }
 
@@ -3673,6 +3921,17 @@
     caret-color: var(--color-render-text, var(--text-color));
     font-family: var(--font-render-family, var(--font-notepad));
     font-weight: var(--font-render-weight, normal);
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: normal;
+  }
+
+  .render-mode.render-native-text-visible .editor-backdrop {
+    opacity: 0;
+  }
+
+  .render-mode.render-native-text-visible .editor-textarea {
+    color: var(--color-render-text, var(--text-color));
   }
 
   .steady-editor-caret {
