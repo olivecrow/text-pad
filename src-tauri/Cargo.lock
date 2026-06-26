@@ -3391,6 +3391,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-window-state",
+ "tempfile",
 ]
 
 [[package]]
