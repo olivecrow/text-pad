@@ -7,14 +7,19 @@
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { ChevronDown, Copy, FileCode2, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, X } from "@lucide/svelte";
   import {
+    configurableDocumentFormats,
+    createDefaultDocumentFeatureSettings,
     getDocumentDiagnostic,
     getDocumentFormatForContent,
     getSuggestedFileExtensionForContent,
+    isDocumentFormatEditEnabled,
+    isDocumentFormatRenderEnabled,
+    normalizeDocumentFeatureSettings,
     openFileDialogFilters,
     parseDocumentForRender,
     saveFileDialogFilters
   } from "$lib/document-formats";
-  import type { DocumentDiagnostic } from "$lib/document-formats";
+  import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatId } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
   import { untrack } from "svelte";
 
@@ -152,7 +157,8 @@
 
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | null>(null);
-  type SettingsView = 'sourceAppearance' | 'renderAppearance' | 'renderEditing';
+  type FormatSettingsView = `format:${DocumentFormatId}`;
+  type SettingsView = 'sourceAppearance' | 'renderAppearance' | 'renderEditing' | FormatSettingsView;
   let activeSettingsView = $state<SettingsView>('renderAppearance');
   let isSourceSettingsExpanded = $state<boolean>(true);
   let isRenderSettingsExpanded = $state<boolean>(true);
@@ -167,6 +173,10 @@
   let renderAutoPairEditing = $state<boolean>(true);
   let renderAutoSymbolSubstitution = $state<boolean>(true);
   let renderPreserveIndentOnEnter = $state<boolean>(true);
+  let documentFeatureSettings = $state<DocumentFeatureSettings>(createDefaultDocumentFeatureSettings());
+  let activeSettingsFormat = $derived(
+    configurableDocumentFormats.find((format) => activeSettingsView === getDocumentFormatSettingsView(format.id)) ?? null
+  );
   let currentFontSize = $derived(isRenderMode ? renderFontSize : sourceFontSize);
   let tabSize = $state<number>(4);          // 기본 들여쓰기 탭 4칸
   let scrollTop = $state<number>(0);
@@ -277,6 +287,7 @@
   );
 
   let canPersistPreferences = $state<boolean>(false);
+  const documentFeaturePreferenceKey = 'pref_document_format_features';
   const textSaveFilters = saveFileDialogFilters;
   const closeSaveButtons = {
     yes: "저장",
@@ -306,6 +317,34 @@
   const virtualLineOverscan = 8;
   const editorResizeDebounceMs = 80;
   const editorTextWidthCacheLimit = 12000;
+
+  function parseDocumentFeatureSettingsValue(value: string | null): DocumentFeatureSettings {
+    if (!value) return createDefaultDocumentFeatureSettings();
+
+    try {
+      return normalizeDocumentFeatureSettings(JSON.parse(value));
+    } catch {
+      return createDefaultDocumentFeatureSettings();
+    }
+  }
+
+  function getDocumentFormatSettingsView(formatId: DocumentFormatId): FormatSettingsView {
+    return `format:${formatId}`;
+  }
+
+  function setDocumentFormatFeature(
+    formatId: DocumentFormatId,
+    feature: keyof DocumentFeatureSettings[DocumentFormatId],
+    enabled: boolean
+  ) {
+    documentFeatureSettings = {
+      ...documentFeatureSettings,
+      [formatId]: {
+        ...documentFeatureSettings[formatId],
+        [feature]: enabled
+      }
+    };
+  }
 
   interface EditorLineLayout {
     tops: number[];
@@ -500,6 +539,7 @@
     renderAutoPairEditing = localStorage.getItem('pref_render_auto_pair_editing') !== 'false';
     renderAutoSymbolSubstitution = localStorage.getItem('pref_render_auto_symbol_substitution') !== 'false';
     renderPreserveIndentOnEnter = localStorage.getItem('pref_render_preserve_indent_on_enter') !== 'false';
+    documentFeatureSettings = parseDocumentFeatureSettingsValue(localStorage.getItem(documentFeaturePreferenceKey));
 
     renderFontFamily = localStorage.getItem('pref_render_font_family') || 'nanum-gothic';
 
@@ -546,6 +586,7 @@
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_pair_editing', renderAutoPairEditing ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_symbol_substitution', renderAutoSymbolSubstitution ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_preserve_indent_on_enter', renderPreserveIndentOnEnter ? 'true' : 'false'); });
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(documentFeaturePreferenceKey, JSON.stringify(documentFeatureSettings)); });
   $effect(() => { if (isBrowser && canPersistPreferences && renderFontFamily) localStorage.setItem('pref_render_font_family', renderFontFamily); });
 
   $effect(() => {
@@ -761,6 +802,7 @@
     if (e.key === 'pref_render_auto_pair_editing' && e.newValue) renderAutoPairEditing = e.newValue !== 'false';
     if (e.key === 'pref_render_auto_symbol_substitution' && e.newValue) renderAutoSymbolSubstitution = e.newValue !== 'false';
     if (e.key === 'pref_render_preserve_indent_on_enter' && e.newValue) renderPreserveIndentOnEnter = e.newValue !== 'false';
+    if (e.key === documentFeaturePreferenceKey) documentFeatureSettings = parseDocumentFeatureSettingsValue(e.newValue);
     if (e.key === 'pref_render_font_family' && e.newValue) renderFontFamily = e.newValue;
 
     if (e.key.startsWith('pref_light_') && e.newValue) {
@@ -1017,12 +1059,16 @@
 
   // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
   let activeDocumentFormat = $derived(getDocumentFormatForContent(fileContent, filePath || fileName));
+  let isActiveDocumentRenderEnabled = $derived(isDocumentFormatRenderEnabled(activeDocumentFormat, documentFeatureSettings));
+  let isActiveDocumentEditEnabled = $derived(isDocumentFormatEditEnabled(activeDocumentFormat, documentFeatureSettings));
+  let shouldShowDocumentSyntaxStatus = $derived(activeDocumentFormat.validatesSyntax && isActiveDocumentRenderEnabled);
   let documentDiagnostic = $state<DocumentDiagnostic | null>(null);
   let documentRender = $derived(parseDocumentForRender(fileContent, {
     pathOrName: filePath || fileName,
     tabSize,
     lineStartOffsets,
-    lineRange: { startLine, endLine }
+    lineRange: { startLine, endLine },
+    featureSettings: documentFeatureSettings
   }));
   let parsedLines = $derived(documentRender.lines);
 
@@ -1032,14 +1078,15 @@
     const content = fileContent;
     const pathOrName = filePath || fileName;
     const format = activeDocumentFormat;
+    const featureSettings = documentFeatureSettings;
 
-    if (!format.validatesSyntax) {
+    if (!format.validatesSyntax || !isDocumentFormatRenderEnabled(format, featureSettings)) {
       documentDiagnostic = null;
       return;
     }
 
     const timer = setTimeout(() => {
-      documentDiagnostic = getDocumentDiagnostic(content, { pathOrName });
+      documentDiagnostic = getDocumentDiagnostic(content, { pathOrName, featureSettings });
     }, syntaxDiagnosticDelayMs);
 
     return () => clearTimeout(timer);
@@ -2250,7 +2297,7 @@
   }
 
   function updateEditorCaretColor(offset: number) {
-    const activeColor = isRenderMode ? findColorCodeAtCaretOffset(fileContent, offset) : null;
+    const activeColor = isRenderMode && isActiveDocumentRenderEnabled ? findColorCodeAtCaretOffset(fileContent, offset) : null;
     editorCaretColor = activeColor
       ? getReadableTextColor(activeColor.value)
       : 'var(--color-render-text, var(--text-color))';
@@ -2298,7 +2345,7 @@
   }
 
   function findDataBooleanAtPoint(clientX: number, clientY: number): DataBooleanRange | null {
-    if (!isBrowser || !isRenderMode) return null;
+    if (!isBrowser || !isRenderMode || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled) return null;
     const element = findRenderedTokenElementAtPoint(
       clientX,
       clientY,
@@ -2340,7 +2387,7 @@
   }
 
   function findColorCodeAtPoint(clientX: number, clientY: number): { start: number; end: number; value: string } | null {
-    if (!isBrowser || !isRenderMode) return null;
+    if (!isBrowser || !isRenderMode || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled) return null;
     const element = findRenderedTokenElementAtPoint(
       clientX,
       clientY,
@@ -2429,7 +2476,7 @@
   }
 
   function handleEditorPointerDown(event: PointerEvent) {
-    if (!isRenderMode || !textareaEl || event.button !== 0) return;
+    if (!isRenderMode || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled || !textareaEl || event.button !== 0) return;
 
     const booleanRange = findDataBooleanAtPoint(event.clientX, event.clientY);
     if (booleanRange) {
@@ -2459,7 +2506,7 @@
       suppressNextEditorClickAfterRenderAction = false;
       return;
     }
-    if (!isRenderMode || !textareaEl) return;
+    if (!isRenderMode || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled || !textareaEl) return;
     if (textareaEl.selectionStart !== textareaEl.selectionEnd) return;
 
     const range = findColorCodeAtPoint(event.clientX, event.clientY)
@@ -2472,6 +2519,10 @@
   }
 
   function handleEditorMouseMove(event: MouseEvent) {
+    if (!isRenderMode || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled) {
+      editorCursorStyle = 'text';
+      return;
+    }
     editorCursorStyle = findDataBooleanAtPoint(event.clientX, event.clientY) || findColorCodeAtPoint(event.clientX, event.clientY)
       ? 'pointer'
       : 'text';
@@ -2623,6 +2674,16 @@
             >
               <PenLine size={15} class="tab-icon"/> 편집
             </button>
+            {#each configurableDocumentFormats as format}
+              <button
+                type="button"
+                class="sidebar-item tree-child"
+                class:active={activeSettingsView === getDocumentFormatSettingsView(format.id)}
+                onclick={() => activeSettingsView = getDocumentFormatSettingsView(format.id)}
+              >
+                <FileCode2 size={15} class="tab-icon"/> {format.label}
+              </button>
+            {/each}
           {/if}
         </div>
       </aside>
@@ -2821,6 +2882,43 @@
                 <span class="settings-check-description">들여쓰기된 줄에서 Enter를 누르면 다음 줄에도 같은 들여쓰기를 넣습니다.</span>
               </span>
             </label>
+          </div>
+        {:else if activeSettingsFormat}
+          <div class="settings-section">
+            <div class="settings-format-module">
+              <div class="settings-format-heading">
+                <h4 class="section-title">{activeSettingsFormat.label}</h4>
+                <span class="settings-check-description">
+                  {activeSettingsFormat.extensions.length > 0 ? activeSettingsFormat.extensions.map((extension) => `.${extension}`).join(', ') : '확장자가 없는 기본 텍스트'}
+                </span>
+              </div>
+              <label class="settings-check-row" for={`document-format-${activeSettingsFormat.id}-render-window`}>
+                <input
+                  id={`document-format-${activeSettingsFormat.id}-render-window`}
+                  class="settings-checkbox"
+                  type="checkbox"
+                  checked={documentFeatureSettings[activeSettingsFormat.id].render}
+                  onchange={(event) => setDocumentFormatFeature(activeSettingsFormat.id, 'render', (event.currentTarget as HTMLInputElement).checked)}
+                />
+                <span class="settings-check-copy">
+                  <span class="settings-check-title">렌더 표시</span>
+                  <span class="settings-check-description">{activeSettingsFormat.renderDescription}</span>
+                </span>
+              </label>
+              <label class="settings-check-row" for={`document-format-${activeSettingsFormat.id}-edit-window`}>
+                <input
+                  id={`document-format-${activeSettingsFormat.id}-edit-window`}
+                  class="settings-checkbox"
+                  type="checkbox"
+                  checked={documentFeatureSettings[activeSettingsFormat.id].edit}
+                  onchange={(event) => setDocumentFormatFeature(activeSettingsFormat.id, 'edit', (event.currentTarget as HTMLInputElement).checked)}
+                />
+                <span class="settings-check-copy">
+                  <span class="settings-check-title">렌더 편집</span>
+                  <span class="settings-check-description">{activeSettingsFormat.editDescription}</span>
+                </span>
+              </label>
+            </div>
           </div>
         {/if}
       </div>
@@ -3179,16 +3277,16 @@
         {/if}
       </div>
       <div class="status-right">
-        {#if activeDocumentFormat.validatesSyntax}
+        {#if shouldShowDocumentSyntaxStatus}
           <span
             class="status-item"
             class:status-error={!!documentDiagnostic}
-            title={documentDiagnostic?.message || "JSON 문법 문제가 없습니다"}
+            title={documentDiagnostic?.message || `${activeDocumentFormat.label} 문법 문제가 없습니다`}
           >
             {#if documentDiagnostic}
-              JSON 오류 {documentDiagnostic.line}:{documentDiagnostic.column}
+              {activeDocumentFormat.label} 오류 {documentDiagnostic.line}:{documentDiagnostic.column}
             {:else}
-              JSON 정상
+              {activeDocumentFormat.label} 정상
             {/if}
           </span>
         {/if}
@@ -3976,6 +4074,7 @@
     gap: 2px;
     user-select: none;
     flex-shrink: 0;
+    overflow-y: auto;
   }
 
   .sidebar-tree-group {
@@ -4107,6 +4206,25 @@
   .settings-check-description {
     color: var(--text-muted);
     font-size: 0.78rem;
+  }
+
+  .settings-format-module {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+    padding-top: 0.25rem;
+  }
+
+  .settings-format-module + .settings-format-module {
+    border-top: 1px solid var(--border-color);
+    padding-top: 0.85rem;
+  }
+
+  .settings-format-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    min-height: 20px;
   }
 
   .color-picker-wrapper {

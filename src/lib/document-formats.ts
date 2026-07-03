@@ -1,7 +1,8 @@
 import {
-  getCommentSyntaxForPath,
   tokenizeLineWithState,
+  type BlockCommentRule,
   type CommentSyntax,
+  type LineCommentRule,
   type Token,
   type TokenizeState
 } from './render-tokenizer';
@@ -22,12 +23,37 @@ export interface DocumentDiagnostic {
   offset: number;
 }
 
+export type DocumentFormatId =
+  | 'plain'
+  | 'markdown'
+  | 'json'
+  | 'csv'
+  | 'tsv'
+  | 'yaml'
+  | 'ini'
+  | 'log'
+  | 'javascript'
+  | 'typescript'
+  | 'rust'
+  | 'html'
+  | 'css';
+
+export interface DocumentFormatFeatureSettings {
+  render: boolean;
+  edit: boolean;
+}
+
+export type DocumentFeatureSettings = Record<DocumentFormatId, DocumentFormatFeatureSettings>;
+
 export interface DocumentFormat {
-  id: 'plain' | 'json';
+  id: DocumentFormatId;
   label: string;
   extensions: string[];
   defaultExtension: string;
   validatesSyntax: boolean;
+  renderDescription: string;
+  editDescription: string;
+  commentSyntax?: CommentSyntax;
 }
 
 export interface DocumentRenderResult {
@@ -46,6 +72,7 @@ interface ParseDocumentOptions {
   tabSize: number;
   lineStartOffsets: number[];
   lineRange?: DocumentLineRange;
+  featureSettings?: DocumentFeatureSettings;
 }
 
 interface FlatToken extends Token {
@@ -54,12 +81,44 @@ interface FlatToken extends Token {
   end: number;
 }
 
+const cBlockComment: BlockCommentRule = { start: '/*', end: '*/' };
+const htmlBlockComment: BlockCommentRule = { start: '<!--', end: '-->' };
+const hashLineComment: LineCommentRule = { marker: '#' };
+const slashLineComment: LineCommentRule = { marker: '//' };
+const semicolonLineComment: LineCommentRule = { marker: ';', anchored: true };
+const iniHashLineComment: LineCommentRule = { marker: '#', anchored: true };
+
+const cFamilyCommentSyntax: CommentSyntax = {
+  line: [slashLineComment],
+  block: [cBlockComment]
+};
+
+const hashCommentSyntax: CommentSyntax = {
+  line: [hashLineComment]
+};
+
+const genericRenderDescription = '기본 강조와 색상 코드 표시를 사용하고, 주석 규칙이 있는 형식은 주석도 표시합니다.';
+const genericEditDescription = '렌더된 색상 코드를 클릭해 색상 선택기로 바꿉니다.';
+
 const plainTextFormat: DocumentFormat = {
   id: 'plain',
   label: '텍스트',
-  extensions: [],
+  extensions: ['txt'],
   defaultExtension: 'txt',
-  validatesSyntax: false
+  validatesSyntax: false,
+  renderDescription: genericRenderDescription,
+  editDescription: genericEditDescription
+};
+
+const markdownFormat: DocumentFormat = {
+  id: 'markdown',
+  label: 'Markdown',
+  extensions: ['md'],
+  defaultExtension: 'md',
+  validatesSyntax: false,
+  renderDescription: genericRenderDescription,
+  editDescription: genericEditDescription,
+  commentSyntax: { block: [htmlBlockComment] }
 };
 
 const jsonFormat: DocumentFormat = {
@@ -67,27 +126,186 @@ const jsonFormat: DocumentFormat = {
   label: 'JSON',
   extensions: ['json'],
   defaultExtension: 'json',
-  validatesSyntax: true
+  validatesSyntax: true,
+  renderDescription: '키, 값, 구분자, 괄호와 문법 오류 표시를 사용합니다.',
+  editDescription: '렌더된 true와 false 값을 클릭해 반대로 바꿉니다.'
 };
 
-const documentFormats = [jsonFormat];
+const csvFormat: DocumentFormat = {
+  id: 'csv',
+  label: 'CSV',
+  extensions: ['csv'],
+  defaultExtension: 'csv',
+  validatesSyntax: false,
+  renderDescription: genericRenderDescription,
+  editDescription: genericEditDescription
+};
+
+const tsvFormat: DocumentFormat = {
+  id: 'tsv',
+  label: 'TSV',
+  extensions: ['tsv'],
+  defaultExtension: 'tsv',
+  validatesSyntax: false,
+  renderDescription: genericRenderDescription,
+  editDescription: genericEditDescription
+};
+
+const yamlFormat: DocumentFormat = {
+  id: 'yaml',
+  label: 'YAML',
+  extensions: ['yaml', 'yml'],
+  defaultExtension: 'yaml',
+  validatesSyntax: false,
+  renderDescription: genericRenderDescription,
+  editDescription: genericEditDescription,
+  commentSyntax: hashCommentSyntax
+};
+
+const iniFormat: DocumentFormat = {
+  id: 'ini',
+  label: 'INI/CFG',
+  extensions: ['ini', 'cfg'],
+  defaultExtension: 'ini',
+  validatesSyntax: false,
+  renderDescription: genericRenderDescription,
+  editDescription: genericEditDescription,
+  commentSyntax: { line: [semicolonLineComment, iniHashLineComment] }
+};
+
+const logFormat: DocumentFormat = {
+  id: 'log',
+  label: 'LOG',
+  extensions: ['log'],
+  defaultExtension: 'log',
+  validatesSyntax: false,
+  renderDescription: genericRenderDescription,
+  editDescription: genericEditDescription
+};
+
+const javascriptFormat: DocumentFormat = {
+  id: 'javascript',
+  label: 'JavaScript',
+  extensions: ['js'],
+  defaultExtension: 'js',
+  validatesSyntax: false,
+  renderDescription: genericRenderDescription,
+  editDescription: genericEditDescription,
+  commentSyntax: cFamilyCommentSyntax
+};
+
+const typescriptFormat: DocumentFormat = {
+  id: 'typescript',
+  label: 'TypeScript',
+  extensions: ['ts'],
+  defaultExtension: 'ts',
+  validatesSyntax: false,
+  renderDescription: genericRenderDescription,
+  editDescription: genericEditDescription,
+  commentSyntax: cFamilyCommentSyntax
+};
+
+const rustFormat: DocumentFormat = {
+  id: 'rust',
+  label: 'Rust',
+  extensions: ['rs'],
+  defaultExtension: 'rs',
+  validatesSyntax: false,
+  renderDescription: genericRenderDescription,
+  editDescription: genericEditDescription,
+  commentSyntax: cFamilyCommentSyntax
+};
+
+const htmlFormat: DocumentFormat = {
+  id: 'html',
+  label: 'HTML',
+  extensions: ['html'],
+  defaultExtension: 'html',
+  validatesSyntax: false,
+  renderDescription: genericRenderDescription,
+  editDescription: genericEditDescription,
+  commentSyntax: { block: [htmlBlockComment] }
+};
+
+const cssFormat: DocumentFormat = {
+  id: 'css',
+  label: 'CSS',
+  extensions: ['css'],
+  defaultExtension: 'css',
+  validatesSyntax: false,
+  renderDescription: genericRenderDescription,
+  editDescription: genericEditDescription,
+  commentSyntax: { block: [cBlockComment] }
+};
+
+export const configurableDocumentFormats = [
+  plainTextFormat,
+  markdownFormat,
+  jsonFormat,
+  csvFormat,
+  tsvFormat,
+  yamlFormat,
+  iniFormat,
+  logFormat,
+  javascriptFormat,
+  typescriptFormat,
+  rustFormat,
+  htmlFormat,
+  cssFormat
+];
+
+export function createDefaultDocumentFeatureSettings(): DocumentFeatureSettings {
+  return {
+    plain: { render: true, edit: true },
+    markdown: { render: true, edit: true },
+    json: { render: true, edit: true },
+    csv: { render: true, edit: true },
+    tsv: { render: true, edit: true },
+    yaml: { render: true, edit: true },
+    ini: { render: true, edit: true },
+    log: { render: true, edit: true },
+    javascript: { render: true, edit: true },
+    typescript: { render: true, edit: true },
+    rust: { render: true, edit: true },
+    html: { render: true, edit: true },
+    css: { render: true, edit: true }
+  };
+}
+
+export function normalizeDocumentFeatureSettings(input: unknown): DocumentFeatureSettings {
+  const defaults = createDefaultDocumentFeatureSettings();
+  if (!input || typeof input !== 'object') return defaults;
+
+  const candidate = input as Partial<Record<DocumentFormatId, Partial<DocumentFormatFeatureSettings>>>;
+  const normalized = createDefaultDocumentFeatureSettings();
+
+  for (const format of configurableDocumentFormats) {
+    const current = candidate[format.id];
+    normalized[format.id] = {
+      render: typeof current?.render === 'boolean' ? current.render : defaults[format.id].render,
+      edit: typeof current?.edit === 'boolean' ? current.edit : defaults[format.id].edit
+    };
+  }
+
+  return normalized;
+}
+
+export function isDocumentFormatRenderEnabled(
+  format: DocumentFormat,
+  featureSettings?: DocumentFeatureSettings
+): boolean {
+  return featureSettings?.[format.id]?.render ?? true;
+}
+
+export function isDocumentFormatEditEnabled(
+  format: DocumentFormat,
+  featureSettings?: DocumentFeatureSettings
+): boolean {
+  return featureSettings?.[format.id]?.edit ?? true;
+}
 
 export const supportedTextExtensions = [
-  'txt',
-  'md',
-  'json',
-  'csv',
-  'tsv',
-  'yaml',
-  'yml',
-  'ini',
-  'cfg',
-  'log',
-  'js',
-  'ts',
-  'rs',
-  'html',
-  'css'
+  ...new Set(configurableDocumentFormats.flatMap((format) => format.extensions))
 ];
 
 export const openFileDialogFilters = [
@@ -121,7 +339,7 @@ export function getFileExtension(pathOrName: string | null | undefined): string 
 
 export function getDocumentFormatForPath(pathOrName: string | null | undefined): DocumentFormat {
   const extension = getFileExtension(pathOrName);
-  return documentFormats.find((format) => format.extensions.includes(extension)) || plainTextFormat;
+  return configurableDocumentFormats.find((format) => format.extensions.includes(extension)) || plainTextFormat;
 }
 
 export function looksLikeJsonContent(content: string): boolean {
@@ -266,6 +484,34 @@ function parsePlainLines(
     if (idx >= lineRange.startLine) {
       parsedLines.push(parsed.line);
     }
+  }
+
+  return parsedLines;
+}
+
+function parseBasicLines(
+  content: string,
+  tabSize: number,
+  lineStartOffsets: number[],
+  lineRange: DocumentLineRange
+): ParsedLine[] {
+  const parsedLines: ParsedLine[] = [];
+
+  for (let idx = lineRange.startLine; idx <= lineRange.endLine; idx++) {
+    const lineText = getLineText(content, lineStartOffsets, idx);
+    const lineStartOffset = lineStartOffsets[idx] ?? 0;
+    parsedLines.push({
+      id: idx,
+      ...getIndentInfo(lineText, tabSize),
+      tokens: [
+        {
+          type: 'text',
+          text: lineText,
+          start: lineStartOffset,
+          end: lineStartOffset + lineText.length
+        }
+      ]
+    });
   }
 
   return parsedLines;
@@ -633,9 +879,10 @@ function getJsonDiagnostic(content: string): DocumentDiagnostic | null {
 
 export function getDocumentDiagnostic(
   content: string,
-  options: Pick<ParseDocumentOptions, 'pathOrName'>
+  options: Pick<ParseDocumentOptions, 'pathOrName' | 'featureSettings'>
 ): DocumentDiagnostic | null {
   const format = getDocumentFormatForContent(content, options.pathOrName);
+  if (!isDocumentFormatRenderEnabled(format, options.featureSettings)) return null;
   if (format.id === 'json') return getJsonDiagnostic(content);
   return null;
 }
@@ -644,6 +891,15 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
   const format = getDocumentFormatForContent(content, options.pathOrName);
   const lineRange = normalizeLineRange(options.lineStartOffsets.length, options.lineRange);
   const lineRangeOffsets = getLineRangeOffsets(content, options.lineStartOffsets, lineRange);
+  const renderEnabled = isDocumentFormatRenderEnabled(format, options.featureSettings);
+
+  if (!renderEnabled) {
+    return {
+      format,
+      lines: parseBasicLines(content, options.tabSize, options.lineStartOffsets, lineRange),
+      diagnostic: null
+    };
+  }
 
   if (format.id === 'json') {
     return {
@@ -664,7 +920,7 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
     lines: parsePlainLines(
       content,
       options.tabSize,
-      getCommentSyntaxForPath(options.pathOrName),
+      format.commentSyntax || null,
       options.lineStartOffsets,
       lineRange
     ),
