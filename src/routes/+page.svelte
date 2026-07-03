@@ -21,6 +21,7 @@
   } from "$lib/document-formats";
   import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatId } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
+  import { EditorUndoHistory, type EditorSelection, type EditorSnapshot } from "$lib/editor-undo";
   import { untrack } from "svelte";
 
   interface EditorTab {
@@ -122,7 +123,21 @@
     };
   }
 
+  function getTabSnapshot(tab: EditorTab): EditorSnapshot {
+    return {
+      content: tab.fileContent,
+      selection: {
+        start: Math.min(tab.selectionStart, tab.fileContent.length),
+        end: Math.min(tab.selectionEnd, tab.fileContent.length)
+      }
+    };
+  }
+
   const initialTab = createEditorTab();
+  const undoHistories = new Map<string, EditorUndoHistory>([
+    [initialTab.id, new EditorUndoHistory(getTabSnapshot(initialTab))]
+  ]);
+  let lastEditorSnapshot: EditorSnapshot = getTabSnapshot(initialTab);
   let tabs = $state<EditorTab[]>([initialTab]);
   let activeTabId = $state<string>(initialTab.id);
 
@@ -187,6 +202,8 @@
   let pendingEditorViewportWidth = 500;
   let isRenderWrapSettling = $state<boolean>(false);
   let renderWrapSettleGeneration = 0;
+  let pendingNativeInput: { before: EditorSnapshot; inputType: string; isComposing: boolean } | null = null;
+  let isComposingEditorText = false;
 
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
   let editorViewportEl = $state<HTMLDivElement | null>(null);
@@ -317,6 +334,7 @@
   const virtualLineOverscan = 8;
   const editorResizeDebounceMs = 80;
   const editorTextWidthCacheLimit = 12000;
+  const editorMovementKeys = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
 
   function parseDocumentFeatureSettingsValue(value: string | null): DocumentFeatureSettings {
     if (!value) return createDefaultDocumentFeatureSettings();
@@ -365,18 +383,80 @@
     tabs = tabs.map((tab) => tab.id === tabId ? { ...tab, ...updates } : tab);
   }
 
+  function getUndoHistoryForTab(tab: EditorTab): EditorUndoHistory {
+    let history = undoHistories.get(tab.id);
+    if (!history) {
+      history = new EditorUndoHistory(getTabSnapshot(tab));
+      undoHistories.set(tab.id, history);
+    }
+    return history;
+  }
+
+  function getActiveUndoHistory(): EditorUndoHistory {
+    const activeTab = getActiveTab();
+    if (activeTab) return getUndoHistoryForTab(activeTab);
+
+    let history = undoHistories.get(activeTabId);
+    if (!history) {
+      history = new EditorUndoHistory(getCurrentEditorSnapshot());
+      undoHistories.set(activeTabId, history);
+    }
+    return history;
+  }
+
+  function resetUndoHistoryForTab(tab: EditorTab) {
+    const history = new EditorUndoHistory(getTabSnapshot(tab));
+    undoHistories.set(tab.id, history);
+  }
+
+  function markTabHistorySaved(tabId: string) {
+    const tab = tabs.find((item) => item.id === tabId);
+    const history = tab ? getUndoHistoryForTab(tab) : undoHistories.get(tabId);
+    history?.markSaved();
+  }
+
+  function getCurrentEditorSelection(): EditorSelection {
+    const start = textareaEl?.selectionStart ?? caretOffset;
+    const end = textareaEl?.selectionEnd ?? caretOffset;
+    return { start, end };
+  }
+
+  function getCurrentEditorSnapshot(): EditorSnapshot {
+    return {
+      content: fileContent,
+      selection: getCurrentEditorSelection()
+    };
+  }
+
+  function setLastEditorSnapshot(snapshot: EditorSnapshot) {
+    lastEditorSnapshot = {
+      content: snapshot.content,
+      selection: { ...snapshot.selection }
+    };
+  }
+
+  function closeActiveUndoGroup() {
+    getActiveUndoHistory().closeGroup();
+  }
+
   function syncActiveTabState() {
+    if (pendingInlineColorEditBefore) {
+      finishInlineColorPickerEdit();
+    }
+
     const activeTab = getActiveTab();
     if (!activeTab) return;
 
     const nextFileName = filePath ? fileName : getFirstLineTitle(fileContent);
+    const nextIsDirty = getUndoHistoryForTab(activeTab).isDirty();
     fileName = nextFileName;
+    isDirty = nextIsDirty;
 
     updateTabById(activeTab.id, {
       filePath,
       fileName: nextFileName,
       fileContent,
-      isDirty,
+      isDirty: nextIsDirty,
       scrollTop,
       scrollLeft,
       selectionStart: textareaEl?.selectionStart ?? activeTab.selectionStart,
@@ -411,11 +491,13 @@
   }
 
   function loadTabIntoEditor(tab: EditorTab) {
+    const history = getUndoHistoryForTab(tab);
+    setLastEditorSnapshot(getTabSnapshot(tab));
     activeTabId = tab.id;
     filePath = tab.filePath;
     fileName = getDisplayFileName(tab);
     fileContent = tab.fileContent;
-    isDirty = tab.isDirty;
+    isDirty = history.isDirty();
     errorMsg = null;
     restoreEditorView(tab);
   }
@@ -431,6 +513,7 @@
 
   function addTab(tab: EditorTab) {
     syncActiveTabState();
+    resetUndoHistoryForTab(tab);
     tabs = [...tabs, tab];
     closeAllDropdown();
     loadTabIntoEditor(tab);
@@ -454,6 +537,7 @@
 
     const activeId = tabs[activeIndex].id;
     const nextTab = { ...tab, id: activeId };
+    resetUndoHistoryForTab(nextTab);
     tabs = tabs.map((item) => item.id === activeId ? nextTab : item);
     loadTabIntoEditor(nextTab);
   }
@@ -463,13 +547,16 @@
     if (closingIndex === -1) return;
 
     if (tabs.length === 1) {
+      undoHistories.delete(tabId);
       const blankTab = createEditorTab();
+      resetUndoHistoryForTab(blankTab);
       tabs = [blankTab];
       loadTabIntoEditor(blankTab);
       return;
     }
 
     const nextTabs = tabs.filter((tab) => tab.id !== tabId);
+    undoHistories.delete(tabId);
     tabs = nextTabs;
 
     if (activeTabId === tabId) {
@@ -727,6 +814,7 @@
 
   function applySavedPath(tabId: string, targetPath: string) {
     const nextFileName = getFileNameFromPath(targetPath);
+    markTabHistorySaved(tabId);
     updateTabById(tabId, {
       filePath: targetPath,
       fileName: nextFileName,
@@ -1406,64 +1494,140 @@
     cursorCol = pos - (lineStartOffsets[lineIndex] ?? 0) + 1;
     updateEditorCaretColor(pos);
     syncSteadyEditorCaretPosition();
+    setLastEditorSnapshot(getCurrentEditorSnapshot());
+  }
+
+  function updateEditorStateForSnapshot(snapshot: EditorSnapshot) {
+    fileContent = snapshot.content;
+    fileName = filePath ? fileName : getFirstLineTitle(fileContent);
+    isDirty = getActiveUndoHistory().isDirty();
+    errorMsg = null;
+    reconcileInlineColorPickerState();
+    setLastEditorSnapshot(snapshot);
+    updateTabById(activeTabId, {
+      fileName,
+      fileContent,
+      isDirty,
+      selectionStart: snapshot.selection.start,
+      selectionEnd: snapshot.selection.end
+    });
+  }
+
+  function applyEditorSnapshot(snapshot: EditorSnapshot, selectionAlreadyApplied = false) {
+    updateEditorStateForSnapshot(snapshot);
+
+    if (selectionAlreadyApplied) {
+      updateCursorPosition();
+      syncActiveTabState();
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      if (!textareaEl) return;
+      textareaEl.focus({ preventScroll: true });
+      textareaEl.selectionStart = snapshot.selection.start;
+      textareaEl.selectionEnd = snapshot.selection.end;
+      updateCursorPosition();
+      syncActiveTabState();
+    });
+  }
+
+  function commitEditorEdit(
+    before: EditorSnapshot,
+    after: EditorSnapshot,
+    options: { mergeKey?: string | null; selectionAlreadyApplied?: boolean; keepRenderCaretVisible?: boolean } = {}
+  ) {
+    const history = getActiveUndoHistory();
+    history.record(before, after, { mergeKey: options.mergeKey ?? null });
+    applyEditorSnapshot(after, options.selectionAlreadyApplied ?? false);
+    if (options.keepRenderCaretVisible) {
+      keepEditorCaretVisibleDuringEdit();
+    } else {
+      syncEditorCaretVisibilityForCurrentMode();
+    }
+  }
+
+  function commitManualEditorEdit(
+    nextContent: string,
+    nextSelection: EditorSelection,
+    options: { mergeKey?: string | null; keepRenderCaretVisible?: boolean } = {}
+  ) {
+    if (!options.mergeKey) {
+      closeActiveUndoGroup();
+    }
+    const before = getCurrentEditorSnapshot();
+    const after = { content: nextContent, selection: nextSelection };
+    commitEditorEdit(before, after, options);
+  }
+
+  function commitRenderEditorEdit(nextContent: string, nextSelection: EditorSelection) {
+    commitManualEditorEdit(nextContent, nextSelection, { keepRenderCaretVisible: true });
+  }
+
+  function getNativeInputMergeKey(inputType: string, before: EditorSnapshot, isComposing: boolean): string | null {
+    if (isComposing) return 'composition';
+    if (before.selection.start !== before.selection.end) return null;
+    if (inputType === 'insertText') return 'insert-text';
+    if (inputType === 'deleteContentBackward') return 'delete-backward';
+    if (inputType === 'deleteContentForward') return 'delete-forward';
+    return null;
   }
 
   // 변경 감지
   function handleInput(event: Event) {
-    fileContent = (event.target as HTMLTextAreaElement).value;
-    fileName = filePath ? fileName : getFirstLineTitle(fileContent);
-    isDirty = true;
-    errorMsg = null;
-    updateCursorPosition();
+    const target = event.target as HTMLTextAreaElement;
+    const pendingInput = pendingNativeInput;
+    pendingNativeInput = null;
+
+    const before = pendingInput?.before ?? lastEditorSnapshot;
+    const after = {
+      content: target.value,
+      selection: {
+        start: target.selectionStart,
+        end: target.selectionEnd
+      }
+    };
+    const inputType = pendingInput?.inputType ?? 'input';
+    const mergeKey = getNativeInputMergeKey(inputType, before, pendingInput?.isComposing ?? isComposingEditorText);
+
+    commitEditorEdit(before, after, {
+      mergeKey,
+      selectionAlreadyApplied: true
+    });
+  }
+
+  function handleEditorBeforeInput(event: InputEvent) {
+    if (event.inputType === 'historyUndo') {
+      event.preventDefault();
+      performUndo();
+      return;
+    }
+
+    if (event.inputType === 'historyRedo') {
+      event.preventDefault();
+      performRedo();
+      return;
+    }
+
+    pendingNativeInput = {
+      before: getCurrentEditorSnapshot(),
+      inputType: event.inputType,
+      isComposing: event.isComposing || isComposingEditorText
+    };
     syncEditorCaretVisibilityForCurrentMode();
-    reconcileInlineColorPickerState();
-    updateTabById(activeTabId, {
-      fileName,
-      isDirty: true
-    });
   }
 
-  function applyEditorContentChange(nextContent: string) {
-    fileContent = nextContent;
-    fileName = filePath ? fileName : getFirstLineTitle(fileContent);
-    isDirty = true;
-    errorMsg = null;
-    reconcileInlineColorPickerState();
-    updateTabById(activeTabId, {
-      fileName,
-      isDirty: true
-    });
+  function handleEditorCompositionStart() {
+    isComposingEditorText = true;
+    pendingNativeInput = null;
   }
 
-  function applyRenderEditorContentChange(nextContent: string) {
-    applyEditorContentChange(nextContent);
-    keepEditorCaretVisibleDuringEdit();
-  }
-
-  function placeEditorCaret(offset: number) {
-    requestAnimationFrame(() => {
-      if (!textareaEl) return;
-      textareaEl.focus({ preventScroll: true });
-      textareaEl.selectionStart = textareaEl.selectionEnd = offset;
-      updateCursorPosition();
-    });
-  }
-
-  function placeEditorSelection(start: number, end: number) {
-    requestAnimationFrame(() => {
-      if (!textareaEl) return;
-      textareaEl.focus({ preventScroll: true });
-      textareaEl.selectionStart = start;
-      textareaEl.selectionEnd = end;
-      updateCursorPosition();
-    });
-  }
-
-  function handleEditorBeforeInput() {
-    syncEditorCaretVisibilityForCurrentMode();
+  function handleEditorCompositionEnd() {
+    isComposingEditorText = false;
   }
 
   function handleEditorBlur() {
+    closeActiveUndoGroup();
     updateEditorSelectionState();
     hideSteadyEditorCaret();
   }
@@ -1534,8 +1698,10 @@
 
     if (start === end && !event.shiftKey) {
       const nextContent = `${fileContent.slice(0, start)}${editorIndentUnit}${fileContent.slice(end)}`;
-      applyRenderEditorContentChange(nextContent);
-      placeEditorCaret(start + editorIndentUnit.length);
+      commitRenderEditorEdit(nextContent, {
+        start: start + editorIndentUnit.length,
+        end: start + editorIndentUnit.length
+      });
       return true;
     }
 
@@ -1549,12 +1715,17 @@
         bounds.end,
         (lineText) => `${editorIndentUnit}${lineText}`
       );
-      applyRenderEditorContentChange(nextContent);
       if (start === end) {
-        placeEditorSelection(start + editorIndentUnit.length, end + editorIndentUnit.length);
+        commitRenderEditorEdit(nextContent, {
+          start: start + editorIndentUnit.length,
+          end: end + editorIndentUnit.length
+        });
       } else {
         const nextStart = start === bounds.start ? start : start + editorIndentUnit.length;
-        placeEditorSelection(nextStart, end + editorIndentUnit.length * lineCount);
+        commitRenderEditorEdit(nextContent, {
+          start: nextStart,
+          end: end + editorIndentUnit.length * lineCount
+        });
       }
       return true;
     }
@@ -1580,8 +1751,10 @@
       }
     );
 
-    applyRenderEditorContentChange(nextContent);
-    placeEditorSelection(start - removedBeforeStart, end - removedBeforeEnd);
+    commitRenderEditorEdit(nextContent, {
+      start: start - removedBeforeStart,
+      end: end - removedBeforeEnd
+    });
     return true;
   }
 
@@ -1608,8 +1781,10 @@
     const nextContent = `${fileContent.slice(0, nextStart)}${fileContent.slice(start)}`;
 
     event.preventDefault();
-    applyRenderEditorContentChange(nextContent);
-    placeEditorCaret(nextStart);
+    commitRenderEditorEdit(nextContent, {
+      start: nextStart,
+      end: nextStart
+    });
     return true;
   }
 
@@ -1665,8 +1840,10 @@
     const insertText = `${getPreferredNewline(fileContent, start)}${lineIndent}`;
 
     event.preventDefault();
-    applyRenderEditorContentChange(`${fileContent.slice(0, start)}${insertText}${fileContent.slice(end)}`);
-    placeEditorCaret(start + insertText.length);
+    commitRenderEditorEdit(`${fileContent.slice(0, start)}${insertText}${fileContent.slice(end)}`, {
+      start: start + insertText.length,
+      end: start + insertText.length
+    });
     return true;
   }
 
@@ -1696,8 +1873,10 @@
     if (currentLine !== getLeadingWhitespace(previousLine)) return false;
 
     event.preventDefault();
-    applyRenderEditorContentChange(`${fileContent.slice(0, previousLineBounds.end)}${fileContent.slice(start)}`);
-    placeEditorCaret(previousLineBounds.end);
+    commitRenderEditorEdit(`${fileContent.slice(0, previousLineBounds.end)}${fileContent.slice(start)}`, {
+      start: previousLineBounds.end,
+      end: previousLineBounds.end
+    });
     return true;
   }
 
@@ -1716,8 +1895,10 @@
     event.preventDefault();
 
     const nextContent = `${fileContent.slice(0, start)}${event.key}${closingChar}${fileContent.slice(end)}`;
-    applyRenderEditorContentChange(nextContent);
-    placeEditorCaret(start + 1);
+    commitRenderEditorEdit(nextContent, {
+      start: start + 1,
+      end: start + 1
+    });
 
     return true;
   }
@@ -1745,8 +1926,10 @@
     event.preventDefault();
 
     const nextContent = `${fileContent.slice(0, start - 1)}${fileContent.slice(start + 1)}`;
-    applyRenderEditorContentChange(nextContent);
-    placeEditorCaret(start - 1);
+    commitRenderEditorEdit(nextContent, {
+      start: start - 1,
+      end: start - 1
+    });
 
     return true;
   }
@@ -1774,8 +1957,10 @@
     const triggerStart = start - trigger.length;
     const substitution = renderAutoSubstitutions[trigger];
     const nextContent = `${fileContent.slice(0, triggerStart)}${substitution} ${fileContent.slice(end)}`;
-    applyRenderEditorContentChange(nextContent);
-    placeEditorCaret(triggerStart + substitution.length + 1);
+    commitRenderEditorEdit(nextContent, {
+      start: triggerStart + substitution.length + 1,
+      end: triggerStart + substitution.length + 1
+    });
 
     return true;
   }
@@ -1791,6 +1976,10 @@
   }
 
   function handleEditorKeyDown(event: KeyboardEvent) {
+    if (editorMovementKeys.has(event.key)) {
+      closeActiveUndoGroup();
+    }
+
     if (!isRenderMode) return;
     handleRenderEditorKeyDown(event);
   }
@@ -1955,6 +2144,43 @@
     openDropdown = null;
   }
 
+  function performUndo(): boolean {
+    finishInlineColorPickerEdit();
+    const history = getActiveUndoHistory();
+    history.closeGroup();
+    const nextSnapshot = history.undo(getCurrentEditorSnapshot());
+    if (!nextSnapshot) return false;
+
+    pendingNativeInput = null;
+    clearInlineColorPickerState();
+    applyEditorSnapshot(nextSnapshot);
+    syncEditorCaretVisibilityForCurrentMode();
+    return true;
+  }
+
+  function performRedo(): boolean {
+    finishInlineColorPickerEdit();
+    const history = getActiveUndoHistory();
+    history.closeGroup();
+    const nextSnapshot = history.redo(getCurrentEditorSnapshot());
+    if (!nextSnapshot) return false;
+    history.closeGroup();
+
+    pendingNativeInput = null;
+    clearInlineColorPickerState();
+    applyEditorSnapshot(nextSnapshot);
+    syncEditorCaretVisibilityForCurrentMode();
+    return true;
+  }
+
+  function canUndoActiveTab(): boolean {
+    return getActiveUndoHistory().canUndo();
+  }
+
+  function canRedoActiveTab(): boolean {
+    return getActiveUndoHistory().canRedo();
+  }
+
   // 날짜/시간 삽입 (F5)
   function insertDateTime() {
     if (!textareaEl) return;
@@ -1970,37 +2196,25 @@
 
     const before = fileContent.substring(0, start);
     const after = fileContent.substring(end);
-    fileContent = before + formatted + after;
-    isDirty = true;
-    reconcileInlineColorPickerState();
-    syncActiveTabState();
+    commitManualEditorEdit(before + formatted + after, {
+      start: start + formatted.length,
+      end: start + formatted.length
+    });
 
     closeAllDropdown();
-
-    setTimeout(() => {
-      if (textareaEl) {
-        textareaEl.focus();
-        textareaEl.selectionStart = textareaEl.selectionEnd = start + formatted.length;
-        updateCursorPosition();
-      }
-    }, 0);
   }
 
   // 편집 메뉴 액션들
   function handleUndo() {
-    if (textareaEl) {
-      textareaEl.focus();
-      document.execCommand('undo');
-    }
+    if (textareaEl) textareaEl.focus();
+    performUndo();
     closeAllDropdown();
   }
 
   // 다시 실행
   function handleRedo() {
-    if (textareaEl) {
-      textareaEl.focus();
-      document.execCommand('redo');
-    }
+    if (textareaEl) textareaEl.focus();
+    performRedo();
     closeAllDropdown();
   }
 
@@ -2015,19 +2229,12 @@
 
     const before = fileContent.substring(0, start);
     const after = fileContent.substring(end);
-    fileContent = before + after;
-    isDirty = true;
-    reconcileInlineColorPickerState();
-    syncActiveTabState();
+    commitManualEditorEdit(before + after, {
+      start,
+      end: start
+    });
 
     closeAllDropdown();
-    setTimeout(() => {
-      if (textareaEl) {
-        textareaEl.focus();
-        textareaEl.selectionStart = textareaEl.selectionEnd = start;
-        updateCursorPosition();
-      }
-    }, 0);
   }
 
   async function handleCopy() {
@@ -2050,20 +2257,12 @@
 
       const before = fileContent.substring(0, start);
       const after = fileContent.substring(end);
-      fileContent = before + text + after;
-      isDirty = true;
-      reconcileInlineColorPickerState();
-      syncActiveTabState();
+      commitManualEditorEdit(before + text + after, {
+        start: start + text.length,
+        end: start + text.length
+      });
 
       closeAllDropdown();
-      setTimeout(() => {
-        if (textareaEl) {
-          textareaEl.focus();
-          textareaEl.selectionStart = textareaEl.selectionEnd = start + text.length;
-          updateCursorPosition();
-          syncEditorCaretVisibilityForCurrentMode();
-        }
-      }, 0);
     } catch (err) {
       console.error(err);
     }
@@ -2078,28 +2277,24 @@
     if (start === end) {
       const before = fileContent.substring(0, start);
       const after = fileContent.substring(start + 1);
-      fileContent = before + after;
+      commitManualEditorEdit(before + after, {
+        start: newCursorPos,
+        end: newCursorPos
+      });
     } else {
       const before = fileContent.substring(0, start);
       const after = fileContent.substring(end);
-      fileContent = before + after;
+      commitManualEditorEdit(before + after, {
+        start: newCursorPos,
+        end: newCursorPos
+      });
     }
-    isDirty = true;
-    reconcileInlineColorPickerState();
-    syncActiveTabState();
 
     closeAllDropdown();
-    setTimeout(() => {
-      if (textareaEl) {
-        textareaEl.focus();
-        textareaEl.selectionStart = textareaEl.selectionEnd = newCursorPos;
-        updateCursorPosition();
-        syncEditorCaretVisibilityForCurrentMode();
-      }
-    }, 0);
   }
 
   function handleSelectAll() {
+    closeActiveUndoGroup();
     if (textareaEl) {
       textareaEl.focus();
       textareaEl.select();
@@ -2176,19 +2371,31 @@
 
   // 글로벌 키보드 단축키 감지
   function handleKeyDown(e: KeyboardEvent) {
-    if (e.ctrlKey && e.key.toLowerCase() === 'n') {
+    const key = e.key.toLowerCase();
+
+    if (!isSettingsWindow && e.ctrlKey && key === 'z') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        performRedo();
+      } else {
+        performUndo();
+      }
+    } else if (!isSettingsWindow && e.ctrlKey && key === 'y') {
+      e.preventDefault();
+      performRedo();
+    } else if (e.ctrlKey && key === 'n') {
       e.preventDefault();
       handleNewFile();
-    } else if (e.ctrlKey && e.key.toLowerCase() === 'o') {
+    } else if (e.ctrlKey && key === 'o') {
       e.preventDefault();
       handleOpenFile();
-    } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 's') {
+    } else if (e.ctrlKey && !e.shiftKey && key === 's') {
       e.preventDefault();
       handleSaveFile();
-    } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 's') {
+    } else if (e.ctrlKey && e.shiftKey && key === 's') {
       e.preventDefault();
       handleSaveAsFile();
-    } else if (e.ctrlKey && e.key.toLowerCase() === 'w') {
+    } else if (e.ctrlKey && key === 'w') {
       e.preventDefault();
       handleCloseTab(activeTabId);
     } else if (e.key === 'F5') {
@@ -2220,6 +2427,7 @@
   let inlineColorPickerEl = $state<HTMLInputElement | null>(null);
   let inlineColorPickerValue = $state<string>('#000000');
   let pendingInlineColorReplacement = $state<{ start: number; end: number } | null>(null);
+  let pendingInlineColorEditBefore = $state<EditorSnapshot | null>(null);
   let suppressNextEditorClickAfterRenderAction = false;
   const parkedInlineColorPickerPosition = { left: -10000, top: -10000 };
   let inlineColorPickerPosition = $state<{ left: number; top: number }>({ ...parkedInlineColorPickerPosition });
@@ -2250,6 +2458,7 @@
 
   function clearInlineColorPickerState() {
     pendingInlineColorReplacement = null;
+    pendingInlineColorEditBefore = null;
     parkInlineColorPickerAnchor();
   }
 
@@ -2372,8 +2581,10 @@
     const nextSelectionStart = adjustOffsetAfterReplacement(selectionStart, range, nextValue.length);
     const nextSelectionEnd = adjustOffsetAfterReplacement(selectionEnd, range, nextValue.length);
 
-    applyRenderEditorContentChange(nextContent);
-    placeEditorSelection(nextSelectionStart, nextSelectionEnd);
+    commitRenderEditorEdit(nextContent, {
+      start: nextSelectionStart,
+      end: nextSelectionEnd
+    });
   }
 
   function adjustOffsetAfterReplacement(offset: number, range: { start: number; end: number }, replacementLength: number) {
@@ -2455,6 +2666,7 @@
 
   function openInlineColorPicker(range: { start: number; end: number; value: string }) {
     pendingInlineColorReplacement = { start: range.start, end: range.end };
+    pendingInlineColorEditBefore = getCurrentEditorSnapshot();
     const nextValue = getColorInputValue(range.value);
     inlineColorPickerValue = nextValue;
     if (inlineColorPickerEl) {
@@ -2475,7 +2687,58 @@
     }
   }
 
+  function applyInlineColorPreview(start: number, end: number, nextValue: string) {
+    fileContent = `${fileContent.slice(0, start)}${nextValue}${fileContent.slice(end)}`;
+    inlineColorPickerValue = nextValue;
+    pendingInlineColorReplacement = { start, end: start + nextValue.length };
+    fileName = filePath ? fileName : getFirstLineTitle(fileContent);
+    isDirty = true;
+    errorMsg = null;
+    updateEditorCaretColor(caretOffset);
+    setLastEditorSnapshot({
+      content: fileContent,
+      selection: {
+        start,
+        end: start + nextValue.length
+      }
+    });
+    updateTabById(activeTabId, {
+      fileName,
+      fileContent,
+      isDirty,
+      selectionStart: start,
+      selectionEnd: start + nextValue.length
+    });
+
+    requestAnimationFrame(() => {
+      if (!textareaEl) return;
+      textareaEl.selectionStart = start;
+      textareaEl.selectionEnd = start + nextValue.length;
+      updateCursorPosition();
+      if (pendingInlineColorReplacement) {
+        positionInlineColorPicker({ start, end: start + nextValue.length });
+      }
+    });
+  }
+
+  function finishInlineColorPickerEdit() {
+    if (!pendingInlineColorReplacement || !pendingInlineColorEditBefore) return;
+
+    const { start, end } = pendingInlineColorReplacement;
+    const before = pendingInlineColorEditBefore;
+    const after = {
+      content: fileContent,
+      selection: { start, end }
+    };
+    pendingInlineColorEditBefore = null;
+    closeActiveUndoGroup();
+    commitEditorEdit(before, after);
+  }
+
   function handleEditorPointerDown(event: PointerEvent) {
+    if (event.button === 0) {
+      closeActiveUndoGroup();
+    }
     if (!isRenderMode || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled || !textareaEl || event.button !== 0) return;
 
     const booleanRange = findDataBooleanAtPoint(event.clientX, event.clientY);
@@ -2538,25 +2801,19 @@
     const nextValue = target.value.toUpperCase();
     const { start, end } = pendingInlineColorReplacement;
 
-    fileContent = `${fileContent.slice(0, start)}${nextValue}${fileContent.slice(end)}`;
-    inlineColorPickerValue = nextValue;
-    pendingInlineColorReplacement = { start, end: start + nextValue.length };
-    isDirty = true;
-    updateEditorCaretColor(caretOffset);
-    syncActiveTabState();
-
-    requestAnimationFrame(() => {
-      if (!textareaEl) return;
-      textareaEl.selectionStart = start;
-      textareaEl.selectionEnd = start + nextValue.length;
-      updateCursorPosition();
-      if (pendingInlineColorReplacement) {
-        positionInlineColorPicker({ start, end: start + nextValue.length });
-      }
-    });
+    applyInlineColorPreview(start, end, nextValue);
   }
 
-  function handleInlineColorPickerChange() {
+  function handleInlineColorPickerChange(event: Event) {
+    if (pendingInlineColorReplacement) {
+      const target = event.currentTarget as HTMLInputElement;
+      const nextValue = target.value.toUpperCase();
+      if (nextValue !== inlineColorPickerValue) {
+        const { start, end } = pendingInlineColorReplacement;
+        applyInlineColorPreview(start, end, nextValue);
+      }
+    }
+    finishInlineColorPickerEdit();
     clearInlineColorPickerState();
   }
 
@@ -3088,11 +3345,11 @@
           </button>
           {#if openDropdown === 'edit'}
             <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
-              <button class="dropdown-item" onclick={handleUndo}>
+              <button class="dropdown-item" onclick={handleUndo} disabled={!canUndoActiveTab()}>
                 <span class="item-label">실행 취소</span>
                 <span class="shortcut-label">Ctrl+Z</span>
               </button>
-              <button class="dropdown-item" onclick={handleRedo}>
+              <button class="dropdown-item" onclick={handleRedo} disabled={!canRedoActiveTab()}>
                 <span class="item-label">다시 실행</span>
                 <span class="shortcut-label">Ctrl+Y</span>
               </button>
@@ -3236,6 +3493,8 @@
             onkeydown={handleEditorKeyDown}
             onbeforeinput={handleEditorBeforeInput}
             oninput={handleInput}
+            oncompositionstart={handleEditorCompositionStart}
+            oncompositionend={handleEditorCompositionEnd}
             onscroll={handleScroll}
             onpointerdown={handleEditorPointerDown}
             onkeyup={updateCursorPosition}
