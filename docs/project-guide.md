@@ -26,19 +26,22 @@ graph TD
 - `docs/frontend-guide.md`: 프론트엔드 계약.
 - `docs/features/file-workflow.md`: 파일 열기와 저장 흐름.
 - `docs/features/render-mode.md`: 렌더 모드 표시 계약.
+- `docs/features/editor-undo.md`: 편집기 실행 취소 계약.
 - `docs/features/settings-window.md`: 독립 설정창 계약.
 - `docs/features/theme-preferences.md`: 테마와 사용자 설정 저장 계약.
 - `docs/implementation-checklist.md`: 남은 기능과 완료 기준.
 
 ## 현재 기능 범위
 
-- 여러 텍스트 계열 확장자 열기와 `.txt` 중심 저장.
+- 현재 제품 지원 형식인 `.txt`, `.json`, `.yaml`, `.yml` 파일 열기와 저장.
 - 원문 모드 편집.
 - 렌더 모드 구문 강조, 들여쓰기 가이드, 줄 번호, 가상화된 화면 렌더링.
 - 라이트/다크 테마, 렌더 색상, 글꼴, 글자 크기, 탭 크기 설정.
 - 메인 창을 편집기 준비 뒤 표시해 첫 화면이 곧바로 입력 가능한 상태가 되게 하는 시작 흐름.
 - 설정 버튼을 처음 눌렀을 때 독립 설정창을 동적으로 생성하고 표시.
 - 설정창에서 파일 형식별 렌더 표시와 렌더 편집 모듈 켜기/끄기.
+- Windows 앱 표시 이름과 번들 실행 파일 이름을 `text-pad`로 생성.
+- 현재 제품 지원 확장자를 Windows 파일 연결 정보로 등록해 `연결 프로그램`에서 선택 가능하게 함.
 - Windows WebView2 가로 휠 입력 보정.
 - Windows 릴리스 빌드 생성.
 
@@ -46,7 +49,6 @@ graph TD
 
 - 검색, 바꾸기, 특정 줄 이동의 완성도 개선.
 - 저장 대화상자의 확장자 필터를 열기 대화상자와 맞추기.
-- 앱 표시 이름과 번들 실행 파일 이름을 `text-pad`로 정리.
 - Markdown 렌더링과 제한적 편집.
 - JSON 트리 보기와 값 편집.
 - CSV/TSV 표 보기와 셀 편집.

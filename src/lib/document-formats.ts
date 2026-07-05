@@ -6,14 +6,21 @@ import {
   type Token,
   type TokenizeState
 } from './render-tokenizer';
+import { parseAllDocuments as parseYamlDocuments, type YAMLParseError } from 'yaml';
+import {
+  getIndentDepth,
+  getIndentInfo,
+  getLineRangeOffsets,
+  getLineText,
+  normalizeLineRange,
+  shouldKeepFlatToken,
+  splitFlatTokensIntoLines,
+  type DocumentLineRange as StructuredDocumentLineRange,
+  type FlatToken,
+  type ParsedLine as StructuredParsedLine
+} from './structured-rendering';
 
-export interface ParsedLine {
-  id: number;
-  indentLevel: number;
-  indentColumns: number;
-  extraIndentSpaces: number;
-  tokens: Token[];
-}
+export type ParsedLine = StructuredParsedLine;
 
 export interface DocumentDiagnostic {
   severity: 'error';
@@ -62,10 +69,7 @@ export interface DocumentRenderResult {
   diagnostic: DocumentDiagnostic | null;
 }
 
-export interface DocumentLineRange {
-  startLine: number;
-  endLine: number;
-}
+export type DocumentLineRange = StructuredDocumentLineRange;
 
 interface ParseDocumentOptions {
   pathOrName: string | null | undefined;
@@ -73,12 +77,6 @@ interface ParseDocumentOptions {
   lineStartOffsets: number[];
   lineRange?: DocumentLineRange;
   featureSettings?: DocumentFeatureSettings;
-}
-
-interface FlatToken extends Token {
-  text: string;
-  start: number;
-  end: number;
 }
 
 const cBlockComment: BlockCommentRule = { start: '/*', end: '*/' };
@@ -156,9 +154,9 @@ const yamlFormat: DocumentFormat = {
   label: 'YAML',
   extensions: ['yaml', 'yml'],
   defaultExtension: 'yaml',
-  validatesSyntax: false,
-  renderDescription: genericRenderDescription,
-  editDescription: genericEditDescription,
+  validatesSyntax: true,
+  renderDescription: '키, 값, 목록 표식, 주석, 문서 구분자와 문법 오류 표시를 사용합니다.',
+  editDescription: '렌더된 true와 false 값을 클릭해 반대로 바꿉니다.',
   commentSyntax: hashCommentSyntax
 };
 
@@ -254,6 +252,12 @@ export const configurableDocumentFormats = [
   cssFormat
 ];
 
+const productSupportedDocumentFormats = [
+  plainTextFormat,
+  jsonFormat,
+  yamlFormat
+];
+
 export function createDefaultDocumentFeatureSettings(): DocumentFeatureSettings {
   return {
     plain: { render: true, edit: true },
@@ -305,7 +309,7 @@ export function isDocumentFormatEditEnabled(
 }
 
 export const supportedTextExtensions = [
-  ...new Set(configurableDocumentFormats.flatMap((format) => format.extensions))
+  ...new Set(productSupportedDocumentFormats.flatMap((format) => format.extensions))
 ];
 
 export const openFileDialogFilters = [
@@ -323,6 +327,10 @@ export const saveFileDialogFilters = [
   {
     name: 'JSON Files',
     extensions: ['json']
+  },
+  {
+    name: 'YAML Files',
+    extensions: ['yaml', 'yml']
   },
   {
     name: 'All Supported Text Files',
@@ -347,32 +355,25 @@ export function looksLikeJsonContent(content: string): boolean {
   return firstChar === '{' || firstChar === '[';
 }
 
+export function looksLikeYamlContent(content: string): boolean {
+  return /^(?:%YAML\b|---(?:\s|$))/u.test(content.trimStart());
+}
+
 export function getDocumentFormatForContent(
   content: string,
   pathOrName: string | null | undefined
 ): DocumentFormat {
   const namedFormat = getDocumentFormatForPath(pathOrName);
-  return namedFormat.id === 'plain' && looksLikeJsonContent(content) ? jsonFormat : namedFormat;
+  if (namedFormat.id !== 'plain') return namedFormat;
+  if (looksLikeJsonContent(content)) return jsonFormat;
+  if (looksLikeYamlContent(content)) return yamlFormat;
+  return namedFormat;
 }
 
 export function getSuggestedFileExtensionForContent(content: string): string {
-  return looksLikeJsonContent(content) ? jsonFormat.defaultExtension : plainTextFormat.defaultExtension;
-}
-
-function getIndentInfo(lineText: string, tabSize: number) {
-  const match = lineText.match(/^([ \t]*)/);
-  const indentStr = match ? match[0] : '';
-
-  let totalSpaces = 0;
-  for (let j = 0; j < indentStr.length; j++) {
-    totalSpaces += indentStr[j] === '\t' ? tabSize : 1;
-  }
-
-  return {
-    indentLevel: Math.floor(totalSpaces / tabSize),
-    indentColumns: totalSpaces,
-    extraIndentSpaces: totalSpaces % tabSize
-  };
+  if (looksLikeJsonContent(content)) return jsonFormat.defaultExtension;
+  if (looksLikeYamlContent(content)) return yamlFormat.defaultExtension;
+  return plainTextFormat.defaultExtension;
 }
 
 function annotateTokenOffsets(tokens: Token[], lineStartOffset: number) {
@@ -415,56 +416,6 @@ function parsePlainLine(
     },
     state: tokenized.state
   };
-}
-
-function normalizeLineRange(lineCount: number, lineRange?: DocumentLineRange): DocumentLineRange {
-  if (lineCount <= 0) return { startLine: 0, endLine: 0 };
-
-  const startLine = Math.max(0, Math.min(lineRange?.startLine ?? 0, lineCount - 1));
-  const endLine = Math.max(startLine, Math.min(lineRange?.endLine ?? lineCount - 1, lineCount - 1));
-
-  return { startLine, endLine };
-}
-
-function getLineRangeOffsets(
-  content: string,
-  lineStartOffsets: number[],
-  lineRange: DocumentLineRange
-): { start: number; end: number } {
-  return {
-    start: lineStartOffsets[lineRange.startLine] ?? 0,
-    end: lineStartOffsets[lineRange.endLine + 1] ?? content.length
-  };
-}
-
-function getLineText(content: string, lineStartOffsets: number[], lineIndex: number): string {
-  const lineStart = lineStartOffsets[lineIndex] ?? 0;
-  const nextLineStart = lineStartOffsets[lineIndex + 1];
-  let lineEnd = nextLineStart ?? content.length;
-
-  if (nextLineStart !== undefined && content[lineEnd - 1] === '\n') {
-    lineEnd -= 1;
-    if (lineEnd > lineStart && content[lineEnd - 1] === '\r') {
-      lineEnd -= 1;
-    }
-  }
-
-  return content.slice(lineStart, lineEnd);
-}
-
-function getLineContentEndOffset(content: string, lineStartOffsets: number[], lineIndex: number): number {
-  const lineStart = lineStartOffsets[lineIndex] ?? 0;
-  const nextLineStart = lineStartOffsets[lineIndex + 1];
-  let lineEnd = nextLineStart ?? content.length;
-
-  if (nextLineStart !== undefined && content[lineEnd - 1] === '\n') {
-    lineEnd -= 1;
-    if (lineEnd > lineStart && content[lineEnd - 1] === '\r') {
-      lineEnd -= 1;
-    }
-  }
-
-  return lineEnd;
 }
 
 function parsePlainLines(
@@ -607,10 +558,6 @@ function readJsonLiteralToken(content: string, start: number): FlatToken | null 
   return null;
 }
 
-function shouldKeepToken(token: FlatToken, range?: { start: number; end: number }): boolean {
-  return !range || (token.end > range.start && token.start < range.end);
-}
-
 function findNextNonJsonWhitespace(content: string, start: number): number {
   let i = start;
   while (i < content.length && isJsonWhitespaceChar(content[i])) i += 1;
@@ -630,7 +577,7 @@ function scanJsonTokens(content: string, range?: { start: number; end: number })
       i += 1;
       while (i < scanEnd && isJsonWhitespaceChar(content[i])) i += 1;
       const token = { type: 'text', text: content.slice(start, i), start, end: i } satisfies FlatToken;
-      if (shouldKeepToken(token, range)) tokens.push(token);
+      if (shouldKeepFlatToken(token, range)) tokens.push(token);
       continue;
     }
 
@@ -639,21 +586,21 @@ function scanJsonTokens(content: string, range?: { start: number; end: number })
       if (token.type === 'string' && content[findNextNonJsonWhitespace(content, token.end)] === ':') {
         token.type = 'key';
       }
-      if (shouldKeepToken(token, range)) tokens.push(token);
+      if (shouldKeepFlatToken(token, range)) tokens.push(token);
       i = token.end;
       continue;
     }
 
     if (char === '-' || /\d/u.test(char)) {
       const token = readJsonNumberToken(content, i);
-      if (shouldKeepToken(token, range)) tokens.push(token);
+      if (shouldKeepFlatToken(token, range)) tokens.push(token);
       i = token.end;
       continue;
     }
 
     const literalToken = readJsonLiteralToken(content, i);
     if (literalToken) {
-      if (shouldKeepToken(literalToken, range)) tokens.push(literalToken);
+      if (shouldKeepFlatToken(literalToken, range)) tokens.push(literalToken);
       i = literalToken.end;
       continue;
     }
@@ -661,7 +608,7 @@ function scanJsonTokens(content: string, range?: { start: number; end: number })
     if (char === '{' || char === '[') {
       const type = char === '{' ? 'brace' : 'bracket';
       const token = { type, text: char, start: i, end: i + 1 } satisfies FlatToken;
-      if (shouldKeepToken(token, range)) tokens.push(token);
+      if (shouldKeepFlatToken(token, range)) tokens.push(token);
       i += 1;
       continue;
     }
@@ -669,139 +616,446 @@ function scanJsonTokens(content: string, range?: { start: number; end: number })
     if (char === '}' || char === ']') {
       const expected = char === '}' ? 'brace' : 'bracket';
       const token = { type: expected, text: char, start: i, end: i + 1 } satisfies FlatToken;
-      if (shouldKeepToken(token, range)) tokens.push(token);
+      if (shouldKeepFlatToken(token, range)) tokens.push(token);
       i += 1;
       continue;
     }
 
     if (char === ':' || char === ',') {
       const token = { type: 'punctuation', text: char, start: i, end: i + 1 } satisfies FlatToken;
-      if (shouldKeepToken(token, range)) tokens.push(token);
+      if (shouldKeepFlatToken(token, range)) tokens.push(token);
       i += 1;
       continue;
     }
 
     const token = { type: 'invalid', text: char, start: i, end: i + 1 } satisfies FlatToken;
-    if (shouldKeepToken(token, range)) tokens.push(token);
+    if (shouldKeepFlatToken(token, range)) tokens.push(token);
     i += 1;
   }
 
   return tokens;
 }
 
-function inferIndentUnit(content: string, lineStartOffsets: number[], tabSize: number): number {
-  let minPositiveIndent = Number.POSITIVE_INFINITY;
+interface YamlBlockScalarState {
+  parentIndentColumns: number;
+  contentIndentColumns: number | null;
+}
 
-  for (let lineIndex = 0; lineIndex < lineStartOffsets.length; lineIndex += 1) {
-    const lineStart = lineStartOffsets[lineIndex] ?? 0;
-    const lineEnd = getLineContentEndOffset(content, lineStartOffsets, lineIndex);
-    let indentColumns = 0;
+type LineTokenEmitter = (type: Token['type'], start: number, end: number) => void;
 
-    for (let i = lineStart; i < lineEnd; i += 1) {
-      const char = content[i];
-      if (char === ' ') {
-        indentColumns += 1;
-      } else if (char === '\t') {
-        indentColumns += tabSize;
-      } else {
-        break;
+function isHorizontalWhitespaceChar(char: string | undefined): boolean {
+  return char === ' ' || char === '\t';
+}
+
+function findFirstNonHorizontalWhitespace(lineText: string): number {
+  for (let i = 0; i < lineText.length; i += 1) {
+    if (!isHorizontalWhitespaceChar(lineText[i])) return i;
+  }
+
+  return -1;
+}
+
+function findNextNonHorizontalWhitespace(lineText: string, start: number, end: number): number {
+  for (let i = start; i < end; i += 1) {
+    if (!isHorizontalWhitespaceChar(lineText[i])) return i;
+  }
+
+  return -1;
+}
+
+function trimHorizontalWhitespaceEnd(lineText: string, start: number, end: number): number {
+  let i = end;
+  while (i > start && isHorizontalWhitespaceChar(lineText[i - 1])) i -= 1;
+  return i;
+}
+
+function isYamlMappingSeparator(lineText: string, index: number, end: number): boolean {
+  const next = lineText[index + 1];
+  return index + 1 >= end || isHorizontalWhitespaceChar(next);
+}
+
+function findYamlCommentStart(lineText: string, start: number, end = lineText.length): number {
+  let quote: '"' | "'" | null = null;
+
+  for (let i = start; i < end; i += 1) {
+    const char = lineText[i];
+
+    if (quote) {
+      if (quote === '"' && char === '\\') {
+        i += 1;
+        continue;
       }
+      if (quote === "'" && char === "'" && lineText[i + 1] === "'") {
+        i += 1;
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
     }
 
-    if (indentColumns > 0 && indentColumns < minPositiveIndent) {
-      minPositiveIndent = indentColumns;
-      if (minPositiveIndent === 1) return 1;
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (char === '#' && (i === 0 || isHorizontalWhitespaceChar(lineText[i - 1]))) {
+      return i;
     }
   }
 
-  return Number.isFinite(minPositiveIndent) ? minPositiveIndent : tabSize;
+  return -1;
 }
 
-function getJsonLineDepth(line: ParsedLine, indentUnit: number): number {
-  if (line.indentColumns <= 0 || indentUnit <= 0) return 0;
-  return Math.max(Math.floor(line.indentColumns / indentUnit) - 1, 0);
+function findYamlKeySeparator(lineText: string, start: number, end: number): number {
+  let quote: '"' | "'" | null = null;
+  let flowDepth = 0;
+
+  for (let i = start; i < end; i += 1) {
+    const char = lineText[i];
+
+    if (quote) {
+      if (quote === '"' && char === '\\') {
+        i += 1;
+        continue;
+      }
+      if (quote === "'" && char === "'" && lineText[i + 1] === "'") {
+        i += 1;
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (char === '[' || char === '{') {
+      flowDepth += 1;
+      continue;
+    }
+    if (char === ']' || char === '}') {
+      flowDepth = Math.max(0, flowDepth - 1);
+      continue;
+    }
+
+    if (char === ':' && flowDepth === 0 && isYamlMappingSeparator(lineText, i, end)) {
+      return i;
+    }
+  }
+
+  return -1;
 }
 
-function getJsonRenderDepth(token: FlatToken, line: ParsedLine, indentUnit: number): number | undefined {
-  if (token.type === 'key') {
-    return getJsonLineDepth(line, indentUnit);
+function isYamlDocumentMarker(lineText: string, start: number, end: number): boolean {
+  const marker = lineText.slice(start, start + 3);
+  if (marker !== '---' && marker !== '...') return false;
+  const next = lineText[start + 3];
+  return start + 3 >= end || isHorizontalWhitespaceChar(next);
+}
+
+function getYamlSequenceMarkerEnd(lineText: string, start: number, end: number): number | null {
+  if (lineText[start] !== '-') return null;
+  if (lineText.startsWith('---', start)) return null;
+  const next = lineText[start + 1];
+  return start + 1 >= end || isHorizontalWhitespaceChar(next) ? start + 1 : null;
+}
+
+function readYamlQuotedScalarEnd(lineText: string, start: number, end: number): number {
+  const quote = lineText[start];
+  let i = start + 1;
+
+  while (i < end) {
+    const char = lineText[i];
+    if (quote === '"' && char === '\\') {
+      i += 2;
+      continue;
+    }
+    if (quote === "'" && char === "'" && lineText[i + 1] === "'") {
+      i += 2;
+      continue;
+    }
+    if (char === quote) {
+      return i + 1;
+    }
+    i += 1;
+  }
+
+  return end;
+}
+
+function isYamlPlainScalarBreak(lineText: string, index: number, end: number): boolean {
+  const char = lineText[index];
+  if (isHorizontalWhitespaceChar(char)) return true;
+  if (char === '[' || char === ']' || char === '{' || char === '}' || char === ',') return true;
+  return char === ':' && isYamlMappingSeparator(lineText, index, end);
+}
+
+function readYamlPlainScalarEnd(lineText: string, start: number, end: number): number {
+  let i = start;
+  while (i < end && !isYamlPlainScalarBreak(lineText, i, end)) i += 1;
+  return i;
+}
+
+function isYamlBlockScalarIndicator(text: string): boolean {
+  return /^[|>](?:[+-]?\d?|\d?[+-]?)$/.test(text);
+}
+
+function getYamlScalarTokenType(text: string): Token['type'] {
+  const lowerText = text.toLowerCase();
+  if (text === 'true' || text === 'false') return 'boolean';
+  if (lowerText === 'null' || text === '~') return 'literal';
+  if (/^[-+]?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][-+]?\d+)?$/.test(text)) return 'number';
+  if (/^[-+]?\.(?:inf|nan)$/i.test(text)) return 'number';
+  if (/^[&*][A-Za-z0-9_-]+$/.test(text) || /^![A-Za-z0-9_!./:-]+$/.test(text)) return 'literal';
+  return 'string';
+}
+
+function tokenizeYamlValueTokens(
+  lineText: string,
+  start: number,
+  end: number,
+  addToken: LineTokenEmitter
+): { startsBlockScalar: boolean } {
+  let i = start;
+  let hasValueToken = false;
+  let startsBlockScalar = false;
+
+  while (i < end) {
+    const char = lineText[i];
+
+    if (isHorizontalWhitespaceChar(char)) {
+      i += 1;
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      const tokenEnd = readYamlQuotedScalarEnd(lineText, i, end);
+      addToken('string', i, tokenEnd);
+      i = tokenEnd;
+      hasValueToken = true;
+      continue;
+    }
+
+    if (char === '[' || char === ']') {
+      addToken('bracket', i, i + 1);
+      i += 1;
+      hasValueToken = true;
+      continue;
+    }
+
+    if (char === '{' || char === '}') {
+      addToken('brace', i, i + 1);
+      i += 1;
+      hasValueToken = true;
+      continue;
+    }
+
+    if (char === ',' || (char === ':' && isYamlMappingSeparator(lineText, i, end))) {
+      addToken('punctuation', i, i + 1);
+      i += 1;
+      continue;
+    }
+
+    const tokenEnd = readYamlPlainScalarEnd(lineText, i, end);
+    const tokenText = lineText.slice(i, tokenEnd);
+    const isBlockScalarIndicator = !hasValueToken && isYamlBlockScalarIndicator(tokenText);
+
+    addToken(isBlockScalarIndicator ? 'literal' : getYamlScalarTokenType(tokenText), i, tokenEnd);
+    if (isBlockScalarIndicator && findNextNonHorizontalWhitespace(lineText, tokenEnd, end) === -1) {
+      startsBlockScalar = true;
+    }
+
+    i = tokenEnd;
+    hasValueToken = true;
+  }
+
+  return { startsBlockScalar };
+}
+
+function scanYamlLineTokens(
+  lineText: string,
+  lineStartOffset: number,
+  shouldEmit: boolean,
+  tokens: FlatToken[]
+): { startsBlockScalar: boolean } {
+  const firstNonWhitespace = findFirstNonHorizontalWhitespace(lineText);
+  let cursor = 0;
+
+  const pushToken = (type: Token['type'], start: number, end: number) => {
+    if (!shouldEmit || end <= start) return;
+    tokens.push({
+      type,
+      text: lineText.slice(start, end),
+      start: lineStartOffset + start,
+      end: lineStartOffset + end
+    });
+  };
+
+  const addTextUntil = (end: number) => {
+    pushToken('text', cursor, end);
+    cursor = end;
+  };
+
+  const addToken: LineTokenEmitter = (type, start, end) => {
+    addTextUntil(start);
+    pushToken(type, start, end);
+    cursor = end;
+  };
+
+  if (firstNonWhitespace === -1) {
+    addTextUntil(lineText.length);
+    return { startsBlockScalar: false };
+  }
+
+  const commentStart = findYamlCommentStart(lineText, firstNonWhitespace);
+  const codeEnd = commentStart === -1 ? lineText.length : commentStart;
+
+  if (firstNonWhitespace >= codeEnd) {
+    addTextUntil(codeEnd);
+    if (commentStart !== -1) addToken('comment', commentStart, lineText.length);
+    return { startsBlockScalar: false };
+  }
+
+  let valueStart = firstNonWhitespace;
+  let startsBlockScalar = false;
+
+  if (isYamlDocumentMarker(lineText, firstNonWhitespace, codeEnd)) {
+    addToken('punctuation', firstNonWhitespace, firstNonWhitespace + 3);
+    const valueResult = tokenizeYamlValueTokens(lineText, firstNonWhitespace + 3, codeEnd, addToken);
+    startsBlockScalar = valueResult.startsBlockScalar;
+  } else {
+    const sequenceMarkerEnd = getYamlSequenceMarkerEnd(lineText, firstNonWhitespace, codeEnd);
+    if (sequenceMarkerEnd !== null) {
+      addToken('list-marker', firstNonWhitespace, sequenceMarkerEnd);
+      valueStart = sequenceMarkerEnd;
+    }
+
+    const keyStart = findNextNonHorizontalWhitespace(lineText, valueStart, codeEnd);
+    const keySeparator = keyStart === -1 ? -1 : findYamlKeySeparator(lineText, keyStart, codeEnd);
+
+    if (keySeparator !== -1 && keyStart !== -1) {
+      const keyEnd = trimHorizontalWhitespaceEnd(lineText, keyStart, keySeparator);
+      if (keyEnd > keyStart) {
+        addToken('key', keyStart, keyEnd);
+      } else {
+        addToken('invalid', keySeparator, keySeparator + 1);
+      }
+      addTextUntil(keySeparator);
+      addToken('punctuation', keySeparator, keySeparator + 1);
+      const valueResult = tokenizeYamlValueTokens(lineText, keySeparator + 1, codeEnd, addToken);
+      startsBlockScalar = valueResult.startsBlockScalar;
+    } else {
+      const valueResult = tokenizeYamlValueTokens(lineText, valueStart, codeEnd, addToken);
+      startsBlockScalar = valueResult.startsBlockScalar;
+    }
+  }
+
+  addTextUntil(codeEnd);
+  if (commentStart !== -1) {
+    addToken('comment', commentStart, lineText.length);
+  } else {
+    addTextUntil(lineText.length);
+  }
+
+  return { startsBlockScalar };
+}
+
+function scanYamlTokens(
+  content: string,
+  tabSize: number,
+  lineStartOffsets: number[],
+  lineRange: DocumentLineRange
+): FlatToken[] {
+  const tokens: FlatToken[] = [];
+  let blockScalarState: YamlBlockScalarState | null = null;
+
+  for (let lineIndex = 0; lineIndex <= lineRange.endLine; lineIndex += 1) {
+    const lineText = getLineText(content, lineStartOffsets, lineIndex);
+    const lineStartOffset = lineStartOffsets[lineIndex] ?? 0;
+    const shouldEmit = lineIndex >= lineRange.startLine;
+    const indentInfo = getIndentInfo(lineText, tabSize);
+    const trimmedLineLength = lineText.trim().length;
+
+    if (blockScalarState) {
+      if (trimmedLineLength === 0) {
+        if (shouldEmit && lineText.length > 0) {
+          tokens.push({
+            type: 'string',
+            text: lineText,
+            start: lineStartOffset,
+            end: lineStartOffset + lineText.length
+          });
+        }
+        continue;
+      }
+
+      if (blockScalarState.contentIndentColumns === null) {
+        if (indentInfo.indentColumns > blockScalarState.parentIndentColumns) {
+          blockScalarState.contentIndentColumns = indentInfo.indentColumns;
+        } else {
+          blockScalarState = null;
+        }
+      }
+
+      if (
+        blockScalarState
+        && blockScalarState.contentIndentColumns !== null
+        && indentInfo.indentColumns >= blockScalarState.contentIndentColumns
+      ) {
+        if (shouldEmit) {
+          tokens.push({
+            type: 'string',
+            text: lineText,
+            start: lineStartOffset,
+            end: lineStartOffset + lineText.length
+          });
+        }
+        continue;
+      }
+
+      blockScalarState = null;
+    }
+
+    const lineResult = scanYamlLineTokens(lineText, lineStartOffset, shouldEmit, tokens);
+    if (lineResult.startsBlockScalar) {
+      blockScalarState = {
+        parentIndentColumns: indentInfo.indentColumns,
+        contentIndentColumns: null
+      };
+    }
+  }
+
+  return tokens;
+}
+
+function getYamlRenderDepth(token: FlatToken, line: ParsedLine, indentUnit: number): number | undefined {
+  if (token.type === 'key' || token.type === 'list-marker') {
+    return getIndentDepth(line, indentUnit);
   }
 
   if (token.type === 'brace' || token.type === 'bracket') {
-    return Math.max(getJsonLineDepth(line, indentUnit), 0);
+    return token.depth ?? getIndentDepth(line, indentUnit);
   }
 
   return token.depth;
 }
 
-function findLineIndexForOffset(lineStartOffsets: number[], offset: number): number {
-  let low = 0;
-  let high = lineStartOffsets.length - 1;
-
-  while (low <= high) {
-    const mid = Math.floor((low + high) / 2);
-    const current = lineStartOffsets[mid] ?? 0;
-    const next = lineStartOffsets[mid + 1] ?? Number.POSITIVE_INFINITY;
-
-    if (offset >= current && offset < next) return mid;
-    if (offset < current) high = mid - 1;
-    else low = mid + 1;
+function getJsonRenderDepth(token: FlatToken, line: ParsedLine, indentUnit: number): number | undefined {
+  if (token.type === 'key') {
+    return getIndentDepth(line, indentUnit, -1);
   }
 
-  return Math.max(0, lineStartOffsets.length - 1);
-}
-
-function splitFlatTokensIntoLines(
-  content: string,
-  flatTokens: FlatToken[],
-  tabSize: number,
-  lineStartOffsets: number[],
-  lineRange: DocumentLineRange
-): ParsedLine[] {
-  const lineRangeOffsets = getLineRangeOffsets(content, lineStartOffsets, lineRange);
-  const lines: ParsedLine[] = [];
-  const jsonIndentUnit = inferIndentUnit(content, lineStartOffsets, tabSize);
-
-  for (let lineIndex = lineRange.startLine; lineIndex <= lineRange.endLine; lineIndex++) {
-    const lineText = getLineText(content, lineStartOffsets, lineIndex);
-    lines.push({
-      id: lineIndex,
-      ...getIndentInfo(lineText, tabSize),
-      tokens: []
-    });
+  if (token.type === 'brace' || token.type === 'bracket') {
+    return getIndentDepth(line, indentUnit, -1);
   }
 
-  for (const token of flatTokens) {
-    let start = Math.max(token.start, lineRangeOffsets.start);
-    const tokenEnd = Math.min(token.end, lineRangeOffsets.end);
-
-    while (start < tokenEnd) {
-      const lineIndex = findLineIndexForOffset(lineStartOffsets, start);
-      if (lineIndex < lineRange.startLine || lineIndex > lineRange.endLine) {
-        start = lineStartOffsets[lineIndex + 1] ?? tokenEnd;
-        continue;
-      }
-      const lineStart = lineStartOffsets[lineIndex] ?? 0;
-      const lineEnd = getLineContentEndOffset(content, lineStartOffsets, lineIndex);
-      const segmentEnd = Math.min(tokenEnd, lineEnd);
-      const outputLine = lines[lineIndex - lineRange.startLine];
-
-      if (outputLine && segmentEnd > start) {
-        outputLine.tokens.push({
-          type: token.type,
-          text: content.slice(start, segmentEnd),
-          depth: getJsonRenderDepth(token, outputLine, jsonIndentUnit),
-          start,
-          end: segmentEnd
-        });
-        start = segmentEnd;
-      } else {
-        start = lineStartOffsets[lineIndex + 1] ?? tokenEnd;
-      }
-    }
-  }
-
-  return lines;
+  return token.depth;
 }
 
 function offsetToLineColumn(content: string, offset: number): { line: number; column: number } {
@@ -877,6 +1131,56 @@ function getJsonDiagnostic(content: string): DocumentDiagnostic | null {
   }
 }
 
+function getYamlDiagnosticPosition(
+  content: string,
+  error: YAMLParseError
+): { line: number; column: number; offset: number } {
+  const linePosition = error.linePos?.[0];
+  if (linePosition) {
+    return {
+      line: linePosition.line,
+      column: linePosition.col,
+      offset: offsetFromLineColumn(content, linePosition.line, linePosition.col)
+    };
+  }
+
+  const offset = Math.max(0, Math.min(content.length, error.pos?.[0] ?? 0));
+  const position = offsetToLineColumn(content, offset);
+  return {
+    line: position.line,
+    column: position.column,
+    offset
+  };
+}
+
+function getYamlDiagnostic(content: string): DocumentDiagnostic | null {
+  if (content.trim().length === 0) return null;
+
+  try {
+    const documents = parseYamlDocuments(content, { prettyErrors: false });
+    const firstError = documents.flatMap((document) => document.errors)[0];
+    if (!firstError) return null;
+
+    const position = getYamlDiagnosticPosition(content, firstError);
+    return {
+      severity: 'error',
+      message: `YAML 문법 오류가 있습니다. ${position.line}행 ${position.column}열을 확인하세요.`,
+      line: position.line,
+      column: position.column,
+      offset: position.offset
+    };
+  } catch (err) {
+    const position = offsetToLineColumn(content, 0);
+    return {
+      severity: 'error',
+      message: `YAML 문법 오류가 있습니다. ${position.line}행 ${position.column}열을 확인하세요.`,
+      line: position.line,
+      column: position.column,
+      offset: 0
+    };
+  }
+}
+
 export function getDocumentDiagnostic(
   content: string,
   options: Pick<ParseDocumentOptions, 'pathOrName' | 'featureSettings'>
@@ -884,6 +1188,7 @@ export function getDocumentDiagnostic(
   const format = getDocumentFormatForContent(content, options.pathOrName);
   if (!isDocumentFormatRenderEnabled(format, options.featureSettings)) return null;
   if (format.id === 'json') return getJsonDiagnostic(content);
+  if (format.id === 'yaml') return getYamlDiagnostic(content);
   return null;
 }
 
@@ -909,7 +1214,23 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
         scanJsonTokens(content, lineRangeOffsets),
         options.tabSize,
         options.lineStartOffsets,
-        lineRange
+        lineRange,
+        getJsonRenderDepth
+      ),
+      diagnostic: null
+    };
+  }
+
+  if (format.id === 'yaml') {
+    return {
+      format,
+      lines: splitFlatTokensIntoLines(
+        content,
+        scanYamlTokens(content, options.tabSize, options.lineStartOffsets, lineRange),
+        options.tabSize,
+        options.lineStartOffsets,
+        lineRange,
+        getYamlRenderDepth
       ),
       diagnostic: null
     };

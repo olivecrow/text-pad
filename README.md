@@ -25,7 +25,7 @@ npm run tauri dev
 npm run tauri build
 ```
 
-빌드 결과는 `src-tauri/target/release/` 아래에 생성된다. 현재 실행 파일 이름은 Tauri 설정 기준으로 `tauri-app.exe`다.
+빌드 결과는 `src-tauri/target/release/` 아래에 생성된다. 현재 실행 파일 이름은 `text-pad.exe`다.
 
 ## 개발 문서
 

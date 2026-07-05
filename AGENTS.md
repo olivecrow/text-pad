@@ -14,7 +14,7 @@
 - `docs/project-guide.md`: 전체 구조, 현재 기능 범위, 주요 명령.
 - `docs/backend-guide.md`: Rust/Tauri 백엔드 계약, 권한, 검증 기준.
 - `docs/frontend-guide.md`: SvelteKit 프론트엔드 구조, 설정창, 렌더 모드 기준.
-- `docs/features/`: 파일 처리, 렌더 모드, 설정창, 테마 설정처럼 기능별 세부 계약.
+- `docs/features/`: 파일 처리, 렌더 모드, 실행 취소, 설정창, 테마 설정처럼 기능별 세부 계약.
 - `docs/implementation-checklist.md`: 남은 기능과 완료 기준.
 
 문서는 현재 구현과 앞으로 지켜야 할 계약만 유지한다. 변경 내역은 Git 차이로 확인한다.
@@ -26,6 +26,7 @@
 - 자동 쌍 문자 입력/삭제, Tab/Shift+Tab 들여쓰기, 들여쓰기 공백 백스페이스 삭제, 줄바꿈 시 들여쓰기 유지처럼 사용자의 입력을 가로채 원문을 보정하는 편집 보조 기능은 렌더 모드에서만 동작해야 한다.
 - 렌더 모드 전용 편집 보조 기능은 상위 편집 입력 경로에서만 렌더 모드 여부를 판정한다. 들여쓰기, 자동 쌍 문자, 자동 변환 같은 세부 편집 함수는 호출 모드를 직접 확인하지 않고, 호출되면 자기 기능만 수행한다.
 - 원문 모드는 HTML `textarea`의 기본 텍스트 편집 동작을 기준으로 하며, 별도 편집 보조 기능으로 공백, 탭, 줄바꿈, 괄호, 따옴표를 바꾸지 않는다.
+- 새 편집 기능이 원문 텍스트를 바꾸면 `docs/features/editor-undo.md`를 먼저 확인하고, 기능 전체가 하나의 실행 취소 단위로 되돌아가도록 자체 실행 취소 기록에 연결한다.
 - Rust 새 코드에서는 `unwrap()`과 `expect()`를 피하고 `Result` 또는 `Option`으로 실패를 처리한다.
 - 사용자 파일을 읽거나 쓸 때는 사용자가 선택한 경로와 저장 의도를 기준으로 한다.
 - UI 변경은 기존 Windows 메모장형 화면 밀도와 Fluent 스타일을 유지한다.
@@ -33,7 +34,7 @@
 ## 검증
 
 - 프론트엔드 변경 후에는 `npm run check`를 우선 실행한다.
-- 프론트엔드, 정적 자산, 설정, Rust 백엔드처럼 앱 내용이 바뀌는 작업은 마지막에 `npm run tauri build`를 실행해서 `src-tauri/target/release/tauri-app.exe`가 새로 만들어지게 한다.
+- 프론트엔드, 정적 자산, 설정, Rust 백엔드처럼 앱 내용이 바뀌는 작업은 마지막에 `npm run tauri build`를 실행해서 `src-tauri/target/release/text-pad.exe`가 새로 만들어지게 한다.
 - 단순 문서만 수정한 경우에는 `npm run tauri build`를 생략할 수 있다.
 - Tauri 설정, 권한, Rust 백엔드, 패키징에 영향이 있으면 `npm run tauri build` 결과까지 확인한다.
 - 눈에 보이는 UI 변경은 가능하면 실제 실행 화면에서 확인한다.

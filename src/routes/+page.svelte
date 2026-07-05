@@ -1130,9 +1130,25 @@
   let lineCount = $derived(lineStartOffsets.length);
   let charCount = $derived(fileContent.length);
   let editorViewportWidth = $state<number>(500);
-  let renderWrapContentWidth = $derived(Math.max(1, editorViewportWidth - editorHorizontalPadding));
+  function getEditorTextBoxWidth(): number {
+    const fallbackWidth = Math.max(1, editorViewportWidth);
+    if (!isBrowser || !textareaEl) return fallbackWidth;
+    return Math.max(1, textareaEl.clientWidth || fallbackWidth);
+  }
+
+  function getEditorWrapContentWidth(): number {
+    const fallbackWidth = Math.max(1, editorViewportWidth - editorHorizontalPadding);
+    if (!isBrowser || !textareaEl) return fallbackWidth;
+
+    const textareaStyle = getComputedStyle(textareaEl);
+    const paddingLeft = Number.parseFloat(textareaStyle.paddingLeft) || 0;
+    const paddingRight = Number.parseFloat(textareaStyle.paddingRight) || 0;
+    return Math.max(1, getEditorTextBoxWidth() - paddingLeft - paddingRight);
+  }
+
+  let renderWrapContentWidth = $derived(getEditorWrapContentWidth());
   let renderLineLayout = $derived(getEditorLineLayout(fileContent, lineStartOffsets, renderWrapContentWidth));
-  let shouldShowNativeRenderText = $derived(isRenderMode && (hasEditorSelection || isRenderWrapSettling));
+  let shouldShowNativeRenderText = $derived(isRenderMode && isRenderWrapSettling);
   let shouldRenderHighlightLayer = $derived(isRenderMode && !shouldShowNativeRenderText);
 
   // 가상화 범위 계산
@@ -3477,7 +3493,7 @@
                   {@const lineIdx = startLine + idx}
                   {@const line = parsedLines[idx]}
                   {#if line}
-                    <div class="backdrop-line" data-line-index={lineIdx} class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; min-height: {getRenderLineHeight(lineIdx)}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
+                    <div class="backdrop-line" data-line-index={lineIdx} class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {getRenderLineHeight(lineIdx)}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: calc({i * tabSize}ch + 12px);"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
                   {/if}
                 {/each}
               </div>
@@ -4283,11 +4299,20 @@
     word-break: normal;
   }
 
+  .render-mode .editor-textarea::selection {
+    background: rgba(96, 165, 250, 0.28);
+    color: transparent;
+  }
+
   .render-mode.render-native-text-visible .editor-backdrop {
     opacity: 0;
   }
 
   .render-mode.render-native-text-visible .editor-textarea {
+    color: var(--color-render-text, var(--text-color));
+  }
+
+  .render-mode.render-native-text-visible .editor-textarea::selection {
     color: var(--color-render-text, var(--text-color));
   }
 
