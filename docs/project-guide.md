@@ -21,6 +21,7 @@ graph TD
 - `src-tauri/src/lib.rs`: 파일 읽기/쓰기 명령, Windows 가로 휠 처리, Tauri 플러그인 설정.
 - `src-tauri/capabilities/default.json`: 프론트엔드가 호출할 수 있는 Tauri 명령 권한.
 - `src-tauri/tauri.conf.json`: 메인 창과 빌드 설정. 설정창은 실행 중 동적으로 만든다.
+- `src-tauri/installer.nsi`: NSIS 설치 파일 템플릿. NSIS는 Windows용 실행 설치 파일을 만드는 스크립트 기반 설치 도구다.
 - `package.json`: SvelteKit, Tauri, Lucide 아이콘 의존성과 실행 명령.
 - `docs/backend-guide.md`: 백엔드 계약.
 - `docs/frontend-guide.md`: 프론트엔드 계약.
@@ -42,6 +43,7 @@ graph TD
 - 설정창에서 파일 형식별 렌더 표시와 렌더 편집 모듈 켜기/끄기.
 - Windows 앱 표시 이름과 번들 실행 파일 이름을 `text-pad`로 생성.
 - 현재 제품 지원 확장자를 Windows 파일 연결 정보로 등록해 `연결 프로그램`에서 선택 가능하게 함.
+- NSIS 설치 파일에서 같은 버전 삭제를 선택하면 삭제 후 설치를 재개하지 않고 종료.
 - Windows WebView2 가로 휠 입력 보정.
 - Windows 릴리스 빌드 생성.
 

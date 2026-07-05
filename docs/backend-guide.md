@@ -10,6 +10,7 @@
 - `src-tauri/src/windows_wheel.rs`: Windows 가로 휠 처리.
 - `src-tauri/capabilities/default.json`: 프론트엔드 명령 권한.
 - `src-tauri/tauri.conf.json`: 창 설정과 빌드 설정.
+- `src-tauri/installer.nsi`: NSIS 실행 설치 파일 템플릿.
 - `src-tauri/Cargo.toml`: Rust 의존성과 Tauri 플러그인 의존성.
 
 ## Tauri 명령
@@ -46,6 +47,12 @@
   - `core:window:allow-close`
 
 `tauri-plugin-window-state`는 메인 창만 복원해야 하므로 `settings` 창은 denylist에 둔다.
+
+## Windows 설치 파일
+
+NSIS는 Windows용 실행 설치 파일을 만드는 스크립트 기반 설치 도구다.
+`src-tauri/installer.nsi`는 Tauri 2.11.2 기본 템플릿을 바탕으로 하며, 같은 버전이 이미 설치된 상태에서 사용자가 삭제를 선택하면 삭제 완료 후 설치 화면으로 돌아가지 않고 설치 프로그램을 종료한다.
+업그레이드나 다운그레이드에서 "삭제 후 설치"를 선택한 경우에는 기존처럼 삭제 뒤 설치를 계속 진행한다.
 
 ## Windows 가로 휠 처리
 
