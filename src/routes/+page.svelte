@@ -165,6 +165,8 @@
   let steadyEditorCaretLeft = $state<number>(12);
   let steadyEditorCaretTop = $state<number>(8);
   let steadyEditorCaretTimer: ReturnType<typeof setTimeout> | null = null;
+  let steadyEditorCaretBlinkKey = $state<number>(0);
+  let isEditorFocused = $state<boolean>(false);
   let editorTextMeasureCanvas: HTMLCanvasElement | null = null;
   let editorTextMeasureContext: CanvasRenderingContext2D | null = null;
   let editorTextMeasureFont = '';
@@ -415,10 +417,49 @@
     history?.markSaved();
   }
 
+  function contentOffsetToTextareaOffset(content: string, offset: number): number {
+    const targetOffset = clamp(offset, 0, content.length);
+    let textareaOffset = 0;
+
+    for (let contentOffset = 0; contentOffset < targetOffset; contentOffset += 1) {
+      if (content[contentOffset] === '\r' && content[contentOffset + 1] === '\n') continue;
+      textareaOffset += 1;
+    }
+
+    return textareaOffset;
+  }
+
+  function textareaOffsetToContentOffset(content: string, offset: number): number {
+    const targetOffset = Math.max(0, offset);
+    let textareaOffset = 0;
+
+    for (let contentOffset = 0; contentOffset < content.length; contentOffset += 1) {
+      if (textareaOffset >= targetOffset) return contentOffset;
+      if (content[contentOffset] === '\r' && content[contentOffset + 1] === '\n') continue;
+      textareaOffset += 1;
+    }
+
+    return content.length;
+  }
+
+  function getTextareaSelectionInContent(content = fileContent): EditorSelection {
+    if (!textareaEl) return { start: caretOffset, end: caretOffset };
+
+    return {
+      start: textareaOffsetToContentOffset(content, textareaEl.selectionStart),
+      end: textareaOffsetToContentOffset(content, textareaEl.selectionEnd)
+    };
+  }
+
+  function setTextareaSelectionFromContent(start: number, end: number, content = fileContent) {
+    if (!textareaEl) return;
+
+    textareaEl.selectionStart = contentOffsetToTextareaOffset(content, start);
+    textareaEl.selectionEnd = contentOffsetToTextareaOffset(content, end);
+  }
+
   function getCurrentEditorSelection(): EditorSelection {
-    const start = textareaEl?.selectionStart ?? caretOffset;
-    const end = textareaEl?.selectionEnd ?? caretOffset;
-    return { start, end };
+    return getTextareaSelectionInContent();
   }
 
   function getCurrentEditorSnapshot(): EditorSnapshot {
@@ -451,6 +492,7 @@
     const nextIsDirty = getUndoHistoryForTab(activeTab).isDirty();
     fileName = nextFileName;
     isDirty = nextIsDirty;
+    const selection = getCurrentEditorSelection();
 
     updateTabById(activeTab.id, {
       filePath,
@@ -459,8 +501,8 @@
       isDirty: nextIsDirty,
       scrollTop,
       scrollLeft,
-      selectionStart: textareaEl?.selectionStart ?? activeTab.selectionStart,
-      selectionEnd: textareaEl?.selectionEnd ?? activeTab.selectionEnd,
+      selectionStart: selection.start,
+      selectionEnd: selection.end,
       cursorLine,
       cursorCol,
       caretOffset
@@ -482,8 +524,7 @@
       const selectionEnd = Math.min(tab.selectionEnd, fileContent.length);
 
       textareaEl.focus({ preventScroll: true });
-      textareaEl.selectionStart = selectionStart;
-      textareaEl.selectionEnd = selectionEnd;
+      setTextareaSelectionFromContent(selectionStart, selectionEnd);
       textareaEl.scrollTop = tab.scrollTop;
       textareaEl.scrollLeft = tab.scrollLeft;
       updateCursorPosition();
@@ -1076,6 +1117,76 @@
     return visualLineCount;
   }
 
+  interface WrappedLineSegment {
+    start: number;
+    end: number;
+  }
+
+  function appendWrappedLineSegment(
+    segments: WrappedLineSegment[],
+    start: number,
+    end: number
+  ) {
+    if (end <= start && segments.length > 0) return;
+    segments.push({ start, end });
+  }
+
+  function getWrappedLineSegments(lineText: string, contentWidth: number): WrappedLineSegment[] {
+    if (!isBrowser || contentWidth <= 0 || lineText.length === 0) {
+      return [{ start: 0, end: lineText.length }];
+    }
+
+    const segments: WrappedLineSegment[] = [];
+    const pieces = lineText.match(/\S+\s*|\s+/g) || [lineText];
+    let pieceStart = 0;
+    let currentStart = 0;
+    let currentEnd = 0;
+    let currentWidth = 0;
+
+    const commitCurrentSegment = () => {
+      appendWrappedLineSegment(segments, currentStart, currentEnd);
+      currentStart = currentEnd;
+      currentWidth = 0;
+    };
+
+    const appendRange = (start: number, end: number) => {
+      if (end <= start) return;
+
+      const piece = lineText.slice(start, end);
+      const nextWidth = measureEditorTextEndWidth(piece, currentWidth);
+      if (currentEnd > currentStart && nextWidth > contentWidth) {
+        commitCurrentSegment();
+        currentStart = start;
+        currentEnd = start;
+        currentWidth = 0;
+      }
+
+      currentEnd = end;
+      currentWidth = measureEditorTextEndWidth(lineText.slice(currentStart, currentEnd), 0);
+    };
+
+    for (const piece of pieces) {
+      const pieceEnd = pieceStart + piece.length;
+      const pieceWidth = measureEditorTextEndWidth(piece, 0);
+
+      if (pieceWidth <= contentWidth) {
+        appendRange(pieceStart, pieceEnd);
+      } else {
+        for (let charStart = pieceStart; charStart < pieceEnd;) {
+          const codePoint = lineText.codePointAt(charStart);
+          const charEnd = charStart + (codePoint && codePoint > 0xffff ? 2 : 1);
+          appendRange(charStart, Math.min(charEnd, pieceEnd));
+          charStart = charEnd;
+        }
+      }
+
+      pieceStart = pieceEnd;
+    }
+
+    appendWrappedLineSegment(segments, currentStart, currentEnd);
+    return segments.length > 0 ? segments : [{ start: 0, end: lineText.length }];
+  }
+
   function getEditorLineLayout(content: string, offsets: number[], contentWidth: number): EditorLineLayout {
     const lineTotal = offsets.length;
     const tops: number[] = new Array(lineTotal);
@@ -1134,6 +1245,13 @@
     const fallbackWidth = Math.max(1, editorViewportWidth);
     if (!isBrowser || !textareaEl) return fallbackWidth;
     return Math.max(1, textareaEl.clientWidth || fallbackWidth);
+  }
+
+  function getEditorTextPaddingLeft(): number {
+    if (!isBrowser || !textareaEl) return editorHorizontalPadding / 2;
+
+    const textareaStyle = getComputedStyle(textareaEl);
+    return Number.parseFloat(textareaStyle.paddingLeft) || (editorHorizontalPadding / 2);
   }
 
   function getEditorWrapContentWidth(): number {
@@ -1260,16 +1378,43 @@
   function syncSteadyEditorCaretPosition() {
     if (!textareaEl) return;
 
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
-    steadyEditorCaretCollapsed = start === end;
-    if (!steadyEditorCaretCollapsed) return;
+    const textareaStart = textareaEl.selectionStart;
+    const textareaEnd = textareaEl.selectionEnd;
+    const { start } = getTextareaSelectionInContent();
+    steadyEditorCaretCollapsed = textareaStart === textareaEnd;
+    if (!steadyEditorCaretCollapsed) {
+      if (isRenderMode) {
+        steadyEditorCaretVisible = false;
+      }
+      return;
+    }
+
+    if (isRenderMode) {
+      const editorHasFocus = isEditorFocused || document.activeElement === textareaEl;
+      steadyEditorCaretVisible = editorHasFocus && isActiveDocumentRenderEnabled && shouldRenderHighlightLayer;
+      if (!steadyEditorCaretVisible) return;
+
+      const caretRect = getRenderedCaretRectForOffset(start);
+      if (!caretRect || !editorViewportEl) {
+        steadyEditorCaretVisible = false;
+        return;
+      }
+
+      const viewportRect = editorViewportEl.getBoundingClientRect();
+      steadyEditorCaretLeft = caretRect.left - viewportRect.left;
+      steadyEditorCaretTop = caretRect.top - viewportRect.top;
+      return;
+    }
 
     const lineIndex = Math.max(0, cursorLine - 1);
     const lineStart = lineStartOffsets[lineIndex] ?? 0;
     const linePrefix = fileContent.slice(lineStart, start);
     steadyEditorCaretLeft = 12 + measureEditorTextWidth(linePrefix) - scrollLeft;
     steadyEditorCaretTop = 8 + lineIndex * measuredLineHeight - scrollTop;
+  }
+
+  function restartSteadyEditorCaretBlink() {
+    steadyEditorCaretBlinkKey += 1;
   }
 
   function hideSteadyEditorCaret() {
@@ -1282,7 +1427,7 @@
 
   function keepEditorCaretVisibleDuringEdit() {
     if (isRenderMode) {
-      hideSteadyEditorCaret();
+      syncSteadyEditorCaretPosition();
       return;
     }
 
@@ -1502,7 +1647,9 @@
 
   function updateCursorPosition() {
     if (!textareaEl) return;
-    const pos = textareaEl.selectionStart;
+    const { start: pos } = getTextareaSelectionInContent();
+    const previousCaretOffset = caretOffset;
+    const isCollapsed = textareaEl.selectionStart === textareaEl.selectionEnd;
     updateEditorSelectionState();
     caretOffset = pos;
     const lineIndex = findLineIndexForOffset(pos);
@@ -1510,6 +1657,9 @@
     cursorCol = pos - (lineStartOffsets[lineIndex] ?? 0) + 1;
     updateEditorCaretColor(pos);
     syncSteadyEditorCaretPosition();
+    if (isRenderMode && isCollapsed && pos !== previousCaretOffset && steadyEditorCaretVisible) {
+      restartSteadyEditorCaretBlink();
+    }
     setLastEditorSnapshot(getCurrentEditorSnapshot());
   }
 
@@ -1541,8 +1691,7 @@
     requestAnimationFrame(() => {
       if (!textareaEl) return;
       textareaEl.focus({ preventScroll: true });
-      textareaEl.selectionStart = snapshot.selection.start;
-      textareaEl.selectionEnd = snapshot.selection.end;
+      setTextareaSelectionFromContent(snapshot.selection.start, snapshot.selection.end, snapshot.content);
       updateCursorPosition();
       syncActiveTabState();
     });
@@ -1642,7 +1791,14 @@
     isComposingEditorText = false;
   }
 
+  function handleEditorFocus() {
+    isEditorFocused = true;
+    if (isRenderMode && pendingRenderCaretPointerDown && !pendingRenderCaretPointerDown.moved) return;
+    updateCursorPosition();
+  }
+
   function handleEditorBlur() {
+    isEditorFocused = false;
     closeActiveUndoGroup();
     updateEditorSelectionState();
     hideSteadyEditorCaret();
@@ -1653,6 +1809,7 @@
 
     const handleDocumentSelectionChange = () => {
       if (document.activeElement === textareaEl) {
+        if (pendingRenderCaretPointerDown && !pendingRenderCaretPointerDown.moved) return;
         updateCursorPosition();
       }
     };
@@ -1709,8 +1866,7 @@
 
     event.preventDefault();
 
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
+    const { start, end } = getTextareaSelectionInContent();
 
     if (start === end && !event.shiftKey) {
       const nextContent = `${fileContent.slice(0, start)}${editorIndentUnit}${fileContent.slice(end)}`;
@@ -1779,8 +1935,7 @@
     if (event.key !== 'Backspace') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
+    const { start, end } = getTextareaSelectionInContent();
     if (start !== end || start === 0) return false;
 
     const lineStart = fileContent.lastIndexOf('\n', start - 1) + 1;
@@ -1846,8 +2001,7 @@
     if (event.key !== 'Enter') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
+    const { start, end } = getTextareaSelectionInContent();
     const lineStart = getLineStartOffset(fileContent, start);
     const lineEnd = getLineEndOffset(fileContent, start);
     const lineIndent = getLeadingWhitespace(fileContent.slice(lineStart, lineEnd));
@@ -1869,8 +2023,7 @@
     if (event.key !== 'Backspace') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
+    const { start, end } = getTextareaSelectionInContent();
     if (start !== end || start === 0) return false;
 
     const lineStart = getLineStartOffset(fileContent, start);
@@ -1904,8 +2057,7 @@
     const closingChar = renderAutoClosingPairs[event.key];
     if (!closingChar) return false;
 
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
+    const { start, end } = getTextareaSelectionInContent();
     if (start !== end) return false;
 
     event.preventDefault();
@@ -1930,8 +2082,7 @@
     if (event.key !== 'Backspace') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
+    const { start, end } = getTextareaSelectionInContent();
     if (start !== end || start === 0) return false;
 
     const openingChar = fileContent[start - 1];
@@ -1956,8 +2107,7 @@
     if (event.key !== ' ') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
+    const { start, end } = getTextareaSelectionInContent();
     if (start !== end || start === 0) return false;
 
     const trigger = renderAutoSubstitutionTriggers.find((candidate) => {
@@ -2200,8 +2350,7 @@
   // 날짜/시간 삽입 (F5)
   function insertDateTime() {
     if (!textareaEl) return;
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
+    const { start, end } = getTextareaSelectionInContent();
     const now = new Date();
 
     const timeStr = now.toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit', hour12: true });
@@ -2236,8 +2385,7 @@
 
   async function handleCut() {
     if (!textareaEl) return;
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
+    const { start, end } = getTextareaSelectionInContent();
     if (start === end) return;
 
     const selectedText = fileContent.substring(start, end);
@@ -2255,8 +2403,7 @@
 
   async function handleCopy() {
     if (!textareaEl) return;
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
+    const { start, end } = getTextareaSelectionInContent();
     if (start === end) return;
 
     const selectedText = fileContent.substring(start, end);
@@ -2268,8 +2415,7 @@
     if (!textareaEl) return;
     try {
       const text = await navigator.clipboard.readText();
-      const start = textareaEl.selectionStart;
-      const end = textareaEl.selectionEnd;
+      const { start, end } = getTextareaSelectionInContent();
 
       const before = fileContent.substring(0, start);
       const after = fileContent.substring(end);
@@ -2286,8 +2432,7 @@
 
   function handleDelete() {
     if (!textareaEl) return;
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
+    const { start, end } = getTextareaSelectionInContent();
     let newCursorPos = start;
 
     if (start === end) {
@@ -2445,6 +2590,7 @@
   let pendingInlineColorReplacement = $state<{ start: number; end: number } | null>(null);
   let pendingInlineColorEditBefore = $state<EditorSnapshot | null>(null);
   let suppressNextEditorClickAfterRenderAction = false;
+  let pendingRenderCaretPointerDown: { pointerId: number; x: number; y: number; moved: boolean } | null = null;
   const parkedInlineColorPickerPosition = { left: -10000, top: -10000 };
   let inlineColorPickerPosition = $state<{ left: number; top: number }>({ ...parkedInlineColorPickerPosition });
   type DataBooleanValue = 'true' | 'false';
@@ -2550,6 +2696,125 @@
     return document.querySelector(`.backdrop-line[data-line-index="${lineIndex}"]`) as HTMLElement | null;
   }
 
+  function getMeasuredTextOffsetAtX(text: string, clientX: number): number {
+    if (text.length === 0) return 0;
+
+    let bestOffset = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    for (let offset = 0; offset <= text.length; offset += 1) {
+      const caretX = measureEditorTextEndWidth(text.slice(0, offset), 0);
+      const distance = Math.abs(caretX - clientX);
+
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestOffset = offset;
+      }
+    }
+
+    return bestOffset;
+  }
+
+  function getRenderedLineSegmentAtPoint(
+    lineText: string,
+    lineElement: HTMLElement,
+    clientY: number
+  ): { segment: WrappedLineSegment; rowIndex: number } {
+    const segments = getWrappedLineSegments(lineText, renderWrapContentWidth);
+    const lineRect = lineElement.getBoundingClientRect();
+    const rowIndex = clamp(Math.floor((clientY - lineRect.top) / measuredLineHeight), 0, segments.length - 1);
+
+    return {
+      segment: segments[rowIndex] ?? segments[segments.length - 1] ?? { start: 0, end: lineText.length },
+      rowIndex
+    };
+  }
+
+  function getRenderedLineTextOffsetAtPoint(
+    lineElement: HTMLElement,
+    lineText: string,
+    clientX: number,
+    clientY: number
+  ): number {
+    const lineRect = lineElement.getBoundingClientRect();
+    const { segment } = getRenderedLineSegmentAtPoint(lineText, lineElement, clientY);
+    const contentLeft = lineRect.left + getEditorTextPaddingLeft();
+    const segmentText = lineText.slice(segment.start, segment.end);
+    const localX = Math.max(0, clientX - contentLeft);
+
+    return clamp(
+      segment.start + getMeasuredTextOffsetAtX(segmentText, localX),
+      0,
+      lineText.length
+    );
+  }
+
+  function getRenderedCaretRectFromLineText(
+    lineElement: HTMLElement,
+    lineText: string,
+    offsetInLine: number
+  ): DOMRect {
+    const segments = getWrappedLineSegments(lineText, renderWrapContentWidth);
+    let rowIndex = 0;
+    let segment = segments[0] ?? { start: 0, end: lineText.length };
+
+    for (let i = 0; i < segments.length; i += 1) {
+      const candidate = segments[i];
+      if (!candidate) continue;
+
+      if (offsetInLine < candidate.end || i === segments.length - 1) {
+        rowIndex = i;
+        segment = candidate;
+        break;
+      }
+    }
+
+    const lineRect = lineElement.getBoundingClientRect();
+    const offsetWithinSegment = clamp(offsetInLine - segment.start, 0, segment.end - segment.start);
+    const caretX = measureEditorTextEndWidth(
+      lineText.slice(segment.start, segment.start + offsetWithinSegment),
+      0
+    );
+
+    return new DOMRect(
+      lineRect.left + getEditorTextPaddingLeft() + caretX,
+      lineRect.top + rowIndex * measuredLineHeight,
+      1,
+      measuredLineHeight
+    );
+  }
+
+  function getRenderedCaretRectForOffset(offset: number): DOMRect | null {
+    if (!isBrowser || !editorViewportEl || !shouldRenderHighlightLayer) return null;
+
+    const lineIndex = findLineIndexForOffset(offset);
+    if (lineIndex < startLine || lineIndex > endLine) return null;
+
+    const lineElement = document.querySelector(
+      `.backdrop-line[data-line-index="${lineIndex}"]`
+    ) as HTMLElement | null;
+    if (!lineElement) return null;
+
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
+    const lineEnd = lineStart + lineText.length;
+    const offsetInLine = clamp(offset - lineStart, 0, lineEnd - lineStart);
+    return getRenderedCaretRectFromLineText(lineElement, lineText, offsetInLine);
+  }
+
+  function getRenderedCaretOffsetAtPoint(clientX: number, clientY: number): number | null {
+    const lineElement = getRenderedLineElementAtPoint(clientY);
+    if (!lineElement) return null;
+
+    const lineIndex = Number(lineElement.dataset.lineIndex);
+    if (!Number.isFinite(lineIndex)) return null;
+
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
+    const offsetInLine = getRenderedLineTextOffsetAtPoint(lineElement, lineText, clientX, clientY);
+    return lineStart + offsetInLine;
+  }
+
   function findRenderedTokenElementAtPoint(
     clientX: number,
     clientY: number,
@@ -2592,8 +2857,7 @@
   function toggleDataBoolean(range: DataBooleanRange) {
     const nextValue = range.value === 'true' ? 'false' : 'true';
     const nextContent = `${fileContent.slice(0, range.start)}${nextValue}${fileContent.slice(range.end)}`;
-    const selectionStart = textareaEl?.selectionStart ?? caretOffset;
-    const selectionEnd = textareaEl?.selectionEnd ?? caretOffset;
+    const { start: selectionStart, end: selectionEnd } = getCurrentEditorSelection();
     const nextSelectionStart = adjustOffsetAfterReplacement(selectionStart, range, nextValue.length);
     const nextSelectionEnd = adjustOffsetAfterReplacement(selectionEnd, range, nextValue.length);
 
@@ -2728,8 +2992,7 @@
 
     requestAnimationFrame(() => {
       if (!textareaEl) return;
-      textareaEl.selectionStart = start;
-      textareaEl.selectionEnd = start + nextValue.length;
+      setTextareaSelectionFromContent(start, start + nextValue.length);
       updateCursorPosition();
       if (pendingInlineColorReplacement) {
         positionInlineColorPicker({ start, end: start + nextValue.length });
@@ -2755,10 +3018,20 @@
     if (event.button === 0) {
       closeActiveUndoGroup();
     }
-    if (!isRenderMode || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled || !textareaEl || event.button !== 0) return;
+    if (!isRenderMode || !isActiveDocumentRenderEnabled || !textareaEl || event.button !== 0) return;
+
+    pendingRenderCaretPointerDown = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      moved: false
+    };
+
+    if (!isActiveDocumentEditEnabled) return;
 
     const booleanRange = findDataBooleanAtPoint(event.clientX, event.clientY);
     if (booleanRange) {
+      pendingRenderCaretPointerDown = null;
       event.preventDefault();
       suppressNextEditorClickAfterRenderAction = true;
       textareaEl.focus({ preventScroll: true });
@@ -2770,26 +3043,94 @@
     const range = findColorCodeAtPoint(event.clientX, event.clientY);
     if (!range) return;
 
+    pendingRenderCaretPointerDown = null;
     event.preventDefault();
     suppressNextEditorClickAfterRenderAction = true;
     textareaEl.focus({ preventScroll: true });
-    textareaEl.selectionStart = range.start;
-    textareaEl.selectionEnd = range.end;
+    setTextareaSelectionFromContent(range.start, range.end);
     updateCursorPosition();
     openInlineColorPicker(range);
   }
 
-  function handleEditorClick(event: MouseEvent) {
+  function placeRenderCaretAtPoint(clientX: number, clientY: number): boolean {
+    if (!textareaEl || textareaEl.selectionStart !== textareaEl.selectionEnd) return false;
+
+    const renderedCaretOffset = getRenderedCaretOffsetAtPoint(clientX, clientY);
+    if (renderedCaretOffset === null) return false;
+
+    setTextareaSelectionFromContent(renderedCaretOffset, renderedCaretOffset);
     updateCursorPosition();
+    if (steadyEditorCaretVisible) {
+      restartSteadyEditorCaretBlink();
+    }
+    return true;
+  }
+
+  function handleEditorPointerUp(event: PointerEvent) {
+    if (!isRenderMode || !isActiveDocumentRenderEnabled || !textareaEl || event.button !== 0) return;
+    if (suppressNextEditorClickAfterRenderAction) {
+      pendingRenderCaretPointerDown = null;
+      return;
+    }
+
+    const pointerDown = pendingRenderCaretPointerDown;
+    if (!pointerDown || pointerDown.pointerId !== event.pointerId) return;
+
+    const movedDistance = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
+    pointerDown.moved = movedDistance > 4;
+    if (pointerDown.moved) {
+      pendingRenderCaretPointerDown = null;
+      updateCursorPosition();
+    }
+  }
+
+  function trackRenderCaretPointerMove(event: MouseEvent) {
+    const pointerDown = pendingRenderCaretPointerDown;
+    if (!pointerDown || pointerDown.moved || event.buttons !== 1) return;
+
+    const movedDistance = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
+    if (movedDistance <= 4) return;
+
+    pointerDown.moved = true;
+    hideSteadyEditorCaret();
+    updateCursorPosition();
+  }
+
+  function handleEditorClick(event: MouseEvent) {
     if (suppressNextEditorClickAfterRenderAction) {
       suppressNextEditorClickAfterRenderAction = false;
+      pendingRenderCaretPointerDown = null;
       return;
     }
     if (!isRenderMode || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled || !textareaEl) return;
-    if (textareaEl.selectionStart !== textareaEl.selectionEnd) return;
 
-    const range = findColorCodeAtPoint(event.clientX, event.clientY)
-      ?? findColorCodeAtOffset(fileContent, textareaEl.selectionStart);
+    const pointerDown = pendingRenderCaretPointerDown;
+    pendingRenderCaretPointerDown = null;
+
+    if (pointerDown?.moved) {
+      updateCursorPosition();
+      return;
+    }
+
+    if (textareaEl.selectionStart !== textareaEl.selectionEnd) {
+      updateCursorPosition();
+      return;
+    }
+
+    const targetX = pointerDown && !pointerDown.moved ? pointerDown.x : event.clientX;
+    const targetY = pointerDown && !pointerDown.moved ? pointerDown.y : event.clientY;
+    const placedCaret = placeRenderCaretAtPoint(targetX, targetY);
+    if (!placedCaret) {
+      updateCursorPosition();
+    }
+
+    if (!isActiveDocumentEditEnabled) {
+      clearInlineColorPickerState();
+      return;
+    }
+
+    const range = findColorCodeAtPoint(targetX, targetY)
+      ?? findColorCodeAtOffset(fileContent, getCurrentEditorSelection().start);
     if (range) {
       openInlineColorPicker(range);
     } else {
@@ -2798,6 +3139,8 @@
   }
 
   function handleEditorMouseMove(event: MouseEvent) {
+    trackRenderCaretPointerMove(event);
+
     if (!isRenderMode || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled) {
       editorCursorStyle = 'text';
       return;
@@ -2844,7 +3187,7 @@
 
 <svelte:window onkeydown={handleKeyDown} onclick={closeAllDropdown} />
 
-{#snippet renderToken(token: Token)}{#if token.children && token.children.length > 0}<span class={getTokenClass(token)}>{#each token.children as child}{@render renderToken(child)}{/each}</span>{:else if token.type === 'boolean'}<span class={getTokenClass(token)} data-boolean-start={token.start} data-boolean-end={token.end} data-boolean-value={token.text}>{token.text || ''}</span>{:else if token.type === 'color'}<span class={getTokenClass(token)} style={getColorCodeStyle(token.text || '')} data-color-start={token.start} data-color-end={token.end}>{token.text || ''}</span>{:else}<span class={getTokenClass(token)}>{token.text || ''}</span>{/if}{/snippet}
+{#snippet renderToken(token: Token)}{#if token.children && token.children.length > 0}<span class={getTokenClass(token)}>{#each token.children as child}{@render renderToken(child)}{/each}</span>{:else if token.type === 'boolean'}<span class={getTokenClass(token)} data-token-start={token.start ?? null} data-token-end={token.end ?? null} data-boolean-start={token.start} data-boolean-end={token.end} data-boolean-value={token.text}>{token.text || ''}</span>{:else if token.type === 'color'}<span class={getTokenClass(token)} style={getColorCodeStyle(token.text || '')} data-token-start={token.start ?? null} data-token-end={token.end ?? null} data-color-start={token.start} data-color-end={token.end}>{token.text || ''}</span>{:else}<span class={getTokenClass(token)} data-token-start={token.start ?? null} data-token-end={token.end ?? null}>{token.text || ''}</span>{/if}{/snippet}
 
 {#snippet colorSettingRow(id: string, labelText: string, colors: ThemeColors, field: ColorField)}
   {@const pickerId = `${id}-picker`}
@@ -3503,7 +3846,7 @@
           <textarea
             bind:this={textareaEl}
             class="editor-textarea"
-            style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {steadyEditorCaretVisible ? 'transparent' : (isRenderMode ? editorCaretColor : 'var(--text-color)')}; cursor: {isRenderMode ? editorCursorStyle : 'text'};"
+            style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled && !shouldShowNativeRenderText ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode ? editorCursorStyle : 'text'};"
             wrap={isRenderMode ? 'soft' : 'off'}
             bind:value={fileContent}
             onkeydown={handleEditorKeyDown}
@@ -3513,21 +3856,24 @@
             oncompositionend={handleEditorCompositionEnd}
             onscroll={handleScroll}
             onpointerdown={handleEditorPointerDown}
+            onpointerup={handleEditorPointerUp}
             onkeyup={updateCursorPosition}
             onselect={updateCursorPosition}
             onclick={handleEditorClick}
             onmousemove={handleEditorMouseMove}
             onmouseleave={handleEditorMouseLeave}
-            onfocus={updateCursorPosition}
+            onfocus={handleEditorFocus}
             onblur={handleEditorBlur}
             spellcheck="false"
           ></textarea>
           {#if steadyEditorCaretVisible && steadyEditorCaretCollapsed}
-            <div
-              class="steady-editor-caret"
-              style="left: {steadyEditorCaretLeft}px; top: {steadyEditorCaretTop}px; height: {measuredLineHeight}px; background-color: {isRenderMode ? editorCaretColor : 'var(--text-color)'};"
-              aria-hidden="true"
-            ></div>
+            {#key steadyEditorCaretBlinkKey}
+              <div
+                class="steady-editor-caret"
+                style="left: {steadyEditorCaretLeft}px; top: {steadyEditorCaretTop}px; height: {measuredLineHeight}px; background-color: {isRenderMode ? editorCaretColor : 'var(--text-color)'};"
+                aria-hidden="true"
+              ></div>
+            {/key}
           {/if}
           <input
             bind:this={inlineColorPickerEl}
@@ -4321,6 +4667,16 @@
     width: 1px;
     z-index: 3;
     pointer-events: none;
+    animation: editorCaretBlink 1s step-end infinite;
+  }
+
+  @keyframes editorCaretBlink {
+    0%, 50% {
+      opacity: 1;
+    }
+    50.01%, 100% {
+      opacity: 0;
+    }
   }
 
   .render-mode .editor-viewport {
