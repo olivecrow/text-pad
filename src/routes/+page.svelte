@@ -417,6 +417,10 @@
     history?.markSaved();
   }
 
+  function getTextareaValueFromContent(content: string): string {
+    return content.replace(/\r\n/g, '\n');
+  }
+
   function contentOffsetToTextareaOffset(content: string, offset: number): number {
     const targetOffset = clamp(offset, 0, content.length);
     let textareaOffset = 0;
@@ -456,6 +460,50 @@
 
     textareaEl.selectionStart = contentOffsetToTextareaOffset(content, start);
     textareaEl.selectionEnd = contentOffsetToTextareaOffset(content, end);
+  }
+
+  function getSnapshotFromTextareaInput(
+    before: EditorSnapshot,
+    textareaValue: string,
+    textareaSelectionStart: number,
+    textareaSelectionEnd: number
+  ): EditorSnapshot {
+    const beforeTextareaValue = getTextareaValueFromContent(before.content);
+    let prefixLength = 0;
+    const prefixLimit = Math.min(beforeTextareaValue.length, textareaValue.length);
+
+    while (
+      prefixLength < prefixLimit
+      && beforeTextareaValue[prefixLength] === textareaValue[prefixLength]
+    ) {
+      prefixLength += 1;
+    }
+
+    let suffixLength = 0;
+    while (
+      suffixLength < beforeTextareaValue.length - prefixLength
+      && suffixLength < textareaValue.length - prefixLength
+      && beforeTextareaValue[beforeTextareaValue.length - suffixLength - 1]
+        === textareaValue[textareaValue.length - suffixLength - 1]
+    ) {
+      suffixLength += 1;
+    }
+
+    const beforeTextareaEnd = beforeTextareaValue.length - suffixLength;
+    const afterTextareaEnd = textareaValue.length - suffixLength;
+    const contentStart = textareaOffsetToContentOffset(before.content, prefixLength);
+    const contentEnd = textareaOffsetToContentOffset(before.content, beforeTextareaEnd);
+    const newline = getPreferredNewline(before.content, contentStart);
+    const replacement = textareaValue.slice(prefixLength, afterTextareaEnd).replace(/\n/g, newline);
+    const content = `${before.content.slice(0, contentStart)}${replacement}${before.content.slice(contentEnd)}`;
+
+    return {
+      content,
+      selection: {
+        start: textareaOffsetToContentOffset(content, textareaSelectionStart),
+        end: textareaOffsetToContentOffset(content, textareaSelectionEnd)
+      }
+    };
   }
 
   function getCurrentEditorSelection(): EditorSelection {
@@ -1240,6 +1288,7 @@
   let lineStartOffsets = $derived(getLineStartOffsets(fileContent));
   let lineCount = $derived(lineStartOffsets.length);
   let charCount = $derived(fileContent.length);
+  let textareaDisplayContent = $derived(getTextareaValueFromContent(fileContent));
   let editorViewportWidth = $state<number>(500);
   function getEditorTextBoxWidth(): number {
     const fallbackWidth = Math.max(1, editorViewportWidth);
@@ -1745,13 +1794,7 @@
     pendingNativeInput = null;
 
     const before = pendingInput?.before ?? lastEditorSnapshot;
-    const after = {
-      content: target.value,
-      selection: {
-        start: target.selectionStart,
-        end: target.selectionEnd
-      }
-    };
+    const after = getSnapshotFromTextareaInput(before, target.value, target.selectionStart, target.selectionEnd);
     const inputType = pendingInput?.inputType ?? 'input';
     const mergeKey = getNativeInputMergeKey(inputType, before, pendingInput?.isComposing ?? isComposingEditorText);
 
@@ -3848,7 +3891,7 @@
             class="editor-textarea"
             style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled && !shouldShowNativeRenderText ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode ? editorCursorStyle : 'text'};"
             wrap={isRenderMode ? 'soft' : 'off'}
-            bind:value={fileContent}
+            value={textareaDisplayContent}
             onkeydown={handleEditorKeyDown}
             onbeforeinput={handleEditorBeforeInput}
             oninput={handleInput}
