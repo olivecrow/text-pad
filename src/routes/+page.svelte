@@ -23,6 +23,13 @@
   import type { Token } from "$lib/render-tokenizer";
   import { EditorUndoHistory, type EditorSelection, type EditorSnapshot } from "$lib/editor-undo";
   import { untrack } from "svelte";
+  import DelimitedTableEditor from "$lib/DelimitedTableEditor.svelte";
+  import {
+    parseDelimitedTable,
+    serializeDelimitedTable,
+    type DelimitedTableDocument,
+    type DelimitedTableSeparator
+  } from "$lib/delimited-table";
 
   interface EditorTab {
     id: string;
@@ -190,6 +197,8 @@
   let renderAutoPairEditing = $state<boolean>(true);
   let renderAutoSymbolSubstitution = $state<boolean>(true);
   let renderPreserveIndentOnEnter = $state<boolean>(true);
+  let delimitedTableHighlightHeader = $state<boolean>(true);
+  let delimitedTableShowRowIndices = $state<boolean>(true);
   let documentFeatureSettings = $state<DocumentFeatureSettings>(createDefaultDocumentFeatureSettings());
   let activeSettingsFormat = $derived(
     configurableDocumentFormats.find((format) => activeSettingsView === getDocumentFormatSettingsView(format.id)) ?? null
@@ -715,6 +724,8 @@
     renderAutoPairEditing = localStorage.getItem('pref_render_auto_pair_editing') !== 'false';
     renderAutoSymbolSubstitution = localStorage.getItem('pref_render_auto_symbol_substitution') !== 'false';
     renderPreserveIndentOnEnter = localStorage.getItem('pref_render_preserve_indent_on_enter') !== 'false';
+    delimitedTableHighlightHeader = localStorage.getItem('pref_delimited_table_highlight_header') !== 'false';
+    delimitedTableShowRowIndices = localStorage.getItem('pref_delimited_table_show_row_indices') !== 'false';
     documentFeatureSettings = parseDocumentFeatureSettingsValue(localStorage.getItem(documentFeaturePreferenceKey));
 
     renderFontFamily = localStorage.getItem('pref_render_font_family') || 'nanum-gothic';
@@ -762,6 +773,8 @@
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_pair_editing', renderAutoPairEditing ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_symbol_substitution', renderAutoSymbolSubstitution ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_preserve_indent_on_enter', renderPreserveIndentOnEnter ? 'true' : 'false'); });
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_highlight_header', delimitedTableHighlightHeader ? 'true' : 'false'); });
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_show_row_indices', delimitedTableShowRowIndices ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(documentFeaturePreferenceKey, JSON.stringify(documentFeatureSettings)); });
   $effect(() => { if (isBrowser && canPersistPreferences && renderFontFamily) localStorage.setItem('pref_render_font_family', renderFontFamily); });
 
@@ -979,6 +992,8 @@
     if (e.key === 'pref_render_auto_pair_editing' && e.newValue) renderAutoPairEditing = e.newValue !== 'false';
     if (e.key === 'pref_render_auto_symbol_substitution' && e.newValue) renderAutoSymbolSubstitution = e.newValue !== 'false';
     if (e.key === 'pref_render_preserve_indent_on_enter' && e.newValue) renderPreserveIndentOnEnter = e.newValue !== 'false';
+    if (e.key === 'pref_delimited_table_highlight_header' && e.newValue) delimitedTableHighlightHeader = e.newValue !== 'false';
+    if (e.key === 'pref_delimited_table_show_row_indices' && e.newValue) delimitedTableShowRowIndices = e.newValue !== 'false';
     if (e.key === documentFeaturePreferenceKey) documentFeatureSettings = parseDocumentFeatureSettingsValue(e.newValue);
     if (e.key === 'pref_render_font_family' && e.newValue) renderFontFamily = e.newValue;
 
@@ -1332,6 +1347,15 @@
   let activeDocumentFormat = $derived(getDocumentFormatForContent(fileContent, filePath || fileName));
   let isActiveDocumentRenderEnabled = $derived(isDocumentFormatRenderEnabled(activeDocumentFormat, documentFeatureSettings));
   let isActiveDocumentEditEnabled = $derived(isDocumentFormatEditEnabled(activeDocumentFormat, documentFeatureSettings));
+  let activeDelimitedTableSeparator = $derived<DelimitedTableSeparator | null>(
+    activeDocumentFormat.id === 'csv' ? ',' : activeDocumentFormat.id === 'tsv' ? '\t' : null
+  );
+  let activeDelimitedTableDocument = $derived(
+    activeDelimitedTableSeparator ? parseDelimitedTable(fileContent, activeDelimitedTableSeparator) : null
+  );
+  let shouldShowDelimitedTableEditor = $derived(
+    isRenderMode && isActiveDocumentRenderEnabled && activeDelimitedTableDocument !== null
+  );
   let shouldShowDocumentSyntaxStatus = $derived(activeDocumentFormat.validatesSyntax && isActiveDocumentRenderEnabled);
   let documentDiagnostic = $state<DocumentDiagnostic | null>(null);
   let documentRender = $derived(parseDocumentForRender(fileContent, {
@@ -1776,6 +1800,25 @@
 
   function commitRenderEditorEdit(nextContent: string, nextSelection: EditorSelection) {
     commitManualEditorEdit(nextContent, nextSelection, { keepRenderCaretVisible: true });
+  }
+
+  function commitDelimitedTableEdit(
+    nextDocument: DelimitedTableDocument,
+    options: { mergeKey?: string | null } = {}
+  ) {
+    const nextContent = serializeDelimitedTable(nextDocument);
+    if (nextContent === fileContent) return;
+    if (!options.mergeKey) closeActiveUndoGroup();
+
+    const before = getCurrentEditorSnapshot();
+    const selectionOffset = Math.min(before.selection.start, nextContent.length);
+    commitEditorEdit(before, {
+      content: nextContent,
+      selection: { start: selectionOffset, end: selectionOffset }
+    }, {
+      mergeKey: options.mergeKey ?? null,
+      selectionAlreadyApplied: true
+    });
   }
 
   function getNativeInputMergeKey(inputType: string, before: EditorSnapshot, isComposing: boolean): string | null {
@@ -3846,6 +3889,18 @@
       class:render-native-text-visible={shouldShowNativeRenderText}
     >
       <div class="editor-container">
+        {#if shouldShowDelimitedTableEditor && activeDelimitedTableDocument}
+          <DelimitedTableEditor
+            document={activeDelimitedTableDocument}
+            formatLabel={activeDocumentFormat.label}
+            editable={isActiveDocumentEditEnabled}
+            highlightHeader={delimitedTableHighlightHeader}
+            showRowIndices={delimitedTableShowRowIndices}
+            ondocumentchange={commitDelimitedTableEdit}
+            onhighlightheaderchange={(enabled) => delimitedTableHighlightHeader = enabled}
+            onshowrowindiceschange={(enabled) => delimitedTableShowRowIndices = enabled}
+          />
+        {:else}
         <!-- 라인 번호 Gutter -->
         {#if isRenderMode}
           <div class="editor-gutter" style="background-color: var(--color-render-bg); border-right: 1px solid var(--border-color);">
@@ -3930,6 +3985,7 @@
             aria-hidden="true"
           />
         </div>
+        {/if}
       </div>
     </main>
 

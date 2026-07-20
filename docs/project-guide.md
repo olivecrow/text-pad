@@ -27,6 +27,7 @@ graph TD
 - `docs/frontend-guide.md`: 프론트엔드 계약.
 - `docs/features/file-workflow.md`: 파일 열기와 저장 흐름.
 - `docs/features/render-mode.md`: 렌더 모드 표시 계약.
+- `docs/features/delimited-table.md`: CSV/TSV 표 표시와 편집 계약.
 - `docs/features/editor-undo.md`: 편집기 실행 취소 계약.
 - `docs/features/settings-window.md`: 독립 설정창 계약.
 - `docs/features/theme-preferences.md`: 테마와 사용자 설정 저장 계약.
@@ -34,13 +35,14 @@ graph TD
 
 ## 현재 기능 범위
 
-- 현재 제품 지원 형식인 `.txt`, `.json`, `.yaml`, `.yml` 파일 열기와 저장.
+- 현재 제품 지원 형식인 `.txt`, `.json`, `.csv`, `.tsv`, `.yaml`, `.yml` 파일 열기와 저장.
 - 원문 모드 편집.
 - 렌더 모드 구문 강조, 들여쓰기 가이드, 줄 번호, 가상화된 화면 렌더링.
 - 라이트/다크 테마, 렌더 색상, 글꼴, 글자 크기, 탭 크기 설정.
 - 메인 창을 편집기 준비 뒤 표시해 첫 화면이 곧바로 입력 가능한 상태가 되게 하는 시작 흐름.
 - 설정 버튼을 처음 눌렀을 때 독립 설정창을 동적으로 생성하고 표시.
 - 설정창에서 파일 형식별 렌더 표시와 렌더 편집 모듈 켜기/끄기.
+- CSV/TSV 렌더 모드에서 셀 편집, 행·열 추가·제거·이동, 열 너비 조절, 첫 행 강조와 행 번호 표시.
 - Windows 앱 표시 이름과 번들 실행 파일 이름을 `text-pad`로 생성.
 - 현재 제품 지원 확장자를 Windows 파일 연결 정보로 등록해 `연결 프로그램`에서 선택 가능하게 함.
 - NSIS 설치 파일에서 같은 버전 삭제를 선택하면 삭제 후 설치를 재개하지 않고 종료.
@@ -50,10 +52,8 @@ graph TD
 ## 아직 제품 범위로 남은 기능
 
 - 검색, 바꾸기, 특정 줄 이동의 완성도 개선.
-- 저장 대화상자의 확장자 필터를 열기 대화상자와 맞추기.
 - Markdown 렌더링과 제한적 편집.
 - JSON 트리 보기와 값 편집.
-- CSV/TSV 표 보기와 셀 편집.
 - YAML 구조 보기와 주석 보존형 편집.
 - 파일 인코딩과 줄바꿈 보존 강화.
 

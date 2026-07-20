@@ -33,6 +33,8 @@
         "ext": [
           "txt",
           "json",
+          "csv",
+          "tsv",
           "yaml",
           "yml"
         ],

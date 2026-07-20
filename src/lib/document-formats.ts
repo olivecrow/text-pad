@@ -135,8 +135,8 @@ const csvFormat: DocumentFormat = {
   extensions: ['csv'],
   defaultExtension: 'csv',
   validatesSyntax: false,
-  renderDescription: genericRenderDescription,
-  editDescription: genericEditDescription
+  renderDescription: '쉼표로 구분된 셀을 컴팩트한 표로 표시하고 첫 행 강조와 행 번호 표시를 제공합니다.',
+  editDescription: '셀을 직접 편집하고 행과 열을 추가, 제거하거나 드래그로 이동합니다.'
 };
 
 const tsvFormat: DocumentFormat = {
@@ -145,8 +145,8 @@ const tsvFormat: DocumentFormat = {
   extensions: ['tsv'],
   defaultExtension: 'tsv',
   validatesSyntax: false,
-  renderDescription: genericRenderDescription,
-  editDescription: genericEditDescription
+  renderDescription: '탭으로 구분된 셀을 컴팩트한 표로 표시하고 첫 행 강조와 행 번호 표시를 제공합니다.',
+  editDescription: '셀을 직접 편집하고 행과 열을 추가, 제거하거나 드래그로 이동합니다.'
 };
 
 const yamlFormat: DocumentFormat = {
@@ -255,6 +255,8 @@ export const configurableDocumentFormats = [
 const productSupportedDocumentFormats = [
   plainTextFormat,
   jsonFormat,
+  csvFormat,
+  tsvFormat,
   yamlFormat
 ];
 
@@ -327,6 +329,14 @@ export const saveFileDialogFilters = [
   {
     name: 'JSON Files',
     extensions: ['json']
+  },
+  {
+    name: 'CSV Files',
+    extensions: ['csv']
+  },
+  {
+    name: 'TSV Files',
+    extensions: ['tsv']
   },
   {
     name: 'YAML Files',
