@@ -45,6 +45,15 @@ export type DocumentFormatId =
   | 'html'
   | 'css';
 
+export type DocumentFormatCategoryId = 'document' | 'structured' | 'table' | 'code';
+
+export interface DocumentFormatCategory {
+  id: DocumentFormatCategoryId;
+  label: string;
+  description: string;
+  formatIds: DocumentFormatId[];
+}
+
 export interface DocumentFormatFeatureSettings {
   render: boolean;
   edit: boolean;
@@ -250,6 +259,33 @@ export const configurableDocumentFormats = [
   rustFormat,
   htmlFormat,
   cssFormat
+];
+
+export const configurableDocumentFormatCategories: DocumentFormatCategory[] = [
+  {
+    id: 'document',
+    label: '문서',
+    description: '일반 문서와 기록용 텍스트 형식입니다.',
+    formatIds: ['plain', 'markdown', 'log']
+  },
+  {
+    id: 'structured',
+    label: '구조화 데이터',
+    description: '키와 값 또는 설정 구조를 표현하는 데이터 형식입니다.',
+    formatIds: ['json', 'yaml', 'ini']
+  },
+  {
+    id: 'table',
+    label: '표',
+    description: '행과 열로 구성된 표 및 스프레드시트 교환 형식입니다.',
+    formatIds: ['csv', 'tsv']
+  },
+  {
+    id: 'code',
+    label: '코드',
+    description: '프로그래밍 언어와 웹 문서 형식입니다.',
+    formatIds: ['javascript', 'typescript', 'rust', 'html', 'css']
+  }
 ];
 
 const productSupportedDocumentFormats = [

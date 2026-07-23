@@ -5,8 +5,9 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { ChevronDown, Copy, FileCode2, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, X } from "@lucide/svelte";
+  import { Braces, ChevronDown, Code2, Copy, FileCode2, FileText, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, Table2, X } from "@lucide/svelte";
   import {
+    configurableDocumentFormatCategories,
     configurableDocumentFormats,
     createDefaultDocumentFeatureSettings,
     getDocumentDiagnostic,
@@ -19,7 +20,7 @@
     parseDocumentForRender,
     saveFileDialogFilters
   } from "$lib/document-formats";
-  import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatId } from "$lib/document-formats";
+  import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatCategory, DocumentFormatCategoryId, DocumentFormatId } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
   import { EditorUndoHistory, type EditorSelection, type EditorSnapshot } from "$lib/editor-undo";
   import { untrack } from "svelte";
@@ -182,10 +183,17 @@
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | null>(null);
   type FormatSettingsView = `format:${DocumentFormatId}`;
-  type SettingsView = 'sourceAppearance' | 'renderAppearance' | 'renderEditing' | FormatSettingsView;
+  type FormatCategorySettingsView = `category:${DocumentFormatCategoryId}`;
+  type SettingsView = 'sourceAppearance' | 'renderAppearance' | 'renderEditing' | FormatCategorySettingsView | FormatSettingsView;
   let activeSettingsView = $state<SettingsView>('renderAppearance');
   let isSourceSettingsExpanded = $state<boolean>(true);
   let isRenderSettingsExpanded = $state<boolean>(true);
+  let expandedFormatCategories = $state<Record<DocumentFormatCategoryId, boolean>>({
+    document: true,
+    structured: true,
+    table: true,
+    code: true
+  });
   let hasCenteredSettingsWindowThisSession = false;
 
   // 폰트 크기 이원화
@@ -199,7 +207,14 @@
   let renderPreserveIndentOnEnter = $state<boolean>(true);
   let delimitedTableHighlightHeader = $state<boolean>(true);
   let delimitedTableShowRowIndices = $state<boolean>(true);
+  let delimitedTableAnimateReorder = $state<boolean>(true);
+  let delimitedTableReorderDurationMs = $state<number>(150);
   let documentFeatureSettings = $state<DocumentFeatureSettings>(createDefaultDocumentFeatureSettings());
+  let activeSettingsCategory = $derived(
+    configurableDocumentFormatCategories.find(
+      (category) => activeSettingsView === getDocumentFormatCategorySettingsView(category.id)
+    ) ?? null
+  );
   let activeSettingsFormat = $derived(
     configurableDocumentFormats.find((format) => activeSettingsView === getDocumentFormatSettingsView(format.id)) ?? null
   );
@@ -345,6 +360,9 @@
   const virtualLineOverscan = 8;
   const editorResizeDebounceMs = 80;
   const editorTextWidthCacheLimit = 12000;
+  const delimitedTableReorderDurationMinMs = 50;
+  const delimitedTableReorderDurationMaxMs = 2000;
+  const delimitedTableReorderDurationStepMs = 50;
   const editorMovementKeys = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
 
   function parseDocumentFeatureSettingsValue(value: string | null): DocumentFeatureSettings {
@@ -359,6 +377,26 @@
 
   function getDocumentFormatSettingsView(formatId: DocumentFormatId): FormatSettingsView {
     return `format:${formatId}`;
+  }
+
+  function getDocumentFormatCategorySettingsView(
+    categoryId: DocumentFormatCategoryId
+  ): FormatCategorySettingsView {
+    return `category:${categoryId}`;
+  }
+
+  function getDocumentFormatsForCategory(category: DocumentFormatCategory) {
+    return configurableDocumentFormats.filter((format) => category.formatIds.includes(format.id));
+  }
+
+  function selectDocumentFormatCategory(categoryId: DocumentFormatCategoryId) {
+    const categoryView = getDocumentFormatCategorySettingsView(categoryId);
+    const wasActive = activeSettingsView === categoryView;
+    activeSettingsView = categoryView;
+    expandedFormatCategories = {
+      ...expandedFormatCategories,
+      [categoryId]: wasActive ? !expandedFormatCategories[categoryId] : true
+    };
   }
 
   function setDocumentFormatFeature(
@@ -424,6 +462,22 @@
     const tab = tabs.find((item) => item.id === tabId);
     const history = tab ? getUndoHistoryForTab(tab) : undoHistories.get(tabId);
     history?.markSaved();
+  }
+
+  function normalizeDelimitedTableReorderDuration(value: string | number | null): number {
+    if (value === null || value === '') return 150;
+    const parsed = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(parsed)) return 150;
+    const stepped = Math.round(parsed / delimitedTableReorderDurationStepMs)
+      * delimitedTableReorderDurationStepMs;
+    return Math.max(
+      delimitedTableReorderDurationMinMs,
+      Math.min(stepped, delimitedTableReorderDurationMaxMs)
+    );
+  }
+
+  function formatDelimitedTableReorderDuration(durationMs: number): string {
+    return `${(durationMs / 1000).toFixed(durationMs % 1000 === 0 ? 0 : 2)}초`;
   }
 
   function getTextareaValueFromContent(content: string): string {
@@ -726,6 +780,10 @@
     renderPreserveIndentOnEnter = localStorage.getItem('pref_render_preserve_indent_on_enter') !== 'false';
     delimitedTableHighlightHeader = localStorage.getItem('pref_delimited_table_highlight_header') !== 'false';
     delimitedTableShowRowIndices = localStorage.getItem('pref_delimited_table_show_row_indices') !== 'false';
+    delimitedTableAnimateReorder = localStorage.getItem('pref_delimited_table_animate_reorder') !== 'false';
+    delimitedTableReorderDurationMs = normalizeDelimitedTableReorderDuration(
+      localStorage.getItem('pref_delimited_table_reorder_duration_ms')
+    );
     documentFeatureSettings = parseDocumentFeatureSettingsValue(localStorage.getItem(documentFeaturePreferenceKey));
 
     renderFontFamily = localStorage.getItem('pref_render_font_family') || 'nanum-gothic';
@@ -775,6 +833,8 @@
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_preserve_indent_on_enter', renderPreserveIndentOnEnter ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_highlight_header', delimitedTableHighlightHeader ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_show_row_indices', delimitedTableShowRowIndices ? 'true' : 'false'); });
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_animate_reorder', delimitedTableAnimateReorder ? 'true' : 'false'); });
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_reorder_duration_ms', delimitedTableReorderDurationMs.toString()); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(documentFeaturePreferenceKey, JSON.stringify(documentFeatureSettings)); });
   $effect(() => { if (isBrowser && canPersistPreferences && renderFontFamily) localStorage.setItem('pref_render_font_family', renderFontFamily); });
 
@@ -994,6 +1054,10 @@
     if (e.key === 'pref_render_preserve_indent_on_enter' && e.newValue) renderPreserveIndentOnEnter = e.newValue !== 'false';
     if (e.key === 'pref_delimited_table_highlight_header' && e.newValue) delimitedTableHighlightHeader = e.newValue !== 'false';
     if (e.key === 'pref_delimited_table_show_row_indices' && e.newValue) delimitedTableShowRowIndices = e.newValue !== 'false';
+    if (e.key === 'pref_delimited_table_animate_reorder' && e.newValue) delimitedTableAnimateReorder = e.newValue !== 'false';
+    if (e.key === 'pref_delimited_table_reorder_duration_ms' && e.newValue) {
+      delimitedTableReorderDurationMs = normalizeDelimitedTableReorderDuration(e.newValue);
+    }
     if (e.key === documentFeaturePreferenceKey) documentFeatureSettings = parseDocumentFeatureSettingsValue(e.newValue);
     if (e.key === 'pref_render_font_family' && e.newValue) renderFontFamily = e.newValue;
 
@@ -3376,15 +3440,43 @@
             >
               <PenLine size={15} class="tab-icon"/> 편집
             </button>
-            {#each configurableDocumentFormats as format}
-              <button
-                type="button"
-                class="sidebar-item tree-child"
-                class:active={activeSettingsView === getDocumentFormatSettingsView(format.id)}
-                onclick={() => activeSettingsView = getDocumentFormatSettingsView(format.id)}
-              >
-                <FileCode2 size={15} class="tab-icon"/> {format.label}
-              </button>
+            {#each configurableDocumentFormatCategories as category}
+              <div class="sidebar-tree-group format-category-group">
+                <button
+                  type="button"
+                  class="sidebar-item tree-child sidebar-category"
+                  class:active={activeSettingsView === getDocumentFormatCategorySettingsView(category.id)}
+                  aria-expanded={expandedFormatCategories[category.id]}
+                  onclick={() => selectDocumentFormatCategory(category.id)}
+                >
+                  <ChevronDown
+                    size={12}
+                    class={expandedFormatCategories[category.id] ? 'tree-chevron' : 'tree-chevron collapsed'}
+                  />
+                  {#if category.id === 'document'}
+                    <FileText size={15} class="tab-icon"/>
+                  {:else if category.id === 'structured'}
+                    <Braces size={15} class="tab-icon"/>
+                  {:else if category.id === 'table'}
+                    <Table2 size={15} class="tab-icon"/>
+                  {:else}
+                    <Code2 size={15} class="tab-icon"/>
+                  {/if}
+                  {category.label}
+                </button>
+                {#if expandedFormatCategories[category.id]}
+                  {#each getDocumentFormatsForCategory(category) as format}
+                    <button
+                      type="button"
+                      class="sidebar-item tree-grandchild"
+                      class:active={activeSettingsView === getDocumentFormatSettingsView(format.id)}
+                      onclick={() => activeSettingsView = getDocumentFormatSettingsView(format.id)}
+                    >
+                      <FileCode2 size={14} class="tab-icon"/> {format.label}
+                    </button>
+                  {/each}
+                {/if}
+              </div>
             {/each}
           {/if}
         </div>
@@ -3584,6 +3676,91 @@
                 <span class="settings-check-description">들여쓰기된 줄에서 Enter를 누르면 다음 줄에도 같은 들여쓰기를 넣습니다.</span>
               </span>
             </label>
+          </div>
+        {:else if activeSettingsCategory}
+          <div class="settings-section">
+            <div class="settings-format-module">
+              <div class="settings-format-heading">
+                <h4 class="section-title">{activeSettingsCategory.label}</h4>
+                <span class="settings-check-description">{activeSettingsCategory.description}</span>
+              </div>
+              <div class="settings-category-formats" aria-label={`${activeSettingsCategory.label} 형식`}>
+                {#each getDocumentFormatsForCategory(activeSettingsCategory) as format}
+                  <span class="settings-format-chip">{format.label}</span>
+                {/each}
+              </div>
+            </div>
+
+            {#if activeSettingsCategory.id === 'table'}
+              <div class="settings-format-module">
+                <h5 class="settings-subsection-title">표시</h5>
+                <label class="settings-check-row" for="delimited-table-highlight-header-window">
+                  <input
+                    id="delimited-table-highlight-header-window"
+                    class="settings-checkbox"
+                    type="checkbox"
+                    bind:checked={delimitedTableHighlightHeader}
+                  />
+                  <span class="settings-check-copy">
+                    <span class="settings-check-title">첫 행 강조</span>
+                    <span class="settings-check-description">CSV와 TSV에서 데이터의 첫 번째 행을 머리글로 강조합니다.</span>
+                  </span>
+                </label>
+                <label class="settings-check-row" for="delimited-table-show-row-indices-window">
+                  <input
+                    id="delimited-table-show-row-indices-window"
+                    class="settings-checkbox"
+                    type="checkbox"
+                    bind:checked={delimitedTableShowRowIndices}
+                  />
+                  <span class="settings-check-copy">
+                    <span class="settings-check-title">행 번호 표시</span>
+                    <span class="settings-check-description">CSV와 TSV 표의 왼쪽 조작 여백에 행 번호를 표시합니다.</span>
+                  </span>
+                </label>
+              </div>
+
+              <div class="settings-format-module">
+                <h5 class="settings-subsection-title">행·열 이동</h5>
+                <label class="settings-check-row" for="delimited-table-reorder-animation-window">
+                  <input
+                    id="delimited-table-reorder-animation-window"
+                    class="settings-checkbox"
+                    type="checkbox"
+                    bind:checked={delimitedTableAnimateReorder}
+                  />
+                  <span class="settings-check-copy">
+                    <span class="settings-check-title">이동 애니메이션</span>
+                    <span class="settings-check-description">드롭할 때 주변 행과 열을 밀고 대상을 삽입 위치로 이동시킵니다.</span>
+                  </span>
+                </label>
+                <label
+                  class="settings-duration-row"
+                  class:disabled={!delimitedTableAnimateReorder}
+                  for="delimited-table-reorder-duration-window"
+                >
+                  <span>이동 시간</span>
+                  <input
+                    id="delimited-table-reorder-duration-window"
+                    class="settings-duration-range"
+                    type="range"
+                    min={delimitedTableReorderDurationMinMs}
+                    max={delimitedTableReorderDurationMaxMs}
+                    step={delimitedTableReorderDurationStepMs}
+                    bind:value={delimitedTableReorderDurationMs}
+                    disabled={!delimitedTableAnimateReorder}
+                    aria-valuetext={formatDelimitedTableReorderDuration(delimitedTableReorderDurationMs)}
+                  />
+                  <output class="settings-duration-value">
+                    {formatDelimitedTableReorderDuration(delimitedTableReorderDurationMs)}
+                  </output>
+                </label>
+              </div>
+            {:else}
+              <p class="settings-category-note">
+                렌더 표시와 편집 여부는 아래의 개별 파일 형식에서 설정합니다.
+              </p>
+            {/if}
           </div>
         {:else if activeSettingsFormat}
           <div class="settings-section">
@@ -3896,6 +4073,8 @@
             editable={isActiveDocumentEditEnabled}
             highlightHeader={delimitedTableHighlightHeader}
             showRowIndices={delimitedTableShowRowIndices}
+            animateReorder={delimitedTableAnimateReorder}
+            reorderDurationMs={delimitedTableReorderDurationMs}
             ondocumentchange={commitDelimitedTableEdit}
             onhighlightheaderchange={(enabled) => delimitedTableHighlightHeader = enabled}
             onshowrowindiceschange={(enabled) => delimitedTableShowRowIndices = enabled}
@@ -4282,6 +4461,8 @@
 
   /* 통합 제목 표시줄 및 탭 디자인 */
   .title-tab-bar {
+    position: relative;
+    z-index: 110;
     display: flex;
     align-items: stretch;
     height: 36px;
@@ -4465,6 +4646,7 @@
 
   /* 메뉴바 디자인 */
   .menu-bar {
+    position: relative;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -4474,7 +4656,7 @@
     border-bottom: 1px solid var(--border-color);
     user-select: none;
     box-sizing: border-box;
-    z-index: 10;
+    z-index: 100;
   }
 
   .menu-left {
@@ -4600,6 +4782,8 @@
     background-color: var(--bg-editor);
     overflow: hidden;
     position: relative;
+    z-index: 0;
+    isolation: isolate;
   }
 
   .editor-container {
@@ -4857,6 +5041,19 @@
     padding-left: 2.35rem;
   }
 
+  .tree-grandchild {
+    padding-left: 4.25rem;
+    font-size: 0.8rem;
+  }
+
+  .format-category-group {
+    gap: 0;
+  }
+
+  .sidebar-category {
+    font-weight: 500;
+  }
+
   .sidebar-item {
     display: flex;
     align-items: center;
@@ -4947,6 +5144,34 @@
     font-size: 0.78rem;
   }
 
+  .settings-duration-row {
+    display: grid;
+    grid-template-columns: 64px minmax(120px, 240px) 52px;
+    align-items: center;
+    gap: 0.6rem;
+    padding-left: 26px;
+    color: var(--text-color);
+    font-size: 0.8rem;
+  }
+
+  .settings-duration-row.disabled {
+    opacity: 0.45;
+  }
+
+  .settings-duration-range {
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+    accent-color: var(--accent-color);
+  }
+
+  .settings-duration-value {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
   .settings-format-module {
     display: flex;
     flex-direction: column;
@@ -4964,6 +5189,35 @@
     align-items: baseline;
     gap: 0.5rem;
     min-height: 20px;
+  }
+
+  .settings-subsection-title {
+    margin: 0 0 0.1rem;
+    color: var(--text-color);
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+
+  .settings-category-formats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .settings-format-chip {
+    padding: 0.15rem 0.45rem;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: var(--bg-window);
+    color: var(--text-muted);
+    font-size: 0.72rem;
+  }
+
+  .settings-category-note {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    line-height: 1.45;
   }
 
   .color-picker-wrapper {

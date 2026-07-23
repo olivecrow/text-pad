@@ -1,5 +1,6 @@
 <script lang="ts">
   import { GripHorizontal, GripVertical, Minus, Plus } from '@lucide/svelte';
+  import { flushSync } from 'svelte';
   import {
     getDelimitedTableColumnCount,
     insertDelimitedTableColumn,
@@ -18,6 +19,13 @@
 
   interface DragPreviewController {
     update: (clientX: number, clientY: number) => void;
+    animateTo: (translateX: number, translateY: number, duration: number) => Animation;
+    destroy: () => void;
+  }
+
+  interface ReorderAnimationController {
+    update: (targetIndex: number) => void;
+    animate: (duration: number) => Animation[];
     destroy: () => void;
   }
 
@@ -32,6 +40,8 @@
     editable: boolean;
     highlightHeader: boolean;
     showRowIndices: boolean;
+    animateReorder: boolean;
+    reorderDurationMs: number;
     ondocumentchange: (document: DelimitedTableDocument, options?: DocumentChangeOptions) => void;
     onhighlightheaderchange: (enabled: boolean) => void;
     onshowrowindiceschange: (enabled: boolean) => void;
@@ -43,6 +53,8 @@
     editable,
     highlightHeader,
     showRowIndices,
+    animateReorder,
+    reorderDurationMs,
     ondocumentchange,
     onhighlightheaderchange,
     onshowrowindiceschange
@@ -61,6 +73,11 @@
   let columnWidths = $state<number[]>([]);
   let resizingColumn = $state<number | null>(null);
   let columnCount = $derived(getDelimitedTableColumnCount(document));
+  let safeReorderDurationMs = $derived.by(() => {
+    const numericDuration = Number(reorderDurationMs);
+    if (!Number.isFinite(numericDuration)) return 150;
+    return Math.max(50, Math.min(2000, Math.round(numericDuration / 50) * 50));
+  });
   let tablePixelWidth = $derived(
     ROW_CONTROL_WIDTH
       + Array.from(
@@ -191,6 +208,26 @@
       tableEditorEl
         ?.querySelector<HTMLTextAreaElement>(`[data-table-row="${rowIndex}"][data-table-column="${columnIndex}"]`)
         ?.focus();
+    });
+  }
+
+  function focusRowHandle(rowIndex: number) {
+    requestAnimationFrame(() => {
+      tableEditorEl
+        ?.querySelector<HTMLElement>(
+          `[data-table-row-container="${rowIndex}"] .row-drag-handle`
+        )
+        ?.focus({ preventScroll: true });
+    });
+  }
+
+  function focusColumnHandle(columnIndex: number) {
+    requestAnimationFrame(() => {
+      tableEditorEl
+        ?.querySelector<HTMLElement>(
+          `th[data-table-column-container="${columnIndex}"] .column-drag-handle`
+        )
+        ?.focus({ preventScroll: true });
     });
   }
 
@@ -332,6 +369,152 @@
     });
   }
 
+  function getVisibleTableRows(): HTMLTableRowElement[] {
+    const scrollRegion = tableEditorEl?.querySelector<HTMLElement>('.table-scroll-region');
+    const table = tableEditorEl?.querySelector<HTMLTableElement>('.data-table');
+    if (!scrollRegion || !table) return [];
+
+    const scrollRect = scrollRegion.getBoundingClientRect();
+    const tableRect = table.getBoundingClientRect();
+    const clipLeft = Math.max(tableRect.left, scrollRect.left);
+    const clipRight = Math.min(tableRect.right, scrollRect.right);
+    const clipTop = Math.max(tableRect.top, scrollRect.top);
+    const clipBottom = Math.min(tableRect.bottom, scrollRect.bottom);
+    if (clipRight <= clipLeft || clipBottom <= clipTop) return [];
+
+    const hitTestX = Math.min(
+      Math.max(tableRect.left + ROW_CONTROL_WIDTH / 2, clipLeft + 1),
+      clipRight - 1
+    );
+    const visibleRows: HTMLTableRowElement[] = [];
+    const seenRows = new Set<HTMLTableRowElement>();
+    let hitTestY = clipTop + 1;
+    const maximumChecks = Math.ceil((clipBottom - clipTop) / 4) + 32;
+
+    for (let check = 0; check < maximumChecks && hitTestY < clipBottom; check += 1) {
+      const hitElement = globalThis.document.elementFromPoint(hitTestX, hitTestY);
+      const row = hitElement?.closest<HTMLTableRowElement>('[data-table-row-container]');
+      if (!row || !table.contains(row)) {
+        hitTestY += 8;
+        continue;
+      }
+
+      const rowRect = row.getBoundingClientRect();
+      if (!seenRows.has(row) && rowRect.bottom > clipTop && rowRect.top < clipBottom) {
+        visibleRows.push(row);
+        seenRows.add(row);
+      }
+      hitTestY = rowRect.bottom > hitTestY ? rowRect.bottom + 1 : hitTestY + 8;
+    }
+
+    return visibleRows;
+  }
+
+  function getVisibleColumnElements(
+    columnIndex: number,
+    visibleRows = getVisibleTableRows()
+  ): HTMLElement[] {
+    const scrollRegion = tableEditorEl?.querySelector<HTMLElement>('.table-scroll-region');
+    if (!scrollRegion) return [];
+    const scrollRect = scrollRegion.getBoundingClientRect();
+
+    return visibleRows.flatMap((row) => {
+      const cell = row.querySelector<HTMLElement>(
+        `[data-table-column-container="${columnIndex}"]`
+      );
+      if (!cell) return [];
+      const cellRect = cell.getBoundingClientRect();
+      return cellRect.right > scrollRect.left
+        && cellRect.left < scrollRect.right
+        && cellRect.bottom > scrollRect.top
+        && cellRect.top < scrollRect.bottom
+        ? [cell]
+        : [];
+    });
+  }
+
+  function shouldAnimateReorder(): boolean {
+    return animateReorder;
+  }
+
+  function createReorderAnimationController(
+    axis: 'row' | 'column',
+    sourceIndex: number,
+    itemCount: number
+  ): ReorderAnimationController | null {
+    if (!shouldAnimateReorder()) return null;
+
+    const visibleRows = getVisibleTableRows();
+    const elementsByIndex = new Map<number, HTMLElement[]>();
+    if (axis === 'row') {
+      visibleRows.forEach((row) => {
+        const rowIndex = Number(row.dataset.tableRowContainer);
+        if (Number.isInteger(rowIndex)) elementsByIndex.set(rowIndex, [row]);
+      });
+    } else {
+      visibleRows.forEach((row) => {
+        row.querySelectorAll<HTMLElement>('[data-table-column-container]').forEach((cell) => {
+          const columnIndex = Number(cell.dataset.tableColumnContainer);
+          if (!Number.isInteger(columnIndex)) return;
+          const cells = elementsByIndex.get(columnIndex) ?? [];
+          cells.push(cell);
+          elementsByIndex.set(columnIndex, cells);
+        });
+      });
+    }
+
+    const sourceElements = elementsByIndex.get(sourceIndex) ?? [];
+    const sourceRect = sourceElements[0]?.getBoundingClientRect();
+    const sourceSize = axis === 'row' ? sourceRect?.height : sourceRect?.width;
+    if (!sourceSize || sourceElements.length === 0) return null;
+
+    const shiftedElements: HTMLElement[] = [];
+    let preparedShift = 0;
+    sourceElements.forEach((element) => element.classList.add('table-reorder-source'));
+
+    return {
+      update(targetIndex) {
+        if (shiftedElements.length > 0) return;
+        const safeTargetIndex = Math.max(0, Math.min(targetIndex, itemCount - 1));
+        const firstShiftedIndex = safeTargetIndex > sourceIndex ? sourceIndex + 1 : safeTargetIndex;
+        const lastShiftedIndex = safeTargetIndex > sourceIndex ? safeTargetIndex : sourceIndex - 1;
+        preparedShift = safeTargetIndex > sourceIndex ? -sourceSize : sourceSize;
+
+        if (safeTargetIndex !== sourceIndex) {
+          for (let index = firstShiftedIndex; index <= lastShiftedIndex; index += 1) {
+            for (const element of elementsByIndex.get(index) ?? []) {
+              element.classList.add('table-reorder-shift');
+              shiftedElements.push(element);
+            }
+          }
+        }
+
+      },
+      animate(duration) {
+        const targetTransform = axis === 'row'
+          ? `translate3d(0, ${preparedShift}px, 0)`
+          : `translate3d(${preparedShift}px, 0, 0)`;
+        return shiftedElements.map((element) => element.animate(
+          [
+            { transform: 'translate3d(0, 0, 0)' },
+            { transform: targetTransform }
+          ],
+          {
+            duration,
+            easing: 'ease-out',
+            fill: 'forwards'
+          }
+        ));
+      },
+      destroy() {
+        sourceElements.forEach((element) => element.classList.remove('table-reorder-source'));
+        shiftedElements.forEach((element) => {
+          element.classList.remove('table-reorder-shift');
+        });
+      }
+    };
+  }
+
   function createDragPreviewController(
     preview: HTMLElement,
     sourceElements: HTMLElement[],
@@ -356,12 +539,64 @@
           animationFrame = globalThis.requestAnimationFrame(renderFrame);
         }
       },
+      animateTo(nextTranslateX, nextTranslateY, duration) {
+        if (animationFrame !== null) {
+          globalThis.cancelAnimationFrame(animationFrame);
+          renderFrame();
+        }
+        return preview.animate(
+          [
+            { transform: `translate3d(${translateX}px, ${translateY}px, 0)` },
+            { transform: `translate3d(${nextTranslateX}px, ${nextTranslateY}px, 0)` }
+          ],
+          {
+            duration,
+            easing: 'ease-out',
+            fill: 'forwards'
+          }
+        );
+      },
       destroy() {
         if (animationFrame !== null) globalThis.cancelAnimationFrame(animationFrame);
         sourceElements.forEach((element) => element.classList.remove('table-drag-source'));
         preview.remove();
       }
     };
+  }
+
+  function playReorderAnimation(
+    dragPreview: DragPreviewController,
+    reorderAnimation: ReorderAnimationController,
+    targetTranslateX: number,
+    targetTranslateY: number,
+    oncomplete: () => void
+  ) {
+    const duration = safeReorderDurationMs;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let completed = false;
+    const animations = [
+      dragPreview.animateTo(targetTranslateX, targetTranslateY, duration),
+      ...reorderAnimation.animate(duration)
+    ];
+
+    const finishAnimation = () => {
+      if (completed) return;
+      completed = true;
+      if (fallbackTimer !== null) globalThis.clearTimeout(fallbackTimer);
+      animations.forEach((animation) => {
+        try {
+          animation.finish();
+        } catch {
+          // 제거된 요소처럼 끝낼 수 없는 애니메이션은 최종 데이터 반영으로 복구한다.
+        }
+      });
+      oncomplete();
+      animations.forEach((animation) => animation.cancel());
+    };
+
+    Promise.allSettled(animations.map((animation) => animation.finished))
+      .then(finishAnimation);
+    fallbackTimer = globalThis.setTimeout(finishAnimation, duration + 250);
   }
 
   function createRowDragPreview(
@@ -452,42 +687,18 @@
     preview.style.width = `${clipRight - clipLeft}px`;
     preview.style.height = `${clipBottom - clipTop}px`;
 
-    const sourceElements: HTMLElement[] = [];
-    const seenElements = new Set<HTMLElement>();
-    const hitTestX = Math.min(
-      Math.max(headerRect.left + Math.min(12, headerRect.width / 2), clipLeft + 1),
-      clipRight - 1
-    );
-    let hitTestY = clipTop + 1;
-    const maximumChecks = Math.ceil((clipBottom - clipTop) / 4) + 32;
-
-    for (let check = 0; check < maximumChecks && hitTestY < clipBottom; check += 1) {
-      const hitElement = globalThis.document.elementFromPoint(hitTestX, hitTestY);
-      const sourceCell = hitElement?.closest<HTMLElement>(
-        `[data-table-column-container="${columnIndex}"]`
-      );
-
-      if (!sourceCell || !tableEditorEl?.contains(sourceCell)) {
-        hitTestY += 8;
-        continue;
-      }
-
+    const sourceElements = getVisibleColumnElements(columnIndex);
+    for (const sourceCell of sourceElements) {
       const cellRect = sourceCell.getBoundingClientRect();
-      if (!seenElements.has(sourceCell) && cellRect.bottom > clipTop && cellRect.top < clipBottom) {
-        const previewCell = sourceCell.cloneNode(true) as HTMLElement;
-        previewCell.classList.remove('table-drag-source');
-        previewCell.classList.add('column-drag-preview-cell');
-        previewCell.style.left = `${cellRect.left - clipLeft}px`;
-        previewCell.style.top = `${cellRect.top - clipTop}px`;
-        previewCell.style.width = `${cellRect.width}px`;
-        previewCell.style.height = `${cellRect.height}px`;
-        syncDragPreviewFormValues(sourceCell, previewCell);
-        preview.append(previewCell);
-        sourceElements.push(sourceCell);
-        seenElements.add(sourceCell);
-      }
-
-      hitTestY = cellRect.bottom > hitTestY ? cellRect.bottom + 1 : hitTestY + 8;
+      const previewCell = sourceCell.cloneNode(true) as HTMLElement;
+      previewCell.classList.remove('table-drag-source', 'table-reorder-source', 'table-reorder-shift');
+      previewCell.classList.add('column-drag-preview-cell');
+      previewCell.style.left = `${cellRect.left - clipLeft}px`;
+      previewCell.style.top = `${cellRect.top - clipTop}px`;
+      previewCell.style.width = `${cellRect.width}px`;
+      previewCell.style.height = `${cellRect.height}px`;
+      syncDragPreviewFormValues(sourceCell, previewCell);
+      preview.append(previewCell);
     }
 
     if (sourceElements.length === 0) return null;
@@ -504,7 +715,13 @@
   }
 
   function startRowPointerDrag(event: PointerEvent, rowIndex: number) {
-    if (!editable || event.button !== 0 || !event.isPrimary) return;
+    if (
+      !editable
+      || event.button !== 0
+      || !event.isPrimary
+      || draggedRow !== null
+      || draggedColumn !== null
+    ) return;
     event.preventDefault();
     event.stopPropagation();
 
@@ -521,14 +738,20 @@
       if (moveEvent.pointerId !== pointerId) return;
       dragPreview?.update(moveEvent.clientX, moveEvent.clientY);
       const dropBoundary = getRowDropBoundaryAtPoint(moveEvent.clientX, moveEvent.clientY);
-      if (dropBoundary !== null) setRowDropBoundary(dropBoundary);
+      if (dropBoundary !== null) {
+        setRowDropBoundary(dropBoundary);
+      }
     };
 
-    const cleanup = () => {
+    const stopPointerTracking = () => {
       pointerEventTarget.removeEventListener('pointermove', updateTarget, true);
       pointerEventTarget.removeEventListener('pointerup', finishDrag, true);
       pointerEventTarget.removeEventListener('pointercancel', cancelDrag, true);
       if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+    };
+
+    const cleanup = () => {
+      stopPointerTracking();
       dragPreview?.destroy();
       clearDragState();
     };
@@ -540,10 +763,48 @@
       const targetIndex = dropBoundary === null
         ? rowIndex
         : getMoveTargetIndex(rowIndex, dropBoundary, document.rows.length);
-      cleanup();
-      if (targetIndex === rowIndex) return;
-      ondocumentchange(moveDelimitedTableRow(document, rowIndex, targetIndex));
-      selectedRow = targetIndex;
+      if (targetIndex === rowIndex) {
+        cleanup();
+        return;
+      }
+
+      stopPointerTracking();
+      const sourceRow = tableEditorEl?.querySelector<HTMLElement>(
+        `[data-table-row-container="${rowIndex}"]`
+      );
+      const targetRow = tableEditorEl?.querySelector<HTMLElement>(
+        `[data-table-row-container="${targetIndex}"]`
+      );
+      const sourceRect = sourceRow?.getBoundingClientRect();
+      const targetRect = targetRow?.getBoundingClientRect();
+      const reorderAnimation = sourceRect && targetRect && dragPreview
+        ? createReorderAnimationController('row', rowIndex, document.rows.length)
+        : null;
+
+      const commitMove = () => {
+        flushSync(() => {
+          ondocumentchange(moveDelimitedTableRow(document, rowIndex, targetIndex));
+          selectedRow = targetIndex;
+        });
+        reorderAnimation?.destroy();
+        dragPreview?.destroy();
+        clearDragState();
+        focusRowHandle(targetIndex);
+      };
+
+      if (!reorderAnimation || !sourceRect || !targetRect || !dragPreview) {
+        commitMove();
+        return;
+      }
+
+      reorderAnimation.update(targetIndex);
+      playReorderAnimation(
+        dragPreview,
+        reorderAnimation,
+        0,
+        targetRect.top - sourceRect.top,
+        commitMove
+      );
     };
 
     const cancelDrag = (cancelEvent: PointerEvent) => {
@@ -557,7 +818,13 @@
   }
 
   function startColumnPointerDrag(event: PointerEvent, columnIndex: number) {
-    if (!editable || event.button !== 0 || !event.isPrimary) return;
+    if (
+      !editable
+      || event.button !== 0
+      || !event.isPrimary
+      || draggedRow !== null
+      || draggedColumn !== null
+    ) return;
     event.preventDefault();
     event.stopPropagation();
 
@@ -574,14 +841,20 @@
       if (moveEvent.pointerId !== pointerId) return;
       dragPreview?.update(moveEvent.clientX, moveEvent.clientY);
       const dropBoundary = getColumnDropBoundaryAtPoint(moveEvent.clientX, moveEvent.clientY);
-      if (dropBoundary !== null) setColumnDropBoundary(dropBoundary);
+      if (dropBoundary !== null) {
+        setColumnDropBoundary(dropBoundary);
+      }
     };
 
-    const cleanup = () => {
+    const stopPointerTracking = () => {
       pointerEventTarget.removeEventListener('pointermove', updateTarget, true);
       pointerEventTarget.removeEventListener('pointerup', finishDrag, true);
       pointerEventTarget.removeEventListener('pointercancel', cancelDrag, true);
       if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+    };
+
+    const cleanup = () => {
+      stopPointerTracking();
       dragPreview?.destroy();
       clearDragState();
     };
@@ -593,11 +866,49 @@
       const targetIndex = dropBoundary === null
         ? columnIndex
         : getMoveTargetIndex(columnIndex, dropBoundary, columnCount);
-      cleanup();
-      if (targetIndex === columnIndex) return;
-      moveColumnWidth(columnIndex, targetIndex);
-      ondocumentchange(moveDelimitedTableColumn(document, columnIndex, targetIndex));
-      selectedColumn = targetIndex;
+      if (targetIndex === columnIndex) {
+        cleanup();
+        return;
+      }
+
+      stopPointerTracking();
+      const sourceColumn = tableEditorEl?.querySelector<HTMLElement>(
+        `th[data-table-column-container="${columnIndex}"]`
+      );
+      const targetColumn = tableEditorEl?.querySelector<HTMLElement>(
+        `th[data-table-column-container="${targetIndex}"]`
+      );
+      const sourceRect = sourceColumn?.getBoundingClientRect();
+      const targetRect = targetColumn?.getBoundingClientRect();
+      const reorderAnimation = sourceRect && targetRect && dragPreview
+        ? createReorderAnimationController('column', columnIndex, columnCount)
+        : null;
+
+      const commitMove = () => {
+        flushSync(() => {
+          moveColumnWidth(columnIndex, targetIndex);
+          ondocumentchange(moveDelimitedTableColumn(document, columnIndex, targetIndex));
+          selectedColumn = targetIndex;
+        });
+        reorderAnimation?.destroy();
+        dragPreview?.destroy();
+        clearDragState();
+        focusColumnHandle(targetIndex);
+      };
+
+      if (!reorderAnimation || !sourceRect || !targetRect || !dragPreview) {
+        commitMove();
+        return;
+      }
+
+      reorderAnimation.update(targetIndex);
+      playReorderAnimation(
+        dragPreview,
+        reorderAnimation,
+        targetRect.left - sourceRect.left,
+        0,
+        commitMove
+      );
     };
 
     const cancelDrag = (cancelEvent: PointerEvent) => {
@@ -617,6 +928,7 @@
     if (targetIndex < 0 || targetIndex >= document.rows.length) return;
     ondocumentchange(moveDelimitedTableRow(document, rowIndex, targetIndex));
     selectedRow = targetIndex;
+    focusRowHandle(targetIndex);
   }
 
   function handleColumnHandleKeydown(event: KeyboardEvent, columnIndex: number) {
@@ -627,6 +939,7 @@
     moveColumnWidth(columnIndex, targetIndex);
     ondocumentchange(moveDelimitedTableColumn(document, columnIndex, targetIndex));
     selectedColumn = targetIndex;
+    focusColumnHandle(targetIndex);
   }
 
   function startColumnResize(event: PointerEvent, columnIndex: number) {
@@ -713,7 +1026,7 @@
       title={`${rowIndex + 1}행 이동 (드래그 또는 Alt+↑/↓)`}
       onpointerdown={(event) => startRowPointerDrag(event, rowIndex)}
       onkeydown={(event) => handleRowHandleKeydown(event, rowIndex)}
-      onclick={() => selectedRow = rowIndex}
+      onfocus={() => selectedRow = rowIndex}
     >
       <GripVertical size={12} aria-hidden="true" />
     </span>
@@ -857,7 +1170,7 @@
                 title={`${getColumnName(columnIndex)} 이동 (드래그 또는 Alt+←/→)`}
                 onpointerdown={(event) => startColumnPointerDrag(event, columnIndex)}
                 onkeydown={(event) => handleColumnHandleKeydown(event, columnIndex)}
-                onclick={() => selectedColumn = columnIndex}
+                onfocus={() => selectedColumn = columnIndex}
               >
                 <GripHorizontal size={12} aria-hidden="true" />
               </span>
@@ -1062,6 +1375,7 @@
 
   .drag-preview-layer :global(.table-drag-preview) {
     position: fixed;
+    z-index: 3;
     overflow: hidden;
     contain: layout paint style;
     pointer-events: none;
@@ -1133,6 +1447,16 @@
 
   .data-table :global(.table-drag-source) {
     opacity: 0.28;
+  }
+
+  .data-table :global(.table-reorder-shift) {
+    position: relative;
+    z-index: 1;
+    will-change: transform;
+  }
+
+  .data-table :global(.table-reorder-source) {
+    opacity: 0 !important;
   }
 
   .data-table {

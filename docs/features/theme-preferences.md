@@ -2,7 +2,7 @@
 
 사용자 설정은 브라우저 로컬 저장소인 `localStorage`에 저장한다. 설정창과 메인 창은 같은 저장소를 공유하고, 브라우저 저장소 변경 알림인 `storage` 이벤트로 주요 변경을 반영한다.
 
-CSV/TSV 표의 첫 행 강조와 행 번호 표시 여부도 같은 저장소에 보관하며, 두 설정은 원문 파일 내용에 포함하지 않는다.
+CSV/TSV 표의 첫 행 강조, 행 번호 표시, 행·열 이동 애니메이션 사용 여부와 이동 시간도 같은 저장소에 보관하며, 이 설정들은 원문 파일 내용에 포함하지 않는다.
 
 ## 테마 모드
 
@@ -22,6 +22,8 @@ CSV/TSV 표의 첫 행 강조와 행 번호 표시 여부도 같은 저장소에
 - `pref_tab_size`: 탭 표시 폭.
 - `pref_delimited_table_highlight_header`: CSV/TSV 첫 행 강조 여부.
 - `pref_delimited_table_show_row_indices`: CSV/TSV 왼쪽 행 번호 표시 여부.
+- `pref_delimited_table_animate_reorder`: CSV/TSV 행·열 드래그 이동 애니메이션 사용 여부.
+- `pref_delimited_table_reorder_duration_ms`: CSV/TSV 행·열 이동 시간. 50~2,000밀리초 범위에서 50밀리초 단위로 저장한다.
 - `pref_render_font_family`: 렌더 모드 글꼴 선택.
 - `pref_render_auto_pair_editing`: 렌더 모드 쌍 문자 자동 입력과 삭제 사용 여부.
 - `pref_render_auto_symbol_substitution`: 렌더 모드 화살표 기호 자동 변환 사용 여부.
