@@ -4857,7 +4857,7 @@
     min-width: 0;
     white-space: pre-wrap;
     overflow-wrap: break-word;
-    word-break: normal;
+    word-break: keep-all;
     font-family: var(--font-render-family, var(--font-notepad));
     padding: 0 12px;
     box-sizing: border-box;
@@ -4925,7 +4925,7 @@
     font-weight: var(--font-render-weight, normal);
     white-space: pre-wrap;
     overflow-wrap: break-word;
-    word-break: normal;
+    word-break: keep-all;
   }
 
   .render-mode .editor-textarea::selection {
