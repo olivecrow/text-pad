@@ -4489,21 +4489,25 @@
   }
 
   .titlebar-tabs {
+    position: relative;
     display: flex;
     align-items: flex-end;
     gap: 6px;
     flex: 1 1 auto;
     min-width: 0;
-    padding-top: 5px;
+    padding: 5px 96px 0 0;
+    box-sizing: border-box;
   }
 
   .titlebar-drag-region {
-    align-self: stretch;
-    flex: 1 1 32px;
-    min-width: 16px;
+    position: absolute;
+    inset: 0;
+    z-index: 0;
   }
 
   .tab-list {
+    position: relative;
+    z-index: 1;
     display: flex;
     align-items: flex-end;
     gap: 2px;
@@ -4605,6 +4609,8 @@
   }
 
   .tab-add-btn {
+    position: relative;
+    z-index: 1;
     margin-bottom: 3px;
   }
 
