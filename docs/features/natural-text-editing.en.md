@@ -220,7 +220,7 @@ An editor that overlays a rendered backdrop and a real input element must manage
 - Do not estimate horizontal indent-guide positions with character units such as CSS `ch`, which can differ from the width of actual spaces. Measure the actual width of each indentation block in the current render font so every guide remains on its corresponding leading whitespace even with a proportional font.
 - Use the same word-breaking rules for soft wrapping, and never add display wraps to source text.
 - While resize-driven wrapping calculations are unstable, prefer the real input text over an outdated rendered backdrop.
-- Preserve syntax highlighting during selection without allowing the real selection background and character positions to drift apart.
+- Preserve syntax highlighting during selection, and draw the selection background from the rendered layer's actual glyph boundaries so its position cannot drift from the text. A selection that mixes proportional and monospace text follows the width of each rendered font.
 - If a custom caret is used, click mapping, keyboard movement, and wrap measurement must all use the same font measurement rules.
 - Render inline code and fenced backtick code blocks with a monospace font by default. When proportional and monospace text share a line, calculate click mapping and caret placement from the code token's actual rendered width.
 - Convert positions in both directions between Windows CRLF source text and the browser `textarea` selection offsets normalized to LF.

@@ -30,7 +30,7 @@
     type ListMarker
   } from "$lib/list-markers";
   import { EditorUndoHistory, type EditorSelection, type EditorSnapshot } from "$lib/editor-undo";
-  import { untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import DelimitedTableEditor from "$lib/DelimitedTableEditor.svelte";
   import {
     parseDelimitedTable,
@@ -186,6 +186,12 @@
   let editorTextMeasureContext: CanvasRenderingContext2D | null = null;
   let editorTextMeasureFont = '';
   let editorTextWidthCache = new Map<string, number>();
+  const renderedSelectionHighlightName = 'render-selection';
+  const supportsRenderedSelectionHighlight = isBrowser
+    && typeof Highlight === 'function'
+    && typeof CSS !== 'undefined'
+    && !!CSS.highlights;
+  let renderedSelectionHighlightFrame: number | null = null;
 
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | null>(null);
@@ -1795,6 +1801,97 @@
       : false;
   }
 
+  function clearRenderedSelectionHighlight() {
+    if (!supportsRenderedSelectionHighlight) return;
+    CSS.highlights.delete(renderedSelectionHighlightName);
+  }
+
+  function getTextNodeBoundary(
+    root: HTMLElement,
+    targetOffset: number
+  ): { node: Text; offset: number } | null {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let remainingOffset = Math.max(0, targetOffset);
+    let lastTextNode: Text | null = null;
+    let textNode = walker.nextNode() as Text | null;
+
+    while (textNode) {
+      lastTextNode = textNode;
+      if (remainingOffset <= textNode.data.length) {
+        return { node: textNode, offset: remainingOffset };
+      }
+      remainingOffset -= textNode.data.length;
+      textNode = walker.nextNode() as Text | null;
+    }
+
+    return lastTextNode
+      ? { node: lastTextNode, offset: lastTextNode.data.length }
+      : null;
+  }
+
+  function getVisibleRenderedSelectionRanges(selection: EditorSelection): Range[] {
+    if (!editorViewportEl || selection.start === selection.end) return [];
+
+    const ranges: Range[] = [];
+    for (let lineIndex = startLine; lineIndex <= endLine; lineIndex += 1) {
+      const lineStart = lineStartOffsets[lineIndex] ?? 0;
+      const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
+      const lineEnd = lineStart + lineText.length;
+      const selectedStart = Math.max(selection.start, lineStart);
+      const selectedEnd = Math.min(selection.end, lineEnd);
+      if (selectedEnd <= selectedStart) continue;
+
+      const lineContent = editorViewportEl.querySelector(
+        `.backdrop-line[data-line-index="${lineIndex}"] .line-content`
+      ) as HTMLElement | null;
+      if (!lineContent) continue;
+
+      const startBoundary = getTextNodeBoundary(lineContent, selectedStart - lineStart);
+      const endBoundary = getTextNodeBoundary(lineContent, selectedEnd - lineStart);
+      if (!startBoundary || !endBoundary) continue;
+
+      const range = document.createRange();
+      range.setStart(startBoundary.node, startBoundary.offset);
+      range.setEnd(endBoundary.node, endBoundary.offset);
+      ranges.push(range);
+    }
+
+    return ranges;
+  }
+
+  function syncRenderedSelectionHighlight() {
+    if (
+      !supportsRenderedSelectionHighlight
+      || !isRenderMode
+      || !shouldRenderHighlightLayer
+      || !hasEditorSelection
+      || !textareaEl
+    ) {
+      clearRenderedSelectionHighlight();
+      return;
+    }
+
+    const ranges = getVisibleRenderedSelectionRanges(getTextareaSelectionInContent());
+    if (ranges.length === 0) {
+      clearRenderedSelectionHighlight();
+      return;
+    }
+
+    CSS.highlights.set(renderedSelectionHighlightName, new Highlight(...ranges));
+  }
+
+  function scheduleRenderedSelectionHighlight() {
+    if (!supportsRenderedSelectionHighlight) return;
+    if (renderedSelectionHighlightFrame !== null) {
+      cancelAnimationFrame(renderedSelectionHighlightFrame);
+    }
+
+    renderedSelectionHighlightFrame = requestAnimationFrame(() => {
+      renderedSelectionHighlightFrame = null;
+      syncRenderedSelectionHighlight();
+    });
+  }
+
   function updateCursorPosition() {
     if (!textareaEl) return;
     const { start: pos } = getTextareaSelectionInContent();
@@ -1811,6 +1908,7 @@
       restartSteadyEditorCaretBlink();
     }
     setLastEditorSnapshot(getCurrentEditorSnapshot());
+    scheduleRenderedSelectionHighlight();
   }
 
   function updateEditorStateForSnapshot(snapshot: EditorSnapshot) {
@@ -1979,6 +2077,33 @@
 
     document.addEventListener('selectionchange', handleDocumentSelectionChange);
     return () => document.removeEventListener('selectionchange', handleDocumentSelectionChange);
+  });
+
+  $effect(() => {
+    void [
+      isRenderMode,
+      shouldRenderHighlightLayer,
+      hasEditorSelection,
+      fileContent,
+      startLine,
+      endLine,
+      scrollTop,
+      scrollLeft,
+      editorViewportWidth,
+      measuredLineHeight,
+      currentFontSize,
+      currentRenderFontFamilyCSS,
+      activeColors.renderFontWeight,
+      tabSize
+    ];
+    scheduleRenderedSelectionHighlight();
+  });
+
+  onDestroy(() => {
+    if (renderedSelectionHighlightFrame !== null) {
+      cancelAnimationFrame(renderedSelectionHighlightFrame);
+    }
+    clearRenderedSelectionHighlight();
   });
 
   function getSelectedLineBounds(text: string, start: number, end: number): { start: number; end: number } {
@@ -4287,6 +4412,7 @@
       class="editor-area"
       class:render-mode={isRenderMode}
       class:render-selection-active={isRenderMode && hasEditorSelection}
+      class:render-custom-selection={isRenderMode && supportsRenderedSelectionHighlight && shouldRenderHighlightLayer}
       class:render-wrap-settling={isRenderMode && isRenderWrapSettling}
       class:render-native-text-visible={shouldShowNativeRenderText}
     >
@@ -5163,6 +5289,14 @@
   .render-mode .editor-textarea::selection {
     background: rgba(96, 165, 250, 0.28);
     color: transparent;
+  }
+
+  :global(::highlight(render-selection)) {
+    background-color: rgba(96, 165, 250, 0.28);
+  }
+
+  .render-mode.render-custom-selection .editor-textarea::selection {
+    background: transparent;
   }
 
   .render-mode.render-native-text-visible .editor-backdrop {
