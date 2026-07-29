@@ -80,6 +80,7 @@ Treat Tab as a command that makes the current line structurally deeper, not as a
 - With no selection, indent the entire line containing the caret.
 - With a selection, indent every line touched by the selection in one operation.
 - One indentation level is currently four spaces.
+- An empty line is indented like any other line. Tab adds one indentation level and leaves the caret after it so the next text input starts at the indented position.
 - Shift+Tab removes one leading tab or up to four leading spaces.
 - Shift+Tab on a line with no leading whitespace changes neither source text nor Undo history.
 - Move body-relative caret and selection positions by the prefix-length delta so they still point to the same place in the body.
@@ -216,6 +217,7 @@ An application with custom editing features should use one history system as the
 An editor that overlays a rendered backdrop and a real input element must manage both layers as one coordinate system.
 
 - Keep font family, font size, line height, tab size, padding, wrapping width, and scroll position identical across both layers.
+- Do not estimate horizontal indent-guide positions with character units such as CSS `ch`, which can differ from the width of actual spaces. Measure the actual width of each indentation block in the current render font so every guide remains on its corresponding leading whitespace even with a proportional font.
 - Use the same word-breaking rules for soft wrapping, and never add display wraps to source text.
 - While resize-driven wrapping calculations are unstable, prefer the real input text over an outdated rendered backdrop.
 - Preserve syntax highlighting during selection without allowing the real selection background and character positions to drift apart.
