@@ -33,5 +33,6 @@ npm run tauri build
 - `docs/project-guide.md`: 프로젝트 전체 구조와 현재 범위.
 - `docs/backend-guide.md`: Rust/Tauri 백엔드 계약.
 - `docs/frontend-guide.md`: SvelteKit 프론트엔드 계약.
+- 자연스러운 텍스트 편집 지침: [한국어](docs/features/natural-text-editing.md) · [English](docs/features/natural-text-editing.en.md). 다른 편집기에도 적용할 수 있는 렌더 편집 행동 계약이다.
 - `docs/features/`: 기능별 세부 기준.
 - `docs/implementation-checklist.md`: 남은 기능과 완료 기준.

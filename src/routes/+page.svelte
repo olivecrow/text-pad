@@ -22,6 +22,13 @@
   } from "$lib/document-formats";
   import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatCategory, DocumentFormatCategoryId, DocumentFormatId } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
+  import {
+    formatListMarker,
+    getListMarkerAtStart,
+    getListMarkerForIndentLevel,
+    getNextListMarkerLabel,
+    type ListMarker
+  } from "$lib/list-markers";
   import { EditorUndoHistory, type EditorSelection, type EditorSnapshot } from "$lib/editor-undo";
   import { untrack } from "svelte";
   import DelimitedTableEditor from "$lib/DelimitedTableEditor.svelte";
@@ -2003,10 +2010,90 @@
     return `${text.slice(0, lineStart)}${result}${text.slice(lineEnd)}`;
   }
 
-  function countSelectedLines(text: string, lineStart: number, lineEnd: number): number {
-    const block = text.slice(lineStart, lineEnd);
-    if (block.length === 0) return 1;
-    return (block.match(/\r\n|\n|\r/g)?.length ?? 0) + 1;
+  interface RenderLineIndentResult {
+    text: string;
+    mapRelativeOffset: (offset: number) => number;
+  }
+
+  function getEditorIndentColumns(indent: string): number {
+    let columns = 0;
+    for (const char of indent) {
+      if (char === '\t') {
+        columns += editorIndentUnit.length - (columns % editorIndentUnit.length);
+      } else {
+        columns += 1;
+      }
+    }
+    return columns;
+  }
+
+  function getEditorIndentLevel(indent: string): number {
+    return Math.floor(getEditorIndentColumns(indent) / editorIndentUnit.length);
+  }
+
+  function getRenderOutdentCount(indent: string): number {
+    if (indent.startsWith('\t')) return 1;
+    return Math.min(indent.match(/^ {1,4}/)?.[0].length ?? 0, editorIndentUnit.length);
+  }
+
+  function getRenderLineIndentResult(lineText: string, outdent: boolean): RenderLineIndentResult {
+    const marker = getListMarkerAtStart(lineText);
+    const oldIndent = marker?.indent ?? getLeadingWhitespace(lineText);
+    const removeCount = outdent ? getRenderOutdentCount(oldIndent) : 0;
+    if (outdent && removeCount === 0) {
+      return {
+        text: lineText,
+        mapRelativeOffset: (offset) => offset
+      };
+    }
+
+    const nextIndent = outdent
+      ? oldIndent.slice(removeCount)
+      : `${editorIndentUnit}${oldIndent}`;
+    const oldBodyStart = marker
+      ? oldIndent.length + marker.marker.length
+      : oldIndent.length;
+    const nextMarker = marker
+      ? getListMarkerForIndentLevel(getEditorIndentLevel(nextIndent), marker.spacing)
+      : '';
+    const nextBodyStart = nextIndent.length + nextMarker.length;
+    const nextText = `${nextIndent}${nextMarker}${lineText.slice(oldBodyStart)}`;
+
+    return {
+      text: nextText,
+      mapRelativeOffset: (offset) => {
+        if (offset <= oldIndent.length) {
+          return outdent
+            ? Math.max(0, offset - removeCount)
+            : offset + editorIndentUnit.length;
+        }
+
+        if (marker && offset < oldBodyStart) {
+          const markerOffset = offset - oldIndent.length;
+          return nextIndent.length + Math.min(markerOffset, nextMarker.length);
+        }
+
+        return nextBodyStart + (offset - oldBodyStart);
+      }
+    };
+  }
+
+  function getLineIndentOffsetDelta(
+    offset: number,
+    absoluteLineStart: number,
+    originalLine: string,
+    result: RenderLineIndentResult,
+    moveFromLineStart: boolean
+  ): number {
+    if (offset < absoluteLineStart) return 0;
+    if (offset === absoluteLineStart && !moveFromLineStart) return 0;
+
+    const absoluteLineEnd = absoluteLineStart + originalLine.length;
+    const totalDelta = result.text.length - originalLine.length;
+    if (offset >= absoluteLineEnd) return totalDelta;
+
+    const relativeOffset = offset - absoluteLineStart;
+    return result.mapRelativeOffset(relativeOffset) - relativeOffset;
   }
 
   function handleRenderTabIndent(event: KeyboardEvent): boolean {
@@ -2017,65 +2104,40 @@
     event.preventDefault();
 
     const { start, end } = getTextareaSelectionInContent();
-
-    if (start === end && !event.shiftKey) {
-      const nextContent = `${fileContent.slice(0, start)}${editorIndentUnit}${fileContent.slice(end)}`;
-      commitRenderEditorEdit(nextContent, {
-        start: start + editorIndentUnit.length,
-        end: start + editorIndentUnit.length
-      });
-      return true;
-    }
-
     const bounds = getSelectedLineBounds(fileContent, start, end);
 
-    if (!event.shiftKey) {
-      const lineCount = countSelectedLines(fileContent, bounds.start, bounds.end);
-      const nextContent = transformSelectedLines(
-        fileContent,
-        bounds.start,
-        bounds.end,
-        (lineText) => `${editorIndentUnit}${lineText}`
-      );
-      if (start === end) {
-        commitRenderEditorEdit(nextContent, {
-          start: start + editorIndentUnit.length,
-          end: end + editorIndentUnit.length
-        });
-      } else {
-        const nextStart = start === bounds.start ? start : start + editorIndentUnit.length;
-        commitRenderEditorEdit(nextContent, {
-          start: nextStart,
-          end: end + editorIndentUnit.length * lineCount
-        });
-      }
-      return true;
-    }
-
-    let removedBeforeStart = 0;
-    let removedBeforeEnd = 0;
-    const nextContent = transformSelectedLines(
+    const moveFromLineStart = start === end;
+    let startDelta = 0;
+    let endDelta = 0;
+    const nextLineContent = transformSelectedLines(
       fileContent,
       bounds.start,
       bounds.end,
       (lineText, absoluteLineStart) => {
-        const removeCount = lineText.startsWith('\t')
-          ? 1
-          : Math.min(lineText.match(/^ {1,4}/)?.[0].length ?? 0, editorIndentUnit.length);
-        const removeEnd = absoluteLineStart + removeCount;
-        if (absoluteLineStart < start) {
-          removedBeforeStart += Math.max(0, Math.min(removeEnd, start) - absoluteLineStart);
-        }
-        if (absoluteLineStart < end) {
-          removedBeforeEnd += Math.max(0, Math.min(removeEnd, end) - absoluteLineStart);
-        }
-        return lineText.slice(removeCount);
+        const result = getRenderLineIndentResult(lineText, event.shiftKey);
+        startDelta += getLineIndentOffsetDelta(
+          start,
+          absoluteLineStart,
+          lineText,
+          result,
+          moveFromLineStart
+        );
+        endDelta += getLineIndentOffsetDelta(
+          end,
+          absoluteLineStart,
+          lineText,
+          result,
+          moveFromLineStart
+        );
+        return result.text;
       }
     );
 
-    commitRenderEditorEdit(nextContent, {
-      start: start - removedBeforeStart,
-      end: end - removedBeforeEnd
+    if (nextLineContent === fileContent) return true;
+
+    commitRenderEditorEdit(nextLineContent, {
+      start: start + startDelta,
+      end: end + endDelta
     });
     return true;
   }
@@ -2143,6 +2205,57 @@
 
   function getLeadingWhitespace(text: string): string {
     return text.match(/^[ \t]*/)?.[0] ?? '';
+  }
+
+  function getPreviousListMarker(
+    text: string,
+    lineStart: number,
+    currentMarker: ListMarker
+  ): ListMarker | null {
+    const previousLineBounds = getPreviousLineBounds(text, lineStart);
+    if (!previousLineBounds) return null;
+
+    const previousMarker = getListMarkerAtStart(
+      text.slice(previousLineBounds.start, previousLineBounds.end)
+    );
+    if (
+      !previousMarker
+      || previousMarker.indent !== currentMarker.indent
+      || previousMarker.separator !== currentMarker.separator
+    ) return null;
+
+    return previousMarker;
+  }
+
+  function handleRenderContinueListEnter(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing) return false;
+    if (event.key !== 'Enter') return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineStart = getLineStartOffset(fileContent, start);
+    const lineEnd = getLineEndOffset(fileContent, start);
+    const currentMarker = getListMarkerAtStart(fileContent.slice(lineStart, lineEnd));
+    if (!currentMarker) return false;
+
+    const markerEnd = lineStart + currentMarker.indent.length + currentMarker.marker.length;
+    if (start < markerEnd) return false;
+
+    const previousMarker = getPreviousListMarker(fileContent, lineStart, currentMarker);
+    const nextLabel = getNextListMarkerLabel(currentMarker.label, previousMarker?.label ?? null);
+    if (!nextLabel) return false;
+
+    const nextMarker = formatListMarker(nextLabel, currentMarker.separator, currentMarker.spacing);
+    const insertText = `${getPreferredNewline(fileContent, start)}${currentMarker.indent}${nextMarker}`;
+
+    event.preventDefault();
+    commitRenderEditorEdit(`${fileContent.slice(0, start)}${insertText}${fileContent.slice(end)}`, {
+      start: start + insertText.length,
+      end: start + insertText.length
+    });
+    return true;
   }
 
   function handleRenderPreserveIndentEnter(event: KeyboardEvent): boolean {
@@ -2282,6 +2395,7 @@
   }
 
   function handleRenderEditorKeyDown(event: KeyboardEvent) {
+    if (handleRenderContinueListEnter(event)) return;
     if (handleRenderPreserveIndentEnter(event)) return;
     if (handleRenderEmptyIndentedLineBackspace(event)) return;
     if (handleRenderTabIndent(event)) return;

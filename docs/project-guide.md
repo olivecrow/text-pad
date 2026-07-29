@@ -27,6 +27,7 @@ graph TD
 - `docs/frontend-guide.md`: 프론트엔드 계약.
 - `docs/features/file-workflow.md`: 파일 열기와 저장 흐름.
 - `docs/features/render-mode.md`: 렌더 모드 표시 계약.
+- `docs/features/natural-text-editing.md`, `docs/features/natural-text-editing.en.md`: 글머리, 자동 쌍 문자, 들여쓰기, 캐럿, 실행 취소를 아우르는 자연스러운 텍스트 편집 지침 한국어판과 영어판.
 - `docs/features/delimited-table.md`: CSV/TSV 표 표시와 편집 계약.
 - `docs/features/editor-undo.md`: 편집기 실행 취소 계약.
 - `docs/features/settings-window.md`: 독립 설정창 계약.
