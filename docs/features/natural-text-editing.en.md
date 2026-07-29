@@ -66,12 +66,12 @@ The behavioral contract is:
 
 - Apply pairing only when the setting is enabled and there is a collapsed caret with no selection.
 - Typing one opening character inserts both characters and moves the caret between them.
-- Create a new pair even if the same closing character already exists to the right. Do not skip input when the user may be building a nested structure.
-- Closing-character input uses the default input behavior; there is no separate skip-over rule.
+- If the character at the caret is the same closing bracket, quote, or backtick that the user types, leave the source unchanged and move the caret past that character. Typing `"` twice therefore leaves only `""` with the caret after the closing quote.
+- When three backticks are typed after optional indentation at the start of a line, the third input expands them into an opening fence, an empty code line, and a closing fence, then places the caret on the empty code line. Preserve the existing newline convention and indentation.
 - With an active selection, the current implementation does not wrap the selection and instead uses default input behavior. Selection wrapping requires a separate behavioral contract and validation before it can be added.
 - Pressing Backspace between an empty automatic pair removes both the opening and closing characters.
 - In repeated-character contexts such as `"""` or `(()`, do not guess that surrounding characters belong to the same pair when an outer closing character cannot be confirmed.
-- Automatic insertion and paired deletion are each one Undo action.
+- Automatic insertion, paired deletion, and backtick code-block expansion are each one Undo action. Skipping over a closing character does not change source text and therefore creates no Undo record.
 
 ## Indentation and outdentation
 
@@ -204,7 +204,7 @@ An application with custom editing features should use one history system as the
 - Each record stores the source range that actually changed, the before and after strings, and the before and after selections.
 - Consecutive character insertion, Backspace, and Delete operations merge when they continue at the same location within one second.
 - An IME composition, including Korean text composition, is recorded as one ordinary input group from composition start to composition end.
-- Paste, cut, menu deletion, newline insertion, automatic pairing, indentation, and list-marker conversion are each independent actions with a clear semantic boundary.
+- Paste, cut, menu deletion, newline insertion, automatic pairing, backtick code-block expansion, indentation, and list-marker conversion are each independent actions with a clear semantic boundary.
 - Caret movement, selection changes, focus changes, mode switching, and setting changes do not alter source text and therefore create no history record.
 - Starting a new application-defined edit closes any active ordinary-input group.
 - Starting a new edit after Undo discards the Redo history after the current position.
@@ -220,6 +220,7 @@ An editor that overlays a rendered backdrop and a real input element must manage
 - While resize-driven wrapping calculations are unstable, prefer the real input text over an outdated rendered backdrop.
 - Preserve syntax highlighting during selection without allowing the real selection background and character positions to drift apart.
 - If a custom caret is used, click mapping, keyboard movement, and wrap measurement must all use the same font measurement rules.
+- Render inline code and fenced backtick code blocks with a monospace font by default. When proportional and monospace text share a line, calculate click mapping and caret placement from the code token's actual rendered width.
 - Convert positions in both directions between Windows CRLF source text and the browser `textarea` selection offsets normalized to LF.
 - Use the same source-to-display position conversion for editing, Undo, Redo, and tab restoration.
 
@@ -236,7 +237,7 @@ The current render-mode priority is:
 5. Delete leading indentation with Backspace
 6. Delete an empty automatic pair with Backspace
 7. Apply a context-aware substitution confirmed by Space
-8. Insert an automatic pair for an opening character
+8. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
 9. Fall back to default `textarea` input when none of the conditions match
 
 Do not chain one editing-assistance helper from inside another. The top-level input path selects exactly one feature by priority, and that feature records the final source text and selection only once.

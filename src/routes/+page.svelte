@@ -352,6 +352,7 @@
     "'": "'",
     '`': '`'
   };
+  const renderAutoClosingCharacters = new Set(Object.values(renderAutoClosingPairs));
   const renderAutoSubstitutions: Record<string, string> = {
     '-->': '→',
     '<--': '←',
@@ -2322,11 +2323,45 @@
     if (!textareaEl || event.isComposing) return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
-    const closingChar = renderAutoClosingPairs[event.key];
-    if (!closingChar) return false;
-
     const { start, end } = getTextareaSelectionInContent();
     if (start !== end) return false;
+
+    if (
+      event.key === '`'
+      && start >= 2
+      && fileContent.slice(start - 2, start) === '``'
+      && fileContent[start] !== '`'
+    ) {
+      const lineStart = getLineStartOffset(fileContent, start);
+      const lineIndent = fileContent.slice(lineStart, start - 2);
+      if (/^[ \t]*$/.test(lineIndent)) {
+        event.preventDefault();
+
+        const newline = getPreferredNewline(fileContent, start);
+        const replacementStart = start - 2;
+        const codeBlock = `\`\`\`${newline}${lineIndent}${newline}${lineIndent}\`\`\``;
+        const nextContent = `${fileContent.slice(0, replacementStart)}${codeBlock}${fileContent.slice(end)}`;
+        const nextCaret = replacementStart + 3 + newline.length + lineIndent.length;
+        commitRenderEditorEdit(nextContent, {
+          start: nextCaret,
+          end: nextCaret
+        });
+        return true;
+      }
+    }
+
+    if (renderAutoClosingCharacters.has(event.key) && fileContent[start] === event.key) {
+      event.preventDefault();
+      closeActiveUndoGroup();
+      const nextCaret = start + event.key.length;
+      setTextareaSelectionFromContent(nextCaret, nextCaret);
+      updateCursorPosition();
+      keepEditorCaretVisibleDuringEdit();
+      return true;
+    }
+
+    const closingChar = renderAutoClosingPairs[event.key];
+    if (!closingChar) return false;
 
     event.preventDefault();
 
@@ -2999,12 +3034,80 @@
     };
   }
 
+  function getRenderedCodeCaretRect(
+    lineElement: HTMLElement,
+    lineText: string,
+    offsetInLine: number
+  ): DOMRect | null {
+    const lineContent = lineElement.querySelector('.line-content');
+    if (!lineContent?.querySelector('.hl-code')) return null;
+
+    const targetOffset = clamp(offsetInLine, 0, lineText.length);
+    const walker = document.createTreeWalker(lineContent, NodeFilter.SHOW_TEXT);
+    let consumedOffset = 0;
+    let textNode = walker.nextNode() as Text | null;
+
+    while (textNode) {
+      const textLength = textNode.data.length;
+      if (targetOffset <= consumedOffset + textLength) {
+        const range = document.createRange();
+        range.setStart(textNode, targetOffset - consumedOffset);
+        range.collapse(true);
+        const rect = range.getClientRects()[0];
+        if (!rect) return null;
+
+        const lineRect = lineElement.getBoundingClientRect();
+        const rowIndex = Math.max(0, Math.round((rect.top - lineRect.top) / measuredLineHeight));
+        return new DOMRect(
+          rect.left,
+          lineRect.top + rowIndex * measuredLineHeight,
+          1,
+          measuredLineHeight
+        );
+      }
+
+      consumedOffset += textLength;
+      textNode = walker.nextNode() as Text | null;
+    }
+
+    return null;
+  }
+
+  function getRenderedCodeTextOffsetAtPoint(
+    lineElement: HTMLElement,
+    lineText: string,
+    clientX: number,
+    clientY: number
+  ): number | null {
+    if (!lineElement.querySelector('.hl-code')) return null;
+
+    let bestOffset: number | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    const verticalWeight = Math.max(editorViewportWidth, 1);
+
+    for (let offset = 0; offset <= lineText.length; offset += 1) {
+      const rect = getRenderedCodeCaretRect(lineElement, lineText, offset);
+      if (!rect) continue;
+      const distance = Math.abs(clientY - (rect.top + rect.height / 2)) * verticalWeight
+        + Math.abs(clientX - rect.left);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestOffset = offset;
+      }
+    }
+
+    return bestOffset;
+  }
+
   function getRenderedLineTextOffsetAtPoint(
     lineElement: HTMLElement,
     lineText: string,
     clientX: number,
     clientY: number
   ): number {
+    const codeOffset = getRenderedCodeTextOffsetAtPoint(lineElement, lineText, clientX, clientY);
+    if (codeOffset !== null) return codeOffset;
+
     const lineRect = lineElement.getBoundingClientRect();
     const { segment } = getRenderedLineSegmentAtPoint(lineText, lineElement, clientY);
     const contentLeft = lineRect.left + getEditorTextPaddingLeft();
@@ -3024,6 +3127,9 @@
     offsetInLine: number
   ): DOMRect {
     const segments = getWrappedLineSegments(lineText, renderWrapContentWidth);
+    const codeCaretRect = getRenderedCodeCaretRect(lineElement, lineText, offsetInLine);
+    if (codeCaretRect) return codeCaretRect;
+
     let rowIndex = 0;
     let segment = segments[0] ?? { start: 0, end: lineText.length };
 
@@ -4396,6 +4502,7 @@
   /* 렌더 모드 토큰 색상 스타일 */
   :global(.hl-code) {
     background-color: var(--color-hl-code-bg);
+    font-family: 'Cascadia Mono', 'Cascadia Code', Consolas, 'D2Coding', 'Nanum Gothic Coding', monospace;
     color: var(--color-hl-code-text);
     border-radius: 2px;
   }

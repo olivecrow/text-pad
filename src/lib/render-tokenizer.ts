@@ -43,8 +43,9 @@ export interface CommentSyntax {
 }
 
 export interface TokenizeState {
-  blockCommentEnd: string;
+  blockCommentEnd?: string;
   blockCommentCaseInsensitive?: boolean;
+  codeFenceLength?: number;
 }
 
 export interface TokenizeLineResult {
@@ -130,6 +131,16 @@ function isWordLikeChar(char: string | undefined): boolean {
 
 function isWhitespaceChar(char: string | undefined): boolean {
   return !!char && whitespaceRegex.test(char);
+}
+
+function getCodeFenceLengthAtLineStart(line: string): number | null {
+  const match = line.match(/^[ \t]*(`{3,})/);
+  return match?.[1]?.length ?? null;
+}
+
+function isClosingCodeFence(line: string, openingFenceLength: number): boolean {
+  const match = line.match(/^[ \t]*(`{3,})([ \t]*)$/);
+  return !!match?.[1] && match[1].length >= openingFenceLength;
 }
 
 function getNextNonWhitespaceIndex(text: string, startIndex: number): number {
@@ -352,6 +363,28 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
   }
 
   const listMarker = nextState ? null : getListMarkerAtStart(line);
+  if (nextState?.codeFenceLength) {
+    appendChild(root, { type: 'code', text: line });
+    if (isClosingCodeFence(line, nextState.codeFenceLength)) {
+      nextState = null;
+    }
+    return {
+      tokens: finalizeTokens(root),
+      state: nextState
+    };
+  }
+
+  if (!nextState) {
+    const codeFenceLength = getCodeFenceLengthAtLineStart(line);
+    if (codeFenceLength !== null) {
+      appendChild(root, { type: 'code', text: line });
+      return {
+        tokens: finalizeTokens(root),
+        state: { codeFenceLength }
+      };
+    }
+  }
+
   if (listMarker) {
     if (listMarker.indent) {
       appendChild(getTop().token, { type: 'text', text: listMarker.indent });
@@ -361,7 +394,7 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
   }
 
   while (i < len) {
-    if (nextState) {
+    if (nextState?.blockCommentEnd) {
       const endIndex = indexOfMarker(line, nextState.blockCommentEnd, i, nextState.blockCommentCaseInsensitive);
 
       if (endIndex === -1) {
