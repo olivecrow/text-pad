@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { message, open, save } from "@tauri-apps/plugin-dialog";
+  import { ask, message, open, save } from "@tauri-apps/plugin-dialog";
   import { invoke } from "@tauri-apps/api/core";
   import { PhysicalPosition } from "@tauri-apps/api/dpi";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -31,7 +31,17 @@
   } from "$lib/list-markers";
   import { EditorUndoHistory, type EditorSelection, type EditorSnapshot } from "$lib/editor-undo";
   import { onDestroy, tick, untrack } from "svelte";
+  import AboutDialog from "$lib/AboutDialog.svelte";
   import DelimitedTableEditor from "$lib/DelimitedTableEditor.svelte";
+  import { APP_VERSION_FALLBACK } from "$lib/app-metadata";
+  import {
+    checkForAppUpdate,
+    closeAppUpdate,
+    getInstalledAppVersion,
+    installAppUpdate,
+    type DownloadEvent,
+    type Update
+  } from "$lib/app-updater";
   import {
     parseDelimitedTable,
     serializeDelimitedTable,
@@ -166,7 +176,15 @@
   let hasFocusedEditorOnStartup = false;
   let hasShownMainWindowOnStartup = false;
   let hasLoadedStartupFiles = false;
+  let hasCheckedForUpdateOnStartup = false;
+  let startupUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+  let transientStatusTimer: ReturnType<typeof setTimeout> | null = null;
   let isWindowMaximized = $state<boolean>(false);
+  let transientStatusMessage = $state<string | null>(null);
+  let isCheckingForUpdate = $state<boolean>(false);
+  let isInstallingUpdate = $state<boolean>(false);
+  let isAboutDialogOpen = $state<boolean>(false);
+  let installedAppVersion = $state<string>(APP_VERSION_FALLBACK);
 
   // 커서 상태 추적
   let cursorLine = $state<number>(1);
@@ -194,7 +212,7 @@
   let renderedSelectionHighlightFrame: number | null = null;
 
   // 메뉴 및 설정 상태 추적
-  let openDropdown = $state<'file' | 'edit' | null>(null);
+  let openDropdown = $state<'file' | 'edit' | 'help' | null>(null);
   type FormatSettingsView = `format:${DocumentFormatId}`;
   type FormatCategorySettingsView = `category:${DocumentFormatCategoryId}`;
   type SettingsView = 'sourceAppearance' | 'renderAppearance' | 'renderEditing' | FormatCategorySettingsView | FormatSettingsView;
@@ -1836,9 +1854,133 @@
     }
   }
 
+  function showTransientStatus(messageText: string, durationMs = 4_000) {
+    transientStatusMessage = messageText;
+    if (transientStatusTimer) {
+      clearTimeout(transientStatusTimer);
+    }
+    transientStatusTimer = setTimeout(() => {
+      transientStatusMessage = null;
+      transientStatusTimer = null;
+    }, durationMs);
+  }
+
+  async function refreshInstalledAppVersion() {
+    installedAppVersion = await getInstalledAppVersion();
+  }
+
+  function getUpdatePromptText(update: Update): string {
+    const releaseNotes = update.body?.trim();
+    const notes = releaseNotes
+      ? `\n\n릴리스 내용:\n${releaseNotes.slice(0, 600)}${releaseNotes.length > 600 ? '\n…' : ''}`
+      : '';
+    return `새 버전 ${update.version}을(를) 사용할 수 있습니다.\n현재 버전: ${update.currentVersion}\n\n지금 다운로드하고 설치하시겠습니까?${notes}`;
+  }
+
+  async function checkForUpdates(showNoUpdateStatus: boolean) {
+    if (isCheckingForUpdate || isInstallingUpdate) {
+      if (showNoUpdateStatus) {
+        showTransientStatus(isInstallingUpdate ? '업데이트를 설치하는 중입니다.' : '업데이트를 확인하는 중입니다.');
+      }
+      return;
+    }
+
+    isCheckingForUpdate = true;
+    if (showNoUpdateStatus) {
+      showTransientStatus('업데이트를 확인하는 중입니다.', 20_000);
+    }
+
+    let update: Update | null = null;
+    try {
+      update = await checkForAppUpdate();
+      if (!update) {
+        if (showNoUpdateStatus) {
+          showTransientStatus(`최신 버전입니다. (${installedAppVersion})`);
+        }
+        return;
+      }
+
+      const shouldInstall = await ask(getUpdatePromptText(update), {
+        title: 'text-pad 업데이트',
+        kind: 'info',
+        okLabel: '업데이트',
+        cancelLabel: '나중에'
+      });
+
+      if (!shouldInstall) {
+        await closeAppUpdate(update);
+        update = null;
+        showTransientStatus('업데이트를 나중에 설치할 수 있습니다.');
+        return;
+      }
+
+      const canRestart = await shouldCloseMainWindow();
+      if (!canRestart) {
+        await closeAppUpdate(update);
+        update = null;
+        showTransientStatus('업데이트 설치를 취소했습니다.');
+        return;
+      }
+
+      isInstallingUpdate = true;
+      let downloadedBytes = 0;
+      let contentLength: number | undefined;
+      const handleDownloadEvent = (event: DownloadEvent) => {
+        if (event.event === 'Started') {
+          contentLength = event.data.contentLength;
+          showTransientStatus('업데이트를 다운로드하는 중입니다.', 120_000);
+        } else if (event.event === 'Progress') {
+          downloadedBytes += event.data.chunkLength;
+          if (contentLength && contentLength > 0) {
+            const percent = Math.min(100, Math.round((downloadedBytes / contentLength) * 100));
+            showTransientStatus(`업데이트를 다운로드하는 중입니다. ${percent}%`, 120_000);
+          }
+        } else if (event.event === 'Finished') {
+          showTransientStatus('업데이트를 설치하고 다시 시작합니다.', 120_000);
+        }
+      };
+
+      await installAppUpdate(update, handleDownloadEvent);
+    } catch (err) {
+      if (update) {
+        await closeAppUpdate(update);
+      }
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error('Failed to update application:', err);
+      if (showNoUpdateStatus || update || isInstallingUpdate) {
+        showTransientStatus(`업데이트를 확인하지 못했습니다: ${detail}`, 7_000);
+      }
+    } finally {
+      isCheckingForUpdate = false;
+      isInstallingUpdate = false;
+    }
+  }
+
+  function scheduleStartupUpdateCheck() {
+    if (hasCheckedForUpdateOnStartup || !hasTauriRuntime() || isSettingsWindow) return;
+    hasCheckedForUpdateOnStartup = true;
+    startupUpdateTimer = setTimeout(() => {
+      startupUpdateTimer = null;
+      void checkForUpdates(false);
+    }, 1_000);
+  }
+
+  function handleManualUpdateCheck() {
+    closeAllDropdown();
+    void checkForUpdates(true);
+  }
+
+  function handleAboutDialogOpen() {
+    closeAllDropdown();
+    isAboutDialogOpen = true;
+    void refreshInstalledAppVersion();
+  }
+
   async function initializeMainWindowAfterStartup() {
     await loadStartupFiles();
     await showMainWindowAfterStartup();
+    void refreshInstalledAppVersion();
+    scheduleStartupUpdateCheck();
   }
 
   $effect(() => {
@@ -2315,6 +2457,14 @@
   onDestroy(() => {
     if (renderedSelectionHighlightFrame !== null) {
       cancelAnimationFrame(renderedSelectionHighlightFrame);
+    }
+    if (startupUpdateTimer) {
+      clearTimeout(startupUpdateTimer);
+      startupUpdateTimer = null;
+    }
+    if (transientStatusTimer) {
+      clearTimeout(transientStatusTimer);
+      transientStatusTimer = null;
     }
     clearRenderedSelectionHighlight();
   });
@@ -3017,7 +3167,7 @@
   }
 
   // 메뉴 제어
-  function toggleDropdown(menu: 'file' | 'edit', event: MouseEvent) {
+  function toggleDropdown(menu: 'file' | 'edit' | 'help', event: MouseEvent) {
     event.stopPropagation();
     if (openDropdown === menu) {
       openDropdown = null;
@@ -3026,7 +3176,7 @@
     }
   }
 
-  function handleMouseEnter(menu: 'file' | 'edit') {
+  function handleMouseEnter(menu: 'file' | 'edit' | 'help') {
     if (openDropdown !== null) {
       openDropdown = menu;
     }
@@ -3281,6 +3431,8 @@
 
   // 글로벌 키보드 단축키 감지
   function handleKeyDown(e: KeyboardEvent) {
+    if (isAboutDialogOpen) return;
+
     const key = e.key.toLowerCase();
 
     if (!isSettingsWindow && e.ctrlKey && key === 'z') {
@@ -4729,6 +4881,34 @@
           {/if}
         </div>
 
+        <div class="menu-item-container">
+          <button
+            class="menu-trigger"
+            class:active={openDropdown === 'help'}
+            onclick={(e) => toggleDropdown('help', e)}
+            onmouseenter={() => handleMouseEnter('help')}
+          >
+            도움말(H)
+          </button>
+          {#if openDropdown === 'help'}
+            <div class="dropdown-menu help-menu">
+              <button
+                class="dropdown-item"
+                onclick={handleManualUpdateCheck}
+                disabled={isCheckingForUpdate || isInstallingUpdate}
+              >
+                <span class="item-label">
+                  {isInstallingUpdate ? '업데이트 설치 중...' : isCheckingForUpdate ? '업데이트 확인 중...' : '업데이트 확인'}
+                </span>
+              </button>
+              <div class="menu-divider"></div>
+              <button class="dropdown-item" onclick={handleAboutDialogOpen}>
+                <span class="item-label">정보</span>
+              </button>
+            </div>
+          {/if}
+        </div>
+
         <!-- 에러 표시 간소화 -->
         {#if errorMsg || documentDiagnostic}
           <div
@@ -4895,9 +5075,12 @@
 
     <!-- 하단 상태 표시줄 -->
     <footer class="status-bar">
-      <div class="status-left">
+      <div class="status-left" aria-live="polite">
+        {#if transientStatusMessage}
+          <span class="status-message">{transientStatusMessage}</span>
+        {/if}
         {#if filePath}
-          <span class="file-path" title={filePath}>{filePath}</span>
+          <span class="file-path" class:with-status={!!transientStatusMessage} title={filePath}>{filePath}</span>
         {/if}
       </div>
       <div class="status-right">
@@ -4920,6 +5103,12 @@
         <span class="status-item">UTF-8</span>
       </div>
     </footer>
+
+    <AboutDialog
+      open={isAboutDialogOpen}
+      version={installedAppVersion}
+      onclose={() => isAboutDialogOpen = false}
+    />
   </div>
 {/if}
 
@@ -5457,6 +5646,10 @@
     flex-direction: column;
     z-index: 20;
     margin-top: 2px;
+  }
+
+  .dropdown-menu.help-menu {
+    min-width: 190px;
   }
 
   .dropdown-item {
@@ -6195,6 +6388,19 @@
 
   .file-path {
     padding-left: 0.25rem;
+  }
+
+  .status-message {
+    flex-shrink: 0;
+    color: var(--text-color);
+    padding-left: 0.25rem;
+  }
+
+  .file-path.with-status {
+    margin-left: 0.5rem;
+    padding-left: 0.5rem;
+    border-left: 1px solid var(--border-color);
+    color: var(--text-muted);
   }
 
   .status-right {

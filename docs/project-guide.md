@@ -32,6 +32,7 @@ graph TD
 - `docs/features/editor-undo.md`: 편집기 실행 취소 계약.
 - `docs/features/settings-window.md`: 독립 설정창 계약.
 - `docs/features/theme-preferences.md`: 테마와 사용자 설정 저장 계약.
+- `docs/features/app-updates.md`: 시작 확인, 도움말 메뉴, 서명된 GitHub Release 업데이트와 라이선스 고지 계약.
 - `docs/implementation-checklist.md`: 남은 기능과 완료 기준.
 
 ## 현재 기능 범위
@@ -49,6 +50,9 @@ graph TD
 - NSIS 설치 파일에서 같은 버전 삭제를 선택하면 삭제 후 설치를 재개하지 않고 종료.
 - Windows WebView2 가로 휠 입력 보정.
 - Windows 릴리스 빌드 생성.
+- 앱 시작 시 한 번 수행하는 업데이트 확인과 `도움말` 메뉴의 수동 확인.
+- 버전, 릴리스 날짜, 프로젝트 라이선스와 오픈소스 출처를 표시하는 정보 창.
+- GitHub Releases의 서명된 설치 파일과 `latest.json`을 사용하는 자체 업데이트.
 
 ## 아직 제품 범위로 남은 기능
 
@@ -71,3 +75,5 @@ graph TD
 - 렌더 모드는 원문을 보기 좋게 표현하되 사용자의 공백, 들여쓰기, 줄바꿈, 구분자를 임의로 바꾸지 않는다.
 - 큰 파일에서 입력과 스크롤이 느려지지 않아야 한다.
 - 보안 위험이 있는 렌더링 기능은 기본 차단한다.
+- 업데이트를 설치하기 전 저장하지 않은 탭의 저장 여부를 확인한다.
+- 업데이트 개인 서명키는 저장소와 로그에 절대 포함하지 않는다.

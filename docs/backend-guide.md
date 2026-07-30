@@ -10,6 +10,7 @@
 - `src-tauri/src/windows_wheel.rs`: Windows 가로 휠 처리.
 - `src-tauri/capabilities/default.json`: 프론트엔드 명령 권한.
 - `src-tauri/tauri.conf.json`: 창 설정과 빌드 설정.
+- `.github/workflows/release.yml`: `main`의 버전 태그에서 서명된 Windows 릴리스와 업데이트 메타데이터를 만드는 작업.
 - `src-tauri/installer.nsi`: NSIS 실행 설치 파일 템플릿.
 - `src-tauri/Cargo.toml`: Rust 의존성과 Tauri 플러그인 의존성.
 
@@ -47,6 +48,19 @@
   - `core:window:allow-close`
 
 `tauri-plugin-window-state`는 메인 창만 복원해야 하므로 `settings` 창은 denylist에 둔다.
+
+## 자체 업데이트
+
+- `tauri-plugin-updater`는 GitHub Releases의 `latest.json`을 확인하고 공개키로 설치 파일 서명을 검증한다.
+- `tauri-plugin-process`는 설치가 끝난 뒤 앱을 다시 시작한다.
+- 프론트엔드에는 `updater:default`와 `process:allow-restart` 권한만 추가한다.
+- 업데이터 요청은 Rust 플러그인이 수행하므로 WebView 콘텐츠 보안 정책에 GitHub 도메인을 추가하지 않는다.
+- `createUpdaterArtifacts`는 일반 설치 파일과 함께 업데이트 번들 및 `.sig` 파일을 만든다.
+- Windows 설치 방식은 사용자 입력을 최소화하는 `passive`를 사용한다.
+
+Tauri 업데이트 서명 개인키는 저장소 밖에 두고 GitHub Actions 비밀 값으로 전달한다. 공개키만 `tauri.conf.json`에 포함한다.
+개인키를 변경하면 이전 설치본이 새 업데이트를 검증하지 못하므로 키를 임의로 재생성하지 않는다.
+세부 사용자 흐름과 릴리스 절차는 `docs/features/app-updates.md`를 따른다.
 
 ## Windows 설치 파일
 
