@@ -11,6 +11,7 @@
 - Use natural editing helpers for paired characters, lists, indentation, and code blocks.
 - Customize font size, tab width, render colors, and render fonts.
 - Save separate render color preferences for light, dark, and system themes.
+- Check for signed app updates at startup or from the Help menu, and view version and license details in About.
 - Handle horizontal wheel input correctly on Windows WebView2.
 
 ## Installation
@@ -19,6 +20,8 @@ Download the latest Windows installer from [GitHub Releases](https://github.com/
 
 - `text-pad_<version>_x64-setup.exe`: standard Windows installer (recommended).
 - `text-pad_<version>_x64_en-US.msi`: MSI package for managed installations.
+
+Version `0.2.0` is the first release with the built-in updater. If you are upgrading from `0.1.0`, install `0.2.0` manually once; later releases can be installed from inside the app.
 
 ## Development
 

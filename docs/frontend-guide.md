@@ -8,6 +8,9 @@
 - `src/lib/document-formats.ts`: 확장자 기반 문서 형식 판별, 열기/저장 대화상자 필터, 형식별 렌더 파싱과 문법 검사.
 - `src/lib/delimited-table.ts`: CSV/TSV 파싱, 직렬화, 셀·행·열 변경 계산.
 - `src/lib/DelimitedTableEditor.svelte`: CSV/TSV 표 편집 화면과 행·열 조작.
+- `src/lib/app-updater.ts`: 설치 버전 조회, 업데이트 확인·설치·재시작 연결.
+- `src/lib/AboutDialog.svelte`: 버전, 릴리스 날짜, 라이선스와 오픈소스 출처를 표시하는 정보 창.
+- `src/lib/app-metadata.ts`: 정보 창과 릴리스 빌드가 사용하는 제품 메타데이터.
 - `src/app.html`: 앱 HTML 껍데기. 시작 성능을 위해 원격 웹폰트는 여기서 로드하지 않는다.
 - `src/routes/+layout.ts`: 정적 빌드 설정.
 
@@ -23,6 +26,7 @@
 - `sourceFontSize`, `renderFontSize`, `tabSize`: 편집기 표시 설정.
 - `themeMode`, `currentTheme`, `lightColors`, `darkColors`: 테마와 렌더 색상 설정.
 - `isSettingsWindow`: 현재 창이 독립 설정창인지 구분한다.
+- `isCheckingForUpdate`, `isInstallingUpdate`, `transientStatusMessage`: 업데이트 작업과 하단 임시 상태 표시.
 
 설정값은 `localStorage`에 저장하고, 다른 창에는 브라우저 `storage` 이벤트로 반영한다.
 설정창 왼쪽 메뉴는 원본 모드와 렌더 모드의 하위 항목을 트리 구조로 나눈다. 렌더 모드에는 `모양`, `편집`과 함께 `JSON`, `Markdown`처럼 각 파일 형식 항목이 독립 메뉴로 들어간다.
@@ -41,6 +45,8 @@
 - 새 편집 기능의 실행 취소 적용 기준은 `docs/features/editor-undo.md`를 따른다.
 
 앱 시작 때 메인 Tauri 창은 숨김 상태로 만들어진다. 메인 편집기의 `textarea`가 붙으면 프론트엔드가 운영체제에서 넘긴 시작 파일 경로를 먼저 열고, 그 다음 창을 표시하고 초점을 편집기로 옮겨, 사용자가 처음 보는 창이 바로 편집 가능한 상태가 되게 한다.
+
+업데이트 확인은 이 시작 표시와 초점 이동을 끝낸 뒤 예약한다. 네트워크 응답 때문에 첫 화면 표시나 입력 가능 시점이 늦어져서는 안 된다. 세부 계약은 `docs/features/app-updates.md`를 따른다.
 
 ## 원문 모드
 
@@ -118,6 +124,7 @@
 - 메뉴, 설정, 토글은 키보드로 접근 가능해야 한다.
 - 버튼과 입력 요소 안의 텍스트가 좁은 창에서도 잘리지 않게 한다.
 - 새 시각 요소를 추가할 때 기존 CSS 변수와 간격 체계를 우선 사용한다.
+- 업데이트 결과처럼 잠깐 표시하는 알림은 편집을 가리는 팝업 대신 하단 상태 표시줄의 `aria-live` 영역을 우선한다.
 
 ## 검증
 
