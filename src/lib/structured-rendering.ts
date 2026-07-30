@@ -1,4 +1,4 @@
-import type { Token } from './render-tokenizer';
+import type { FencedCodeLinePosition, Token } from './render-tokenizer';
 
 export interface ParsedLine {
   id: number;
@@ -6,6 +6,7 @@ export interface ParsedLine {
   indentColumns: number;
   extraIndentSpaces: number;
   tokens: Token[];
+  fencedCodePosition?: FencedCodeLinePosition;
 }
 
 export interface DocumentLineRange {

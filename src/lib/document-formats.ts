@@ -458,7 +458,8 @@ function parsePlainLine(
     line: {
       id,
       ...indentInfo,
-      tokens: tokenized.tokens
+      tokens: tokenized.tokens,
+      fencedCodePosition: tokenized.fencedCodePosition
     },
     state: tokenized.state
   };

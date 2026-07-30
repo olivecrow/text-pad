@@ -22,6 +22,7 @@ export interface Token {
   depth?: number;
   start?: number;
   end?: number;
+  hiddenSyntax?: boolean;
 }
 
 export interface LineCommentRule {
@@ -48,15 +49,18 @@ export interface TokenizeState {
   codeFenceLength?: number;
 }
 
+export type FencedCodeLinePosition = 'start' | 'middle' | 'end';
+
 export interface TokenizeLineResult {
   tokens: Token[];
   state: TokenizeState | null;
+  fencedCodePosition?: FencedCodeLinePosition;
 }
 
 const hexColorAtStartRegex = /^#[0-9a-fA-F]{6}$/;
 const wordLikeCharRegex = /[\p{L}\p{M}\p{N}]/u;
 const whitespaceRegex = /\s/u;
-const depthTrackedTypes = new Set<Token['type']>(['string', 'code', 'paren', 'bracket', 'brace']);
+const depthTrackedTypes = new Set<Token['type']>(['string', 'paren', 'bracket', 'brace']);
 
 function hasWhitespaceWordBoundary(text: string, start: number, end: number): boolean {
   const previousChar = text[start - 1];
@@ -285,7 +289,7 @@ function finalizeTokens(root: Token): Token[] {
 
 export function tokenizeLineWithState(line: string, options: TokenizeLineOptions = {}): TokenizeLineResult {
   const root: Token = { type: 'text', children: [] };
-  const stack: { token: Token; openChar?: string; closeIndex?: number }[] = [{ token: root }];
+  const stack: { token: Token; openChar?: string; closeIndex?: number; hideSyntax?: boolean }[] = [{ token: root }];
   const commentSyntax = options.comments || null;
   const firstNonWhitespaceIndex = getNextNonWhitespaceIndex(line, 0);
   let nextState: TokenizeState | null = options.state || null;
@@ -299,7 +303,14 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
   function appendChild(parent: Token, child: Token) {
     if (!parent.children) parent.children = [];
     const lastChild = parent.children[parent.children.length - 1];
-    if (child.type === 'text' && !child.children && lastChild && lastChild.type === 'text' && !lastChild.children) {
+    if (
+      child.type === 'text'
+      && !child.children
+      && lastChild
+      && lastChild.type === 'text'
+      && !lastChild.children
+      && lastChild.hiddenSyntax === child.hiddenSyntax
+    ) {
       lastChild.text = (lastChild.text || '') + (child.text || '');
     } else {
       parent.children.push(child);
@@ -314,16 +325,30 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
     appendChild(getTop().token, { type: 'comment', text });
   }
 
-  function pushContainer(type: Token['type'], openChar: string, closeIndex?: number) {
+  function pushContainer(
+    type: Token['type'],
+    openChar: string,
+    closeIndex?: number,
+    hideSyntax = false
+  ) {
     stack.push({
-      token: { type, children: [{ type: 'text', text: openChar }] },
+      token: {
+        type,
+        children: [{ type: 'text', text: openChar, hiddenSyntax: hideSyntax || undefined }]
+      },
       openChar,
-      closeIndex
+      closeIndex,
+      hideSyntax
     });
   }
 
   function closeTopContainer(closingChar: string) {
-    addChar(closingChar);
+    const closingFrame = getTop();
+    if (closingFrame.token.type === 'code') {
+      appendChild(closingFrame.token, { type: 'text', text: closingChar, hiddenSyntax: closingFrame.hideSyntax || undefined });
+    } else {
+      addChar(closingChar);
+    }
     const closedFrame = stack.pop();
     if (closedFrame) {
       appendChild(getTop().token, closedFrame.token);
@@ -364,23 +389,35 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
 
   const listMarker = nextState ? null : getListMarkerAtStart(line);
   if (nextState?.codeFenceLength) {
-    appendChild(root, { type: 'code', text: line });
-    if (isClosingCodeFence(line, nextState.codeFenceLength)) {
+    const closesCodeFence = isClosingCodeFence(line, nextState.codeFenceLength);
+    if (closesCodeFence) {
+      appendChild(root, { type: 'code', text: line, hiddenSyntax: true });
+    } else {
+      const contentTokens = tokenizeLineWithState(line, {
+        comments: commentSyntax,
+        state: null,
+        suppressCodeFence: true
+      }).tokens;
+      appendChild(root, { type: 'code', children: contentTokens });
+    }
+    if (closesCodeFence) {
       nextState = null;
     }
     return {
       tokens: finalizeTokens(root),
-      state: nextState
+      state: nextState,
+      fencedCodePosition: closesCodeFence ? 'end' : 'middle'
     };
   }
 
-  if (!nextState) {
+  if (!nextState && !options.suppressCodeFence) {
     const codeFenceLength = getCodeFenceLengthAtLineStart(line);
     if (codeFenceLength !== null) {
-      appendChild(root, { type: 'code', text: line });
+      appendChild(root, { type: 'code', text: line, hiddenSyntax: true });
       return {
         tokens: finalizeTokens(root),
-        state: { codeFenceLength }
+        state: { codeFenceLength },
+        fencedCodePosition: 'start'
       };
     }
   }
@@ -483,7 +520,8 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
       const closeIndex = findClosingQuote(line, i, char);
       if (closeIndex !== -1) {
         const type = char === '`' ? 'code' : 'string';
-        pushContainer(type, char, closeIndex);
+        const hideSyntax = type === 'code' && /\S/u.test(line.slice(i + 1, closeIndex));
+        pushContainer(type, char, closeIndex, hideSyntax);
       } else {
         addChar(char);
       }
@@ -538,6 +576,7 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
 export interface TokenizeLineOptions {
   comments?: CommentSyntax | null;
   state?: TokenizeState | null;
+  suppressCodeFence?: boolean;
 }
 
 export function tokenizeLine(line: string, options: TokenizeLineOptions = {}): Token[] {

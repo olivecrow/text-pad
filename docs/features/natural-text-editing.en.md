@@ -67,11 +67,13 @@ The behavioral contract is:
 - Apply pairing only when the setting is enabled and there is a collapsed caret with no selection.
 - Typing one opening character inserts both characters and moves the caret between them.
 - If the character at the caret is the same closing bracket, quote, or backtick that the user types, leave the source unchanged and move the caret past that character. Typing `"` twice therefore leaves only `""` with the caret after the closing quote.
-- When three backticks are typed after optional indentation at the start of a line, the third input expands them into an opening fence, an empty code line, and a closing fence, then places the caret on the empty code line. Preserve the existing newline convention and indentation.
+- When three backticks are typed after optional indentation at the start of a line, the third input expands them into an opening fence, an empty code line, a closing fence, and a following line with the same indentation, while leaving the caret inside the empty code line. A collapsed caret immediately after the closing fence maps to the first editable position on the following line instead of the hidden fence line. Preserve the existing newline convention and indentation.
 - With an active selection, the current implementation does not wrap the selection and instead uses default input behavior. Selection wrapping requires a separate behavioral contract and validation before it can be added.
 - Pressing Backspace between an empty automatic pair removes both the opening and closing characters.
 - In repeated-character contexts such as `"""` or `(()`, do not guess that surrounding characters belong to the same pair when an outer closing character cannot be confirmed.
 - Automatic insertion, paired deletion, and backtick code-block expansion are each one Undo action. Skipping over a closing character does not change source text and therefore creates no Undo record.
+- In render mode, hidden inline backticks and fenced-code delimiter lines are not collapsed-caret stops. Pointer and arrow-key movement skips to a visible inline-code boundary or to an adjacent editable line inside or outside the fenced block.
+- Pressing Backspace within the leading whitespace of the line immediately after a closing fence keeps the code content and line structure, but reduces each run of opening and closing backticks to two characters so only fenced-block syntax is disabled. Place the caret immediately after the two remaining closing backticks, at the position where the removed backticks were. Selection deletion that includes both fences and the complete block remains allowed. Disabling the fences is one Undo action.
 
 ## Indentation and outdentation
 
@@ -205,7 +207,7 @@ An application with custom editing features should use one history system as the
 - Each record stores the source range that actually changed, the before and after strings, and the before and after selections.
 - Consecutive character insertion, Backspace, and Delete operations merge when they continue at the same location within one second.
 - An IME composition, including Korean text composition, is recorded as one ordinary input group from composition start to composition end.
-- Paste, cut, menu deletion, newline insertion, automatic pairing, backtick code-block expansion, indentation, and list-marker conversion are each independent actions with a clear semantic boundary.
+- Paste, cut, menu deletion, newline insertion, automatic pairing, backtick code-block expansion and fence disabling, indentation, and list-marker conversion are each independent actions with a clear semantic boundary.
 - Caret movement, selection changes, focus changes, mode switching, and setting changes do not alter source text and therefore create no history record.
 - Starting a new application-defined edit closes any active ordinary-input group.
 - Starting a new edit after Undo discards the Redo history after the current position.
@@ -222,7 +224,7 @@ An editor that overlays a rendered backdrop and a real input element must manage
 - While resize-driven wrapping calculations are unstable, prefer the real input text over an outdated rendered backdrop.
 - Preserve syntax highlighting during selection, and draw the selection background from the rendered layer's actual glyph boundaries so its position cannot drift from the text. A selection that mixes proportional and monospace text follows the width of each rendered font.
 - If a custom caret is used, click mapping, keyboard movement, and wrap measurement must all use the same font measurement rules.
-- Render inline code and fenced backtick code blocks with a monospace font by default. When proportional and monospace text share a line, calculate click mapping and caret placement from the code token's actual rendered width.
+- Render inline code and fenced backtick code blocks with a monospace font by default while keeping the body text's font size and line height. Hide inline-code delimiters only when the backticks contain at least one non-whitespace character; show the backticks for an empty or whitespace-only inline-code span so its empty state remains visible. Hide the complete opening and closing fence lines of multi-line code blocks in render mode, while preserving their layout space for source-position mapping and preventing a collapsed caret from remaining inside hidden syntax. Use only about 12px of each hidden fence line for the block's top and bottom fill padding, inset the fill about 12px from both horizontal editor edges, and keep about 12px of inner padding between the fill edges and code text. Draw a multi-line code block as one continuous filled background from its opening fence through its closing fence without a separate outline, and keep code text and rendered selection highlights above the fill. Treat the default code text color as the lowest-priority fallback so syntax colors for brackets, list markers, strings, numbers, and similar tokens remain visible, and use a less saturated default code text color in the dark theme. Allow the code background and default code text colors to be changed independently for the light and dark themes. When proportional and monospace text share a line, calculate click mapping and caret placement from the code token's actual rendered width.
 - Convert positions in both directions between Windows CRLF source text and the browser `textarea` selection offsets normalized to LF.
 - Use the same source-to-display position conversion for editing, Undo, Redo, and tab restoration.
 
@@ -232,15 +234,18 @@ Several features can respond to the same key, so evaluate the most specific cont
 
 The current render-mode priority is:
 
-1. Continue a list marker on Enter
-2. Preserve indentation on Enter for a general line
-3. Join an otherwise empty automatically indented line on Backspace
-4. Indent or outdent lines with Tab or Shift+Tab
-5. Delete leading indentation with Backspace
-6. Delete an empty automatic pair with Backspace
-7. Apply a context-aware substitution confirmed by Space
-8. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
-9. Fall back to default `textarea` input when none of the conditions match
+1. Block deletion selections that include only part of a fenced-code delimiter
+2. Disable fenced-block syntax on Backspace from the immediately following line
+3. Block single-character deletion across a newline adjacent to a fenced-code delimiter
+4. Continue a list marker on Enter
+5. Preserve indentation on Enter for a general line
+6. Join an otherwise empty automatically indented line on Backspace
+7. Indent or outdent lines with Tab or Shift+Tab
+8. Delete leading indentation with Backspace
+9. Delete an empty automatic pair with Backspace
+10. Apply a context-aware substitution confirmed by Space
+11. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
+12. Fall back to default `textarea` input when none of the conditions match
 
 Do not chain one editing-assistance helper from inside another. The top-level input path selects exactly one feature by priority, and that feature records the final source text and selection only once.
 

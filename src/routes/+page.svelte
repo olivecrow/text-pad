@@ -30,7 +30,7 @@
     type ListMarker
   } from "$lib/list-markers";
   import { EditorUndoHistory, type EditorSelection, type EditorSnapshot } from "$lib/editor-undo";
-  import { onDestroy, untrack } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import DelimitedTableEditor from "$lib/DelimitedTableEditor.svelte";
   import {
     parseDelimitedTable,
@@ -278,6 +278,8 @@
 
   type ColorField = Exclude<keyof ThemeColors, 'renderFontWeight'>;
   const hexColorRegex = /^#[0-9a-fA-F]{6}$/;
+  const previousLightCodeBgDefault = '#f1f5f9';
+  const previousDarkCodeTextDefaults = new Set(['#38bdf8', '#4fc1ff']);
 
   // 시스템 테마별 기본 강조 색상
   function getSystemDefaultColors(isDark: boolean): ThemeColors {
@@ -286,7 +288,7 @@
       renderText: '#d6eaf0',
       renderFontWeight: '400',
       codeBg: '#1e293b',
-      codeText: '#38bdf8',
+      codeText: '#94a3b8',
       keyStrong: '#0284c7',
       keyMedium: '#38bdf8',
       keyLight: '#7dd3fc',
@@ -302,7 +304,7 @@
       renderBg: '#f8fafc',
       renderText: '#0f172a',
       renderFontWeight: '500',
-      codeBg: '#f1f5f9',
+      codeBg: '#e2e8f0',
       codeText: '#0284c7',
       keyStrong: '#0369a1',
       keyMedium: '#0284c7',
@@ -370,6 +372,7 @@
   const renderAutoSubstitutionTriggers = Object.keys(renderAutoSubstitutions).sort((a, b) => b.length - a.length);
   const editorIndentUnit = '    ';
   const editorHorizontalPadding = 24;
+  const fencedCodeHorizontalPadding = 12;
   const editorTopPadding = 8;
   const virtualLineOverscan = 8;
   const editorResizeDebounceMs = 80;
@@ -378,6 +381,7 @@
   const delimitedTableReorderDurationMaxMs = 2000;
   const delimitedTableReorderDurationStepMs = 50;
   const editorMovementKeys = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
+  let pendingRenderCaretMovementDirection: -1 | 0 | 1 = 0;
 
   function parseDocumentFeatureSettingsValue(value: string | null): DocumentFeatureSettings {
     if (!value) return createDefaultDocumentFeatureSettings();
@@ -807,9 +811,20 @@
       const defaults = getSystemDefaultColors(isDark);
 
       // Migration from old keys (if new key doesn't exist but old key does, use old key once, or just fallback to default)
+      const savedCodeBg = localStorage.getItem(`${prefix}codeBg`)
+        || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_code_bg') : null);
+      const codeBg = !isDark && savedCodeBg?.toLowerCase() === previousLightCodeBgDefault
+        ? defaults.codeBg
+        : savedCodeBg || defaults.codeBg;
+      const savedCodeText = localStorage.getItem(`${prefix}codeText`)
+        || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_code_text') : null);
+      const codeText = isDark && savedCodeText && previousDarkCodeTextDefaults.has(savedCodeText.toLowerCase())
+        ? defaults.codeText
+        : savedCodeText || defaults.codeText;
+
       return {
-        codeBg: localStorage.getItem(`${prefix}codeBg`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_code_bg') : null) || defaults.codeBg,
-        codeText: localStorage.getItem(`${prefix}codeText`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_code_text') : null) || defaults.codeText,
+        codeBg,
+        codeText,
         keyStrong: localStorage.getItem(`${prefix}keyStrong`) || defaults.keyStrong,
         keyMedium: localStorage.getItem(`${prefix}keyMedium`) || defaults.keyMedium,
         keyLight: localStorage.getItem(`${prefix}keyLight`) || defaults.keyLight,
@@ -1189,6 +1204,55 @@
     return content.slice(lineStart, lineEnd);
   }
 
+  interface FencedCodeBlockRange {
+    openingLineStart: number;
+    openingLineEnd: number;
+    contentStart: number;
+    fenceLength: number;
+    closingBoundaryStart?: number;
+    closingLineStart?: number;
+    closingLineEnd?: number;
+    afterBlockStart?: number;
+  }
+
+  function getFencedCodeBlockRanges(content: string, offsets: number[]): FencedCodeBlockRange[] {
+    const ranges: FencedCodeBlockRange[] = [];
+    let activeRange: FencedCodeBlockRange | null = null;
+
+    for (let lineIndex = 0; lineIndex < offsets.length; lineIndex += 1) {
+      const lineStart = offsets[lineIndex] ?? 0;
+      const lineText = getLineTextForLayout(content, offsets, lineIndex);
+      const lineEnd = lineStart + lineText.length;
+
+      if (activeRange) {
+        const closingMatch = lineText.match(/^[ \t]*(`{3,})[ \t]*$/);
+        if (closingMatch?.[1] && closingMatch[1].length >= activeRange.fenceLength) {
+          activeRange.closingBoundaryStart = lineStart > 0 && content[lineStart - 1] === '\n'
+            ? (lineStart > 1 && content[lineStart - 2] === '\r' ? lineStart - 2 : lineStart - 1)
+            : lineStart;
+          activeRange.closingLineStart = lineStart;
+          activeRange.closingLineEnd = lineEnd;
+          activeRange.afterBlockStart = offsets[lineIndex + 1] ?? lineEnd;
+          activeRange = null;
+        }
+        continue;
+      }
+
+      const openingMatch = lineText.match(/^[ \t]*(`{3,})/);
+      if (!openingMatch?.[1]) continue;
+
+      activeRange = {
+        openingLineStart: lineStart,
+        openingLineEnd: lineEnd,
+        contentStart: offsets[lineIndex + 1] ?? lineEnd,
+        fenceLength: openingMatch[1].length
+      };
+      ranges.push(activeRange);
+    }
+
+    return ranges;
+  }
+
   function measureEditorTextEndWidth(text: string, startWidth = 0): number {
     if (!isBrowser || text.length === 0) return startWidth;
 
@@ -1328,16 +1392,32 @@
     return segments.length > 0 ? segments : [{ start: 0, end: lineText.length }];
   }
 
-  function getEditorLineLayout(content: string, offsets: number[], contentWidth: number): EditorLineLayout {
+  function isFencedCodeLine(lineStart: number, fencedCodeRanges: FencedCodeBlockRange[]): boolean {
+    return fencedCodeRanges.some((range) => (
+      lineStart >= range.openingLineStart
+      && lineStart <= (range.closingLineStart ?? Number.POSITIVE_INFINITY)
+    ));
+  }
+
+  function getEditorLineLayout(
+    content: string,
+    offsets: number[],
+    contentWidth: number,
+    fencedCodeRanges: FencedCodeBlockRange[]
+  ): EditorLineLayout {
     const lineTotal = offsets.length;
     const tops: number[] = new Array(lineTotal);
     const heights: number[] = new Array(lineTotal);
     let top = 0;
 
     for (let lineIndex = 0; lineIndex < lineTotal; lineIndex += 1) {
+      const lineStart = offsets[lineIndex] ?? 0;
+      const lineContentWidth = isFencedCodeLine(lineStart, fencedCodeRanges)
+        ? Math.max(1, contentWidth - (fencedCodeHorizontalPadding * 2))
+        : contentWidth;
       const lineText = getLineTextForLayout(content, offsets, lineIndex);
       const visualLineCount = isRenderMode
-        ? countWrappedVisualLines(lineText, contentWidth)
+        ? countWrappedVisualLines(lineText, lineContentWidth)
         : 1;
       const height = Math.max(measuredLineHeight, visualLineCount * measuredLineHeight);
 
@@ -1379,6 +1459,7 @@
 
   // 반응형 상태
   let lineStartOffsets = $derived(getLineStartOffsets(fileContent));
+  let fencedCodeBlocks = $derived(getFencedCodeBlockRanges(fileContent, lineStartOffsets));
   let lineCount = $derived(lineStartOffsets.length);
   let charCount = $derived(fileContent.length);
   let textareaDisplayContent = $derived(getTextareaValueFromContent(fileContent));
@@ -1407,7 +1488,12 @@
   }
 
   let renderWrapContentWidth = $derived(getEditorWrapContentWidth());
-  let renderLineLayout = $derived(getEditorLineLayout(fileContent, lineStartOffsets, renderWrapContentWidth));
+  let renderLineLayout = $derived(getEditorLineLayout(
+    fileContent,
+    lineStartOffsets,
+    renderWrapContentWidth,
+    fencedCodeBlocks
+  ));
   let shouldShowNativeRenderText = $derived(isRenderMode && isRenderWrapSettling);
   let shouldRenderHighlightLayer = $derived(isRenderMode && !shouldShowNativeRenderText);
 
@@ -1892,11 +1978,104 @@
     });
   }
 
+  function getFencedCodeLineCaret(lineStart: number): number {
+    const lineEnd = getLineEndOffset(fileContent, lineStart);
+    return lineStart + getLeadingWhitespace(fileContent.slice(lineStart, lineEnd)).length;
+  }
+
+  function getFirstFencedCodeContentCaret(block: FencedCodeBlockRange): number {
+    const hasContentLine = block.closingLineStart === undefined
+      ? block.contentStart > block.openingLineEnd
+      : block.contentStart < block.closingLineStart;
+    return hasContentLine
+      ? getFencedCodeLineCaret(block.contentStart)
+      : getCaretAfterFencedCodeBlock(block)
+        ?? getCaretBeforeFencedCodeBlock(block)
+        ?? block.openingLineEnd;
+  }
+
+  function getLastFencedCodeContentCaret(block: FencedCodeBlockRange): number | null {
+    if (block.closingLineStart === undefined) return null;
+
+    const previousLine = getPreviousLineBounds(fileContent, block.closingLineStart);
+    return previousLine && previousLine.start > block.openingLineStart
+      ? previousLine.end
+      : null;
+  }
+
+  function getCaretBeforeFencedCodeBlock(block: FencedCodeBlockRange): number | null {
+    return getPreviousLineBounds(fileContent, block.openingLineStart)?.end ?? null;
+  }
+
+  function getCaretAfterFencedCodeBlock(block: FencedCodeBlockRange): number | null {
+    if (
+      block.closingLineEnd === undefined
+      || block.afterBlockStart === undefined
+      || block.afterBlockStart <= block.closingLineEnd
+    ) return null;
+
+    return getFencedCodeLineCaret(block.afterBlockStart);
+  }
+
+  function getSafeRenderedCaretOffset(offset: number, direction: -1 | 0 | 1): number {
+    for (const block of fencedCodeBlocks) {
+      if (offset >= block.openingLineStart && offset <= block.openingLineEnd) {
+        return direction < 0
+          ? getCaretBeforeFencedCodeBlock(block) ?? getFirstFencedCodeContentCaret(block)
+          : getFirstFencedCodeContentCaret(block);
+      }
+
+      if (
+        block.closingLineStart !== undefined
+        && block.closingLineEnd !== undefined
+        && offset >= block.closingLineStart
+        && offset <= block.closingLineEnd
+      ) {
+        if (direction < 0) {
+          return getLastFencedCodeContentCaret(block)
+            ?? getCaretBeforeFencedCodeBlock(block)
+            ?? getCaretAfterFencedCodeBlock(block)
+            ?? offset;
+        }
+        return getCaretAfterFencedCodeBlock(block)
+          ?? getLastFencedCodeContentCaret(block)
+          ?? offset;
+      }
+    }
+
+    return offset;
+  }
+
+  function shouldBlockPartialFencedCodeSelectionEdit(start: number, end: number): boolean {
+    if (start === end) return false;
+
+    return fencedCodeBlocks.some((block) => {
+      if (
+        block.closingBoundaryStart === undefined
+        || block.closingLineEnd === undefined
+        || block.afterBlockStart === undefined
+      ) return false;
+
+      const touchesOpeningBoundary = start < block.contentStart && end > block.openingLineStart;
+      const touchesClosingBoundary = start < block.afterBlockStart && end > block.closingBoundaryStart;
+      const coversWholeBlock = start <= block.openingLineStart && end >= block.closingLineEnd;
+      return (touchesOpeningBoundary || touchesClosingBoundary) && !coversWholeBlock;
+    });
+  }
+
   function updateCursorPosition() {
     if (!textareaEl) return;
-    const { start: pos } = getTextareaSelectionInContent();
-    const previousCaretOffset = caretOffset;
     const isCollapsed = textareaEl.selectionStart === textareaEl.selectionEnd;
+    let { start: pos } = getTextareaSelectionInContent();
+    const previousCaretOffset = caretOffset;
+    if (isRenderMode && isActiveDocumentRenderEnabled && isCollapsed) {
+      const safePosition = getSafeRenderedCaretOffset(pos, pendingRenderCaretMovementDirection);
+      if (safePosition !== pos) {
+        setTextareaSelectionFromContent(safePosition, safePosition);
+        pos = safePosition;
+      }
+    }
+    pendingRenderCaretMovementDirection = 0;
     updateEditorSelectionState();
     caretOffset = pos;
     const lineIndex = findLineIndexForOffset(pos);
@@ -1948,10 +2127,34 @@
   function commitEditorEdit(
     before: EditorSnapshot,
     after: EditorSnapshot,
-    options: { mergeKey?: string | null; selectionAlreadyApplied?: boolean; keepRenderCaretVisible?: boolean } = {}
+    options: {
+      mergeKey?: string | null;
+      selectionAlreadyApplied?: boolean;
+      keepRenderCaretVisible?: boolean;
+      syncRenderCaretAfterUpdate?: boolean;
+    } = {}
   ) {
     const history = getActiveUndoHistory();
     history.record(before, after, { mergeKey: options.mergeKey ?? null });
+
+    if (
+      options.syncRenderCaretAfterUpdate
+      && options.selectionAlreadyApplied
+      && isRenderMode
+      && isActiveDocumentRenderEnabled
+    ) {
+      updateEditorStateForSnapshot(after);
+      void tick().then(() => {
+        updateCursorPosition();
+        syncActiveTabState();
+        if (options.keepRenderCaretVisible) {
+          keepEditorCaretVisibleDuringEdit();
+        } else {
+          syncEditorCaretVisibilityForCurrentMode();
+        }
+      });
+      return;
+    }
     applyEditorSnapshot(after, options.selectionAlreadyApplied ?? false);
     if (options.keepRenderCaretVisible) {
       keepEditorCaretVisibleDuringEdit();
@@ -2018,7 +2221,8 @@
 
     commitEditorEdit(before, after, {
       mergeKey,
-      selectionAlreadyApplied: true
+      selectionAlreadyApplied: true,
+      syncRenderCaretAfterUpdate: true
     });
   }
 
@@ -2033,6 +2237,15 @@
       event.preventDefault();
       performRedo();
       return;
+    }
+
+    if (isRenderMode && isActiveDocumentRenderEnabled && textareaEl) {
+      const { start, end } = getTextareaSelectionInContent();
+      if (shouldBlockPartialFencedCodeSelectionEdit(start, end)) {
+        event.preventDefault();
+        pendingNativeInput = null;
+        return;
+      }
     }
 
     pendingNativeInput = {
@@ -2338,6 +2551,81 @@
     return text.match(/^[ \t]*/)?.[0] ?? '';
   }
 
+  function handleRenderFencedCodeSelectionEdit(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing) return false;
+    if (event.key !== 'Backspace' && event.key !== 'Delete' && event.key !== 'Enter') return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (!shouldBlockPartialFencedCodeSelectionEdit(start, end)) return false;
+
+    event.preventDefault();
+    return true;
+  }
+
+  function handleRenderFencedCodeBlockBackspace(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing || event.key !== 'Backspace') return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineStart = getLineStartOffset(fileContent, start);
+    if (!/^[ \t]*$/.test(fileContent.slice(lineStart, start))) return false;
+
+    const block = fencedCodeBlocks.find((candidate) => (
+      candidate.closingLineStart !== undefined
+      && candidate.closingLineEnd !== undefined
+      && candidate.afterBlockStart === lineStart
+      && candidate.afterBlockStart > candidate.closingLineEnd
+    ));
+    const closingLineStart = block?.closingLineStart;
+    const closingLineEnd = block?.closingLineEnd;
+    if (!block || closingLineStart === undefined || closingLineEnd === undefined) return false;
+
+    const openingLine = fileContent.slice(block.openingLineStart, block.openingLineEnd);
+    const closingLine = fileContent.slice(closingLineStart, closingLineEnd);
+    const openingFence = openingLine.match(/^([ \t]*)(`{3,})/);
+    const closingFence = closingLine.match(/^([ \t]*)(`{3,})([ \t]*)$/);
+    if (!openingFence?.[2] || !closingFence?.[2]) return false;
+
+    const openingFenceStart = block.openingLineStart + openingFence[1].length;
+    const openingFenceEnd = openingFenceStart + openingFence[2].length;
+    const closingFenceStart = closingLineStart + closingFence[1].length;
+    const closingFenceEnd = closingFenceStart + closingFence[2].length;
+    const openingRemovedBacktickCount = openingFence[2].length - 2;
+    const nextContent = `${fileContent.slice(0, openingFenceStart)}\`\`${fileContent.slice(openingFenceEnd, closingFenceStart)}\`\`${fileContent.slice(closingFenceEnd)}`;
+
+    event.preventDefault();
+    const nextCaret = closingFenceStart - openingRemovedBacktickCount + 2;
+    commitRenderEditorEdit(nextContent, { start: nextCaret, end: nextCaret });
+    return true;
+  }
+
+  function handleRenderFencedCodeBoundaryDeletion(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing) return false;
+    if (event.key !== 'Backspace' && event.key !== 'Delete') return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const crossesProtectedBoundary = fencedCodeBlocks.some((block) => {
+      if (event.key === 'Backspace') {
+        return block.contentStart > block.openingLineEnd && start === block.contentStart;
+      }
+
+      if (block.closingBoundaryStart !== undefined && start === block.closingBoundaryStart) {
+        return true;
+      }
+
+      const previousLine = getPreviousLineBounds(fileContent, block.openingLineStart);
+      return previousLine?.end === start;
+    });
+    if (!crossesProtectedBoundary) return false;
+
+    event.preventDefault();
+    return true;
+
+  }
+
   function getPreviousListMarker(
     text: string,
     lineStart: number,
@@ -2464,7 +2752,7 @@
 
         const newline = getPreferredNewline(fileContent, start);
         const replacementStart = start - 2;
-        const codeBlock = `\`\`\`${newline}${lineIndent}${newline}${lineIndent}\`\`\``;
+        const codeBlock = `\`\`\`${newline}${lineIndent}${newline}${lineIndent}\`\`\`${newline}${lineIndent}`;
         const nextContent = `${fileContent.slice(0, replacementStart)}${codeBlock}${fileContent.slice(end)}`;
         const nextCaret = replacementStart + 3 + newline.length + lineIndent.length;
         commitRenderEditorEdit(nextContent, {
@@ -2572,10 +2860,19 @@
 
   function handleEditorKeyDown(event: KeyboardEvent) {
     if (editorMovementKeys.has(event.key)) {
+      pendingRenderCaretMovementDirection = event.key === 'ArrowLeft'
+        || event.key === 'ArrowUp'
+        || event.key === 'Home'
+        || event.key === 'PageUp'
+        ? -1
+        : 1;
       closeActiveUndoGroup();
     }
 
     if (!isRenderMode) return;
+    if (handleRenderFencedCodeSelectionEdit(event)) return;
+    if (handleRenderFencedCodeBlockBackspace(event)) return;
+    if (handleRenderFencedCodeBoundaryDeletion(event)) return;
     handleRenderEditorKeyDown(event);
   }
 
@@ -2780,6 +3077,10 @@
   function insertDateTime() {
     if (!textareaEl) return;
     const { start, end } = getTextareaSelectionInContent();
+    if (isRenderMode && isActiveDocumentRenderEnabled && shouldBlockPartialFencedCodeSelectionEdit(start, end)) {
+      closeAllDropdown();
+      return;
+    }
     const now = new Date();
 
     const timeStr = now.toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit', hour12: true });
@@ -2816,6 +3117,10 @@
     if (!textareaEl) return;
     const { start, end } = getTextareaSelectionInContent();
     if (start === end) return;
+    if (isRenderMode && isActiveDocumentRenderEnabled && shouldBlockPartialFencedCodeSelectionEdit(start, end)) {
+      closeAllDropdown();
+      return;
+    }
 
     const selectedText = fileContent.substring(start, end);
     await navigator.clipboard.writeText(selectedText);
@@ -2845,6 +3150,10 @@
     try {
       const text = await navigator.clipboard.readText();
       const { start, end } = getTextareaSelectionInContent();
+      if (isRenderMode && isActiveDocumentRenderEnabled && shouldBlockPartialFencedCodeSelectionEdit(start, end)) {
+        closeAllDropdown();
+        return;
+      }
 
       const before = fileContent.substring(0, start);
       const after = fileContent.substring(end);
@@ -2862,6 +3171,17 @@
   function handleDelete() {
     if (!textareaEl) return;
     const { start, end } = getTextareaSelectionInContent();
+    if (isRenderMode && isActiveDocumentRenderEnabled) {
+      const blocksProtectedBoundary = start === end && fencedCodeBlocks.some((block) => (
+        block.closingBoundaryStart === start
+        || getPreviousLineBounds(fileContent, block.openingLineStart)?.end === start
+      ));
+      if (blocksProtectedBoundary || shouldBlockPartialFencedCodeSelectionEdit(start, end)) {
+        closeAllDropdown();
+        return;
+      }
+    }
+
     let newCursorPos = start;
 
     if (start === end) {
@@ -2999,6 +3319,9 @@
 
   function getTokenClass(token: Token): string {
     const classes = [`hl-${token.type}`];
+    if (token.hiddenSyntax) {
+      classes.push('hl-syntax-hidden');
+    }
     if (token.type === 'boolean') {
       if (token.text === 'true') {
         classes.push('hl-boolean-true');
@@ -3164,13 +3487,27 @@
     lineText: string,
     offsetInLine: number
   ): DOMRect | null {
-    const lineContent = lineElement.querySelector('.line-content');
-    if (!lineContent?.querySelector('.hl-code')) return null;
+    const lineContent = lineElement.querySelector<HTMLElement>('.line-content');
+    if (!lineContent) return null;
+    if (!lineElement.classList.contains('fenced-code-line') && !lineContent.querySelector('.hl-code')) return null;
 
     const targetOffset = clamp(offsetInLine, 0, lineText.length);
     const walker = document.createTreeWalker(lineContent, NodeFilter.SHOW_TEXT);
     let consumedOffset = 0;
     let textNode = walker.nextNode() as Text | null;
+
+    if (lineText.length === 0) {
+      const lineRect = lineElement.getBoundingClientRect();
+      const lineContentRect = lineContent.getBoundingClientRect();
+      const lineContentStyle = getComputedStyle(lineContent);
+      const paddingLeft = Number.parseFloat(lineContentStyle.paddingLeft) || 0;
+      return new DOMRect(
+        lineContentRect.left + paddingLeft,
+        lineRect.top,
+        1,
+        measuredLineHeight
+      );
+    }
 
     while (textNode) {
       const textLength = textNode.data.length;
@@ -3302,6 +3639,40 @@
     return getRenderedCaretRectFromLineText(lineElement, lineText, offsetInLine);
   }
 
+  function getInlineCodeDelimiterCaretOffsetAtPoint(
+    lineElement: HTMLElement,
+    clientX: number,
+    clientY: number
+  ): number | null {
+    const lineContent = lineElement.querySelector<HTMLElement>('.line-content');
+    if (!lineContent) return null;
+
+    const hiddenSyntaxElements = lineElement.querySelectorAll<HTMLElement>('.hl-syntax-hidden');
+    for (const element of hiddenSyntaxElements) {
+      const rect = element.getBoundingClientRect();
+      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+        continue;
+      }
+
+      const codeElement = element.parentElement;
+      if (!codeElement?.classList.contains('hl-code')) continue;
+
+      const delimiters = Array.from(codeElement.children)
+        .filter((child): child is HTMLElement => child instanceof HTMLElement && child.classList.contains('hl-syntax-hidden'));
+      if (delimiters[0] !== element && delimiters[delimiters.length - 1] !== element) continue;
+
+      const prefixRange = document.createRange();
+      prefixRange.selectNodeContents(lineContent);
+      prefixRange.setEndBefore(element);
+      const delimiterStart = prefixRange.toString().length;
+      return delimiters[0] === element
+        ? delimiterStart + (element.textContent?.length ?? 0)
+        : delimiterStart;
+    }
+
+    return null;
+  }
+
   function getRenderedCaretOffsetAtPoint(clientX: number, clientY: number): number | null {
     const lineElement = getRenderedLineElementAtPoint(clientY);
     if (!lineElement) return null;
@@ -3311,6 +3682,9 @@
 
     const lineStart = lineStartOffsets[lineIndex] ?? 0;
     const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
+    const inlineCodeDelimiterOffset = getInlineCodeDelimiterCaretOffsetAtPoint(lineElement, clientX, clientY);
+    if (inlineCodeDelimiterOffset !== null) return lineStart + inlineCodeDelimiterOffset;
+
     const offsetInLine = getRenderedLineTextOffsetAtPoint(lineElement, lineText, clientX, clientY);
     return lineStart + offsetInLine;
   }
@@ -3938,8 +4312,8 @@
                 </select>
               </div>
 
-              {@render colorSettingRow('color-hl-code-bg-window-dark', '코드 백그라운드 색상', darkColors, 'codeBg')}
-              {@render colorSettingRow('color-hl-code-text-window-dark', '코드 글자 색상', darkColors, 'codeText')}
+              {@render colorSettingRow('color-hl-code-bg-window-dark', '코드 배경색', darkColors, 'codeBg')}
+              {@render colorSettingRow('color-hl-code-text-window-dark', '코드 기본 글자 색상', darkColors, 'codeText')}
               {@render colorSettingRow('color-hl-key-strong-window-dark', '키 색상 1단계 (진한색)', darkColors, 'keyStrong')}
               {@render colorSettingRow('color-hl-key-medium-window-dark', '키 색상 2단계 (중간색)', darkColors, 'keyMedium')}
               {@render colorSettingRow('color-hl-key-light-window-dark', '키 색상 3단계 (연한색)', darkColors, 'keyLight')}
@@ -3966,8 +4340,8 @@
                 </select>
               </div>
 
-              {@render colorSettingRow('color-hl-code-bg-window-light', '코드 백그라운드 색상', lightColors, 'codeBg')}
-              {@render colorSettingRow('color-hl-code-text-window-light', '코드 글자 색상', lightColors, 'codeText')}
+              {@render colorSettingRow('color-hl-code-bg-window-light', '코드 배경색', lightColors, 'codeBg')}
+              {@render colorSettingRow('color-hl-code-text-window-light', '코드 기본 글자 색상', lightColors, 'codeText')}
               {@render colorSettingRow('color-hl-key-strong-window-light', '키 색상 1단계 (진한색)', lightColors, 'keyStrong')}
               {@render colorSettingRow('color-hl-key-medium-window-light', '키 색상 2단계 (중간색)', lightColors, 'keyMedium')}
               {@render colorSettingRow('color-hl-key-light-window-light', '키 색상 3단계 (연한색)', lightColors, 'keyLight')}
@@ -4464,7 +4838,7 @@
                   {@const lineIdx = startLine + idx}
                   {@const line = parsedLines[idx]}
                   {#if line}
-                    <div class="backdrop-line" data-line-index={lineIdx} class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {getRenderLineHeight(lineIdx)}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
+                    <div class="backdrop-line" data-line-index={lineIdx} class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} class:fenced-code-line={line.fencedCodePosition !== undefined} class:fenced-code-start={line.fencedCodePosition === 'start'} class:fenced-code-middle={line.fencedCodePosition === 'middle'} class:fenced-code-end={line.fencedCodePosition === 'end'} style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {getRenderLineHeight(lineIdx)}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
                   {/if}
                 {/each}
               </div>
@@ -4576,7 +4950,7 @@
     --bg-overlay: rgba(0, 0, 0, 0.2);
 
     /* 렌더 모드 하이라이팅 색상 */
-    --color-hl-code-bg: rgba(0, 120, 212, 0.08);
+    --color-hl-code-bg: #e2e8f0;
     --color-hl-code-text: #0078d4;
     --color-hl-key-strong: #0369a1;
     --color-hl-key-medium: #0284c7;
@@ -4612,7 +4986,7 @@
 
     /* 다크모드 하이라이팅 색상 */
     --color-hl-code-bg: rgba(86, 156, 214, 0.15);
-    --color-hl-code-text: #4fc1ff;
+    --color-hl-code-text: #94a3b8;
     --color-hl-key-strong: #0284c7;
     --color-hl-key-medium: #38bdf8;
     --color-hl-key-light: #7dd3fc;
@@ -4629,6 +5003,8 @@
   :global(.hl-code) {
     background-color: var(--color-hl-code-bg);
     font-family: 'Cascadia Mono', 'Cascadia Code', Consolas, 'D2Coding', 'Nanum Gothic Coding', monospace;
+    font-size: inherit;
+    line-height: inherit;
     color: var(--color-hl-code-text);
     border-radius: 2px;
   }
@@ -4726,6 +5102,12 @@
   }
   :global(.hl-depth-4) {
     color: var(--color-hl-code-text);
+  }
+
+  :global(.hl-syntax-hidden) {
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    text-shadow: none;
   }
 
   .render-mode-toggle, .theme-mode-toggle {
@@ -5227,6 +5609,53 @@
     -webkit-font-smoothing: subpixel-antialiased;
     -moz-osx-font-smoothing: auto;
     font-weight: var(--font-render-weight, normal);
+  }
+
+  .backdrop-line.fenced-code-line {
+    isolation: isolate;
+  }
+
+  .backdrop-line.fenced-code-line .line-content {
+    position: relative;
+    z-index: 1;
+    display: block;
+    width: 100%;
+    padding-inline: 12px;
+    box-sizing: border-box;
+  }
+
+  .backdrop-line.fenced-code-line .guide-line {
+    transform: translateX(12px);
+  }
+
+  .backdrop-line.fenced-code-line::before {
+    content: '';
+    position: absolute;
+    z-index: 0;
+    top: 0;
+    right: 12px;
+    bottom: -1px;
+    left: 12px;
+    box-sizing: border-box;
+    background-color: var(--color-hl-code-bg);
+    pointer-events: none;
+  }
+
+  .backdrop-line.fenced-code-start::before {
+    top: calc(100% - 12px);
+    bottom: 0;
+    border-radius: 6px 6px 0 0;
+  }
+
+  .backdrop-line.fenced-code-end::before {
+    bottom: auto;
+    height: 12px;
+    border-radius: 0 0 6px 6px;
+  }
+
+  .backdrop-line.fenced-code-line :global(.hl-code) {
+    background-color: transparent;
+    border-radius: 0;
   }
 
   .backdrop-line.diagnostic-line {
