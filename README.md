@@ -1,38 +1,50 @@
 # text-pad
 
-`text-pad`는 Tauri 2와 SvelteKit으로 만든 Windows용 메모장형 텍스트 편집기다. 저장 기준은 항상 원문 텍스트이며, 렌더 모드는 원문을 바꾸지 않고 읽기 쉽게 표시하는 보조 화면이다.
+`text-pad` is a lightweight, Notepad-style text editor for Windows, built with Tauri 2 and SvelteKit. Files are always saved as plain source text, while Render Mode provides a more readable view without changing the underlying content.
 
-Tauri는 Rust 백엔드와 웹 화면을 데스크톱 앱으로 묶는 프레임워크이고, SvelteKit은 화면 구현에 쓰는 프론트엔드 프레임워크다.
+## Features
 
-## 주요 기능
+- Open, edit, save, and create copies of local text files with Save As.
+- Work with multiple files in a tabbed interface.
+- Switch between Source Mode and Render Mode.
+- Edit JSON, YAML, CSV, and TSV documents with format-aware rendering.
+- Use natural editing helpers for paired characters, lists, indentation, and code blocks.
+- Customize font size, tab width, render colors, and render fonts.
+- Save separate render color preferences for light, dark, and system themes.
+- Handle horizontal wheel input correctly on Windows WebView2.
 
-- 로컬 텍스트 파일 열기, 저장, 다른 이름으로 저장.
-- 원문 모드 편집과 커서 행/열 표시.
-- 렌더 모드 구문 강조, 들여쓰기 가이드, 줄 번호, 큰 파일용 가상화 표시.
-- 독립 설정창을 통한 글자 크기, 탭 크기, 렌더 색상, 렌더 글꼴 설정.
-- 라이트/다크/시스템 테마와 테마별 렌더 색상 저장.
-- Windows WebView2 가로 휠 입력 보정.
+## Installation
 
-## 실행
+Download the latest Windows installer from [GitHub Releases](https://github.com/olivecrow/text-pad/releases/latest):
+
+- `text-pad_<version>_x64-setup.exe`: standard Windows installer (recommended).
+- `text-pad_<version>_x64_en-US.msi`: MSI package for managed installations.
+
+## Development
+
+Install dependencies and start the Tauri development app:
 
 ```bash
+npm install
 npm run tauri dev
 ```
 
-## 빌드
+## Build
 
 ```bash
 npm run tauri build
 ```
 
-빌드 결과는 `src-tauri/target/release/` 아래에 생성된다. 현재 실행 파일 이름은 `text-pad.exe`다.
+Build output is generated under `src-tauri/target/release/`. The application executable is named `text-pad.exe`.
 
-## 개발 문서
+## Documentation
 
-- `AGENTS.md`: 작업 규칙.
-- `docs/project-guide.md`: 프로젝트 전체 구조와 현재 범위.
-- `docs/backend-guide.md`: Rust/Tauri 백엔드 계약.
-- `docs/frontend-guide.md`: SvelteKit 프론트엔드 계약.
-- 자연스러운 텍스트 편집 지침: [한국어](docs/features/natural-text-editing.md) · [English](docs/features/natural-text-editing.en.md). 다른 편집기에도 적용할 수 있는 렌더 편집 행동 계약이다.
-- `docs/features/`: 기능별 세부 기준.
-- `docs/implementation-checklist.md`: 남은 기능과 완료 기준.
+- `AGENTS.md`: repository contribution and implementation rules.
+- `docs/project-guide.md`: project structure and current feature scope.
+- `docs/backend-guide.md`: Rust and Tauri backend contracts.
+- `docs/frontend-guide.md`: SvelteKit frontend contracts.
+- Natural text editing guidelines: [English](docs/features/natural-text-editing.en.md) · [Korean](docs/features/natural-text-editing.md).
+- `docs/features/`: detailed feature contracts.
+- `docs/implementation-checklist.md`: remaining work and completion criteria.
+
+The internal development documentation is maintained primarily in Korean. The reusable natural text editing contract is available in both English and Korean.
