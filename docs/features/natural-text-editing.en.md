@@ -132,17 +132,24 @@ When tabs and spaces are mixed, calculate visual indentation using four-column t
 ### Create the next item with Enter
 
 - Apply automatic continuation only when the selection is collapsed and the caret is after the complete list marker.
+- When the current line is an empty item containing only leading indentation and a list marker, with the caret at the line end, plain `Enter` ends the list by removing the marker and its following whitespace instead of creating another item.
+- Ending the list does not insert another newline. A top-level item becomes an empty ordinary line; a nested item keeps only its existing leading indentation and places the caret after it.
+- The resulting empty ordinary line is an automatic-sequence boundary, so existing following markers keep their numbers. `Shift+Enter` still creates a marker-free continuation line instead.
 - Preserve the current indentation, delimiter, and whitespace following the marker.
 - Increment decimal numbers, Latin letters, and Roman numerals to their next value.
 - A single-letter marker can be ambiguous between a Roman numeral and a Latin letter. First use the sequence of the immediately preceding line with the same indentation and delimiter; when there is no preceding clue, treat `I` and `i` as the start of a Roman sequence and other single letters as alphabetic.
 - If the next marker cannot be calculated safely, do not guess or rewrite source text; fall back to the default Enter behavior.
 - If body text exists after the caret, split the line and move that text after the new marker.
+- When continuous following items use the same indentation depth and delimiter, increment each of their markers by one. Continue looking for the next item at the same depth across deeper child items and `Shift+Enter` continuation lines without changing those intervening lines.
+- End the automatic-sequence range at a blank line, an ordinary paragraph at the same or shallower depth, a different delimiter at the same depth, or an already broken sequence. Do not rewrite source text beyond that boundary.
 - Preserve the document's newline style: use Windows CRLF in a CRLF document and Unix LF in an LF document.
 
 Example:
 
 ```text
 1. before|after
+2. second
+3. third
 ```
 
 Result after Enter:
@@ -150,6 +157,8 @@ Result after Enter:
 ```text
 1. before
 2. |after
+3. second
+4. third
 ```
 
 The same rule applies to other delimiters.
@@ -165,7 +174,67 @@ Result after Enter:
 2) |after
 ```
 
-Continuing the list and moving trailing body text together form one Undo action.
+Ending a list from an empty item with Enter:
+
+```text
+1. before
+2. |
+3. after
+```
+
+Result after Enter:
+
+```text
+1. before
+|
+3. after
+```
+
+Continuing the list, moving trailing body text, and renumbering following items together form one Undo action. Removing the marker from an empty item is a separate single Undo action.
+
+### Break a line inside the same item with Shift+Enter
+
+- When the selection is collapsed and the caret is after the complete list marker, `Shift+Enter` creates a continuation line in the same item without a new marker.
+- Measure where the current item's body begins in the active render font and align the continuation line's leading whitespace to the nearest space boundary. Also account for the current tab width when leading indentation or marker spacing contains tabs.
+- Move body text after the caret to the new continuation line without changing the numbers of following items.
+- When plain `Enter` is pressed on a marker-free continuation line, search backward for an owning marker whose measured body start matches the current indentation, without crossing a blank line or a shallower ordinary paragraph.
+- When an owner is found, create its next item and renumber continuous following items under the same automatic-sequence boundary rules. Otherwise, fall back to general indentation preservation.
+- Pressing `Shift+Enter` again on a continuation line creates another marker-free continuation line with the same indentation.
+- Preserve the current CRLF or LF newline style.
+
+Example:
+
+```text
+1. before|after
+2. next
+```
+
+Result after Shift+Enter:
+
+```text
+1. before
+    |after
+2. next
+```
+
+After entering body text on the continuation line, press Enter in this state:
+
+```text
+1. before
+    continuation|
+2. next
+```
+
+Result after Enter:
+
+```text
+1. before
+    continuation
+2. |
+3. next
+```
+
+Creating a `Shift+Enter` continuation line and later pressing plain `Enter` on that line to create the next marker and renumber following items are each one Undo action.
 
 ## Enter and empty indented lines
 
@@ -175,7 +244,10 @@ Indented lines that are not list items should also retain their context when a n
 - With an active selection, replace the selection with the newline and indentation in one operation.
 - Pressing Backspace at the end of an otherwise empty, automatically indented line joins it to the previous line and moves the caret to the end of that line.
 - Joining an empty indented line takes precedence over deleting one indentation level.
-- Automatic list continuation takes precedence over general indentation preservation.
+- A list `Shift+Enter` continuation takes precedence over automatic list continuation.
+- Ending a list with plain `Enter` on an empty marker item takes precedence over automatic list continuation.
+- Plain `Enter` on a list continuation line is first evaluated as creating the owning marker's next item.
+- Direct list continuation, continuation-line item creation, and following-item renumbering take precedence over general indentation preservation.
 - Each assisted Enter operation and empty-line join is its own single Undo action.
 
 ## Context-aware substitutions
@@ -239,15 +311,18 @@ The current render-mode priority is:
 1. Block deletion selections that include only part of a fenced-code delimiter
 2. Disable fenced-block syntax on Backspace from the immediately following line
 3. Block single-character deletion across a newline adjacent to a fenced-code delimiter
-4. Continue a list marker on Enter
-5. Preserve indentation on Enter for a general line
-6. Join an otherwise empty automatically indented line on Backspace
-7. Indent or outdent lines with Tab or Shift+Tab
-8. Delete leading indentation with Backspace
-9. Delete an empty automatic pair with Backspace
-10. Apply a context-aware substitution confirmed by Space
-11. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
-12. Fall back to default `textarea` input when none of the conditions match
+4. Create a marker-free list continuation line with Shift+Enter
+5. End the list with Enter on an empty marker item
+6. Continue a list marker and renumber following items on Enter
+7. Create the next item and renumber following items from a list continuation line on Enter
+8. Preserve indentation on Enter for a general line
+9. Join an otherwise empty automatically indented line on Backspace
+10. Indent or outdent lines with Tab or Shift+Tab
+11. Delete leading indentation with Backspace
+12. Delete an empty automatic pair with Backspace
+13. Apply a context-aware substitution confirmed by Space
+14. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
+15. Fall back to default `textarea` input when none of the conditions match
 
 Do not chain one editing-assistance helper from inside another. The top-level input path selects exactly one feature by priority, and that feature records the final source text and selection only once.
 

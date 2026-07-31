@@ -115,6 +115,27 @@ export function getListMarkerForIndentLevel(indentLevel: number, spacing = ' '):
   return formatListMarker(getInitialLabel(style.kind), style.separator, spacing);
 }
 
+function getTextColumns(text: string, startColumn = 0, tabSize = 4): number {
+  const safeTabSize = Math.max(1, Math.floor(tabSize));
+  let columns = Math.max(0, Math.floor(startColumn));
+
+  for (const char of text) {
+    if (char === '\t') {
+      columns += safeTabSize - (columns % safeTabSize);
+    } else {
+      columns += 1;
+    }
+  }
+
+  return columns;
+}
+
+export function getListContinuationIndent(marker: ListMarker, tabSize = 4): string {
+  const indentColumns = getTextColumns(marker.indent, 0, tabSize);
+  const bodyStartColumns = getTextColumns(marker.marker, indentColumns, tabSize);
+  return `${marker.indent}${' '.repeat(bodyStartColumns - indentColumns)}`;
+}
+
 function incrementDecimalLabel(label: string): string {
   const digits = label.split('');
   let carry = 1;
@@ -211,4 +232,77 @@ export function getNextListMarkerLabel(label: string, previousLabel: string | nu
   }
 
   return incrementAlphabeticLabel(label);
+}
+
+export function renumberFollowingListMarkerSequence(
+  text: string,
+  firstLineStart: number,
+  currentMarker: ListMarker,
+  previousLabel: string | null,
+  insertedLabel: string,
+  tabSize = 4
+): string {
+  if (firstLineStart < 0 || firstLineStart >= text.length) return text;
+
+  const targetIndentColumns = getTextColumns(currentMarker.indent, 0, tabSize);
+  let originalPreviousPreviousLabel = previousLabel;
+  let originalPreviousLabel = currentMarker.label;
+  let renumberedPreviousPreviousLabel = currentMarker.label;
+  let renumberedPreviousLabel = insertedLabel;
+  let offset = firstLineStart;
+  let transformed = '';
+  let changed = false;
+
+  while (offset < text.length) {
+    const newlineIndex = text.indexOf('\n', offset);
+    const lineEnd = newlineIndex === -1
+      ? text.length
+      : text[newlineIndex - 1] === '\r'
+        ? newlineIndex - 1
+        : newlineIndex;
+    const nextLineStart = newlineIndex === -1 ? text.length : newlineIndex + 1;
+    const lineText = text.slice(offset, lineEnd);
+    if (/^[ \t]*$/.test(lineText)) break;
+
+    const marker = getListMarkerAtStart(lineText);
+    const indent = marker?.indent ?? lineText.match(/^[ \t]*/)?.[0] ?? '';
+    const indentColumns = getTextColumns(indent, 0, tabSize);
+    if (indentColumns < targetIndentColumns) break;
+
+    let nextLineText = lineText;
+    if (indentColumns === targetIndentColumns) {
+      if (!marker || marker.separator !== currentMarker.separator) break;
+
+      const expectedOriginalLabel = getNextListMarkerLabel(
+        originalPreviousLabel,
+        originalPreviousPreviousLabel
+      );
+      if (marker.label !== expectedOriginalLabel) break;
+
+      const nextRenumberedLabel = getNextListMarkerLabel(
+        renumberedPreviousLabel,
+        renumberedPreviousPreviousLabel
+      );
+      if (!nextRenumberedLabel) break;
+
+      const bodyStart = marker.indent.length + marker.marker.length;
+      nextLineText = `${marker.indent}${formatListMarker(
+        nextRenumberedLabel,
+        marker.separator,
+        marker.spacing
+      )}${lineText.slice(bodyStart)}`;
+      changed ||= nextLineText !== lineText;
+
+      originalPreviousPreviousLabel = originalPreviousLabel;
+      originalPreviousLabel = marker.label;
+      renumberedPreviousPreviousLabel = renumberedPreviousLabel;
+      renumberedPreviousLabel = nextRenumberedLabel;
+    }
+
+    transformed += nextLineText + text.slice(lineEnd, nextLineStart);
+    offset = nextLineStart;
+  }
+
+  if (!changed) return text;
+  return `${text.slice(0, firstLineStart)}${transformed}${text.slice(offset)}`;
 }

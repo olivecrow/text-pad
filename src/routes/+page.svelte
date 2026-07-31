@@ -24,9 +24,11 @@
   import type { Token } from "$lib/render-tokenizer";
   import {
     formatListMarker,
+    getListContinuationIndent,
     getListMarkerAtStart,
     getListMarkerForIndentLevel,
     getNextListMarkerLabel,
+    renumberFollowingListMarkerSequence,
     type ListMarker
   } from "$lib/list-markers";
   import { EditorUndoHistory, type EditorSelection, type EditorSnapshot } from "$lib/editor-undo";
@@ -2808,6 +2810,13 @@
     return text[nextLineBreak - 1] === '\r' ? nextLineBreak - 1 : nextLineBreak;
   }
 
+  function getNextLineStartOffset(text: string, lineEnd: number): number | null {
+    if (lineEnd >= text.length) return null;
+    if (text.startsWith('\r\n', lineEnd)) return lineEnd + 2;
+    if (text[lineEnd] === '\n' || text[lineEnd] === '\r') return lineEnd + 1;
+    return null;
+  }
+
   function getPreferredNewline(text: string, offset: number): string {
     const previousLineBreak = offset <= 0 ? -1 : text.lastIndexOf('\n', offset - 1);
     if (previousLineBreak > 0 && text[previousLineBreak - 1] === '\r') return '\r\n';
@@ -2928,9 +2937,153 @@
     return previousMarker;
   }
 
+  function getMeasuredListContinuationIndent(marker: ListMarker): string {
+    const fallbackIndent = getListContinuationIndent(marker, tabSize);
+    const indentWidth = measureEditorTextWidth(marker.indent);
+    const bodyStartWidth = measureEditorTextWidth(`${marker.indent}${marker.marker}`);
+    const spaceWidth = measureEditorPlainTextWidth(' ');
+    if (spaceWidth <= 0 || bodyStartWidth <= indentWidth) return fallbackIndent;
+
+    const additionalSpaceCount = Math.max(
+      1,
+      Math.round((bodyStartWidth - indentWidth) / spaceWidth)
+    );
+    return `${marker.indent}${' '.repeat(additionalSpaceCount)}`;
+  }
+
+  function getListContinuationOwner(
+    text: string,
+    lineStart: number,
+    lineText: string
+  ): { marker: ListMarker; lineStart: number } | null {
+    if (getListMarkerAtStart(lineText)) return null;
+
+    const continuationIndent = getLeadingWhitespace(lineText);
+    if (continuationIndent.length === 0) return null;
+
+    const continuationColumns = getEditorIndentColumns(continuationIndent);
+    let previousLineBounds = getPreviousLineBounds(text, lineStart);
+    while (previousLineBounds) {
+      const previousLine = text.slice(previousLineBounds.start, previousLineBounds.end);
+      if (/^[ \t]*$/.test(previousLine)) return null;
+
+      const previousMarker = getListMarkerAtStart(previousLine);
+      if (previousMarker) {
+        if (getMeasuredListContinuationIndent(previousMarker) === continuationIndent) {
+          return { marker: previousMarker, lineStart: previousLineBounds.start };
+        }
+        if (getEditorIndentColumns(previousMarker.indent) < continuationColumns) return null;
+      } else if (getEditorIndentColumns(getLeadingWhitespace(previousLine)) < continuationColumns) {
+        return null;
+      }
+
+      previousLineBounds = getPreviousLineBounds(text, previousLineBounds.start);
+    }
+
+    return null;
+  }
+
+  function commitRenderNextListItem(
+    event: KeyboardEvent,
+    start: number,
+    end: number,
+    currentLineEnd: number,
+    ownerLineStart: number,
+    currentMarker: ListMarker
+  ): boolean {
+    const previousMarker = getPreviousListMarker(fileContent, ownerLineStart, currentMarker);
+    const nextLabel = getNextListMarkerLabel(currentMarker.label, previousMarker?.label ?? null);
+    if (!nextLabel) return false;
+
+    const nextMarker = formatListMarker(nextLabel, currentMarker.separator, currentMarker.spacing);
+    const insertText = `${getPreferredNewline(fileContent, start)}${currentMarker.indent}${nextMarker}`;
+    const followingLineStart = getNextLineStartOffset(fileContent, currentLineEnd);
+    const renumberedContent = followingLineStart === null
+      ? fileContent
+      : renumberFollowingListMarkerSequence(
+          fileContent,
+          followingLineStart,
+          currentMarker,
+          previousMarker?.label ?? null,
+          nextLabel,
+          editorIndentUnit.length
+        );
+
+    event.preventDefault();
+    commitRenderEditorEdit(`${renumberedContent.slice(0, start)}${insertText}${renumberedContent.slice(end)}`, {
+      start: start + insertText.length,
+      end: start + insertText.length
+    });
+    return true;
+  }
+
+  function handleRenderExitEmptyListEnter(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing) return false;
+    if (event.key !== 'Enter') return false;
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineStart = getLineStartOffset(fileContent, start);
+    const lineEnd = getLineEndOffset(fileContent, start);
+    const currentMarker = getListMarkerAtStart(fileContent.slice(lineStart, lineEnd));
+    if (!currentMarker) return false;
+
+    const markerStart = lineStart + currentMarker.indent.length;
+    const markerEnd = markerStart + currentMarker.marker.length;
+    if (start !== lineEnd || markerEnd !== lineEnd) return false;
+
+    event.preventDefault();
+    commitRenderEditorEdit(`${fileContent.slice(0, markerStart)}${fileContent.slice(markerEnd)}`, {
+      start: markerStart,
+      end: markerStart
+    });
+    return true;
+  }
+
   function handleRenderContinueListEnter(event: KeyboardEvent): boolean {
     if (!textareaEl || event.isComposing) return false;
     if (event.key !== 'Enter') return false;
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineStart = getLineStartOffset(fileContent, start);
+    const lineEnd = getLineEndOffset(fileContent, start);
+    const currentMarker = getListMarkerAtStart(fileContent.slice(lineStart, lineEnd));
+    if (!currentMarker) return false;
+
+    const markerEnd = lineStart + currentMarker.indent.length + currentMarker.marker.length;
+    if (start < markerEnd) return false;
+
+    return commitRenderNextListItem(event, start, end, lineEnd, lineStart, currentMarker);
+  }
+
+  function handleRenderListContinuationEnter(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing) return false;
+    if (event.key !== 'Enter') return false;
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineStart = getLineStartOffset(fileContent, start);
+    const lineEnd = getLineEndOffset(fileContent, start);
+    const currentLine = fileContent.slice(lineStart, lineEnd);
+    const owner = getListContinuationOwner(fileContent, lineStart, currentLine);
+    if (!owner) return false;
+
+    const continuationIndent = getLeadingWhitespace(currentLine);
+    if (start < lineStart + continuationIndent.length) return false;
+
+    return commitRenderNextListItem(event, start, end, lineEnd, owner.lineStart, owner.marker);
+  }
+
+  function handleRenderListSoftBreakEnter(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing) return false;
+    if (event.key !== 'Enter' || !event.shiftKey) return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
     const { start, end } = getTextareaSelectionInContent();
@@ -2944,12 +3097,8 @@
     const markerEnd = lineStart + currentMarker.indent.length + currentMarker.marker.length;
     if (start < markerEnd) return false;
 
-    const previousMarker = getPreviousListMarker(fileContent, lineStart, currentMarker);
-    const nextLabel = getNextListMarkerLabel(currentMarker.label, previousMarker?.label ?? null);
-    if (!nextLabel) return false;
-
-    const nextMarker = formatListMarker(nextLabel, currentMarker.separator, currentMarker.spacing);
-    const insertText = `${getPreferredNewline(fileContent, start)}${currentMarker.indent}${nextMarker}`;
+    const continuationIndent = getMeasuredListContinuationIndent(currentMarker);
+    const insertText = `${getPreferredNewline(fileContent, start)}${continuationIndent}`;
 
     event.preventDefault();
     commitRenderEditorEdit(`${fileContent.slice(0, start)}${insertText}${fileContent.slice(end)}`, {
@@ -3130,7 +3279,10 @@
   }
 
   function handleRenderEditorKeyDown(event: KeyboardEvent) {
+    if (handleRenderListSoftBreakEnter(event)) return;
+    if (handleRenderExitEmptyListEnter(event)) return;
     if (handleRenderContinueListEnter(event)) return;
+    if (handleRenderListContinuationEnter(event)) return;
     if (handleRenderPreserveIndentEnter(event)) return;
     if (handleRenderEmptyIndentedLineBackspace(event)) return;
     if (handleRenderTabIndent(event)) return;
