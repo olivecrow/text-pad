@@ -5,14 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "npm run validate:formats && vite build",
     "preview": "vite preview",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check": "npm run validate:formats && npm run test:formats && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "validate:i18n": "node scripts/validate-i18n.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "licenses": "node scripts/generate-runtime-notices.mjs",
     "tauri:build:signed": "pwsh -NoProfile -File scripts/build-signed-update.ps1",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "validate:formats": "node scripts/validate-supported-formats.mjs",
+    "test:formats": "node scripts/validate-format-samples.mjs"
   },
   "license": "MIT",
   "dependencies": {

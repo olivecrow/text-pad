@@ -7,6 +7,10 @@ export interface Token {
     | 'code'
     | 'number'
     | 'list-marker'
+    | 'heading-marker'
+    | 'quote-marker'
+    | 'strong'
+    | 'emphasis'
     | 'comment'
     | 'color'
     | 'paren'
@@ -16,6 +20,11 @@ export interface Token {
     | 'boolean'
     | 'literal'
     | 'punctuation'
+    | 'operator'
+    | 'section'
+    | 'timestamp'
+    | 'keyword'
+    | 'link'
     | 'invalid';
   text?: string;
   children?: Token[];

@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     env, fs,
@@ -13,8 +13,10 @@ use tempfile::NamedTempFile;
 
 const MAX_FILE_SIZE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FILE_LINE_COUNT: usize = 250_000;
-const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &["txt", "json", "csv", "tsv", "yaml", "yml"];
+const SUPPORTED_TEXT_FORMAT_MANIFEST: &str = include_str!("../../supported-text-formats.json");
 const MAX_DIALOG_FILTER_NAME_CHARS: usize = 64;
+const MAX_DIALOG_FILTERS: usize = 32;
+const MAX_DIALOG_EXTENSIONS: usize = 32;
 
 fn dialog_filter_name(provided: Option<&str>, fallback: &str) -> String {
     let provided = provided.map(str::trim).unwrap_or_default();
@@ -26,6 +28,99 @@ fn dialog_filter_name(provided: Option<&str>, fallback: &str) -> String {
     } else {
         provided.to_string()
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct SupportedTextFormatManifest {
+    formats: Vec<SupportedTextFormatEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SupportedTextFormatEntry {
+    extensions: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DialogFilter {
+    name: String,
+    extensions: Vec<String>,
+}
+
+fn is_valid_text_extension(extension: &str) -> bool {
+    !extension.is_empty()
+        && extension.len() <= 16
+        && extension
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+}
+
+fn supported_text_extensions() -> Result<Vec<String>, FileCommandError> {
+    let manifest: SupportedTextFormatManifest =
+        serde_json::from_str(SUPPORTED_TEXT_FORMAT_MANIFEST).map_err(|error| {
+            FileCommandError::new(
+                "format_manifest_error",
+                format!("지원 파일 형식 목록을 읽을 수 없습니다: {error}"),
+            )
+        })?;
+    let mut extensions = Vec::new();
+    let mut seen = HashSet::new();
+
+    for entry in manifest.formats {
+        for extension in entry.extensions {
+            let normalized = extension.trim().to_ascii_lowercase();
+            if !is_valid_text_extension(&normalized) || !seen.insert(normalized.clone()) {
+                return Err(FileCommandError::new(
+                    "format_manifest_error",
+                    format!("지원 파일 확장자 목록이 올바르지 않습니다: {extension}"),
+                ));
+            }
+            extensions.push(normalized);
+        }
+    }
+
+    if extensions.is_empty() {
+        return Err(FileCommandError::new(
+            "format_manifest_error",
+            "지원 파일 확장자 목록이 비어 있습니다",
+        ));
+    }
+
+    Ok(extensions)
+}
+
+fn sanitize_dialog_filters(filters: Vec<DialogFilter>, supported: &[String]) -> Vec<DialogFilter> {
+    let supported_set: HashSet<&str> = supported.iter().map(String::as_str).collect();
+    let mut sanitized = Vec::new();
+
+    for filter in filters.into_iter().take(MAX_DIALOG_FILTERS) {
+        let mut seen = HashSet::new();
+        let extensions = filter
+            .extensions
+            .into_iter()
+            .take(MAX_DIALOG_EXTENSIONS)
+            .map(|extension| extension.trim().to_ascii_lowercase())
+            .filter(|extension| {
+                supported_set.contains(extension.as_str()) && seen.insert(extension.clone())
+            })
+            .collect::<Vec<_>>();
+        if extensions.is_empty() {
+            continue;
+        }
+        sanitized.push(DialogFilter {
+            name: dialog_filter_name(Some(&filter.name), "Text files"),
+            extensions,
+        });
+    }
+
+    if sanitized.is_empty() {
+        sanitized.push(DialogFilter {
+            name: "Text files".to_string(),
+            extensions: supported.to_vec(),
+        });
+    }
+
+    sanitized
 }
 
 #[derive(Debug, Serialize)]
@@ -292,10 +387,12 @@ pub async fn open_file_dialog(
     approved_paths: State<'_, ApprovedFilePaths>,
 ) -> Result<Option<OpenedFile>, FileCommandError> {
     let filter_name = dialog_filter_name(Some(&filter_name), "Text files");
+    let extensions = supported_text_extensions()?;
+    let extension_refs = extensions.iter().map(String::as_str).collect::<Vec<_>>();
     let selected = app
         .dialog()
         .file()
-        .add_filter(filter_name, SUPPORTED_TEXT_EXTENSIONS)
+        .add_filter(filter_name, &extension_refs)
         .blocking_pick_file();
     let Some(selected) = selected else {
         return Ok(None);
@@ -340,29 +437,23 @@ pub async fn save_file_dialog(
     app: AppHandle,
     default_name: String,
     content: String,
-    filter_names: Vec<String>,
+    filters: Vec<DialogFilter>,
     approved_paths: State<'_, ApprovedFilePaths>,
 ) -> Result<Option<String>, FileCommandError> {
     validate_content_limits(content.as_bytes(), MAX_FILE_SIZE_BYTES, MAX_FILE_LINE_COUNT)?;
 
-    let text_filter_name =
-        dialog_filter_name(filter_names.first().map(String::as_str), "Text files");
-    let json_filter_name =
-        dialog_filter_name(filter_names.get(1).map(String::as_str), "JSON files");
-    let csv_filter_name = dialog_filter_name(filter_names.get(2).map(String::as_str), "CSV files");
-    let tsv_filter_name = dialog_filter_name(filter_names.get(3).map(String::as_str), "TSV files");
-    let yaml_filter_name =
-        dialog_filter_name(filter_names.get(4).map(String::as_str), "YAML files");
-    let selected = app
-        .dialog()
-        .file()
-        .set_file_name(default_name)
-        .add_filter(text_filter_name, &["txt"])
-        .add_filter(json_filter_name, &["json"])
-        .add_filter(csv_filter_name, &["csv"])
-        .add_filter(tsv_filter_name, &["tsv"])
-        .add_filter(yaml_filter_name, &["yaml", "yml"])
-        .blocking_save_file();
+    let supported = supported_text_extensions()?;
+    let filters = sanitize_dialog_filters(filters, &supported);
+    let mut dialog = app.dialog().file().set_file_name(default_name);
+    for filter in filters {
+        let extension_refs = filter
+            .extensions
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        dialog = dialog.add_filter(filter.name, &extension_refs);
+    }
+    let selected = dialog.blocking_save_file();
     let Some(selected) = selected else {
         return Ok(None);
     };
@@ -516,6 +607,40 @@ mod tests {
             Ok(_) => panic!("줄 수 제한을 넘은 파일은 열면 안 됩니다"),
             Err(err) => assert_eq!(err.code, "too_many_lines"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn supported_format_manifest_drives_dialog_extensions() -> io::Result<()> {
+        let extensions =
+            supported_text_extensions().map_err(|error| io::Error::other(error.message))?;
+
+        for expected in [
+            "txt", "text", "md", "markdown", "jsonl", "env", "srt", "vtt", "lrc",
+        ] {
+            assert!(extensions.iter().any(|extension| extension == expected));
+        }
+        assert_eq!(
+            extensions.len(),
+            extensions.iter().collect::<HashSet<_>>().len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dialog_filters_drop_unknown_extensions() -> io::Result<()> {
+        let supported =
+            supported_text_extensions().map_err(|error| io::Error::other(error.message))?;
+        let filters = sanitize_dialog_filters(
+            vec![DialogFilter {
+                name: "JSON Lines".to_string(),
+                extensions: vec!["jsonl".to_string(), "exe".to_string(), "jsonl".to_string()],
+            }],
+            &supported,
+        );
+
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].extensions, vec!["jsonl"]);
         Ok(())
     }
 

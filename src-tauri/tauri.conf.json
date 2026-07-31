@@ -34,11 +34,25 @@
       {
         "ext": [
           "txt",
+          "text",
+          "md",
+          "markdown",
           "json",
+          "jsonl",
+          "ndjson",
           "csv",
           "tsv",
           "yaml",
-          "yml"
+          "yml",
+          "ini",
+          "cfg",
+          "conf",
+          "properties",
+          "env",
+          "log",
+          "srt",
+          "vtt",
+          "lrc"
         ],
         "name": "text-pad document",
         "description": "text-pad supported text file",

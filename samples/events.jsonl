@@ -1,0 +1,3 @@
+{"time":"2026-07-31T09:00:00Z","level":"info","message":"editor started","ready":true}
+{"time":"2026-07-31T09:00:02Z","level":"warning","message":"large file detected","lines":12000}
+{"time":"2026-07-31T09:00:05Z","level":"error","message":"sample error","retry":false}

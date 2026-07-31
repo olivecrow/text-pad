@@ -7,6 +7,101 @@ export interface DelimitedTableDocument {
   hasTrailingLineEnding: boolean;
 }
 
+export interface DelimitedTableSyntaxError {
+  line: number;
+  column: number;
+  offset: number;
+}
+
+export function getDelimitedTableSyntaxError(
+  content: string,
+  separator: DelimitedTableSeparator
+): DelimitedTableSyntaxError | null {
+  let line = 1;
+  let column = 1;
+  let isQuoted = false;
+  let isAfterClosingQuote = false;
+  let isAtCellStart = true;
+  let openingQuote: DelimitedTableSyntaxError | null = null;
+
+  const advanceLineEnding = (index: number): number => {
+    const length = content[index] === '\r' && content[index + 1] === '\n' ? 2 : 1;
+    line += 1;
+    column = 1;
+    return length;
+  };
+
+  for (let index = 0; index < content.length;) {
+    const char = content[index];
+    const lineEnding = getLineEndingAt(content, index);
+
+    if (isQuoted) {
+      if (char === '"') {
+        if (content[index + 1] === '"') {
+          index += 2;
+          column += 2;
+          continue;
+        }
+        isQuoted = false;
+        isAfterClosingQuote = true;
+        index += 1;
+        column += 1;
+        continue;
+      }
+      if (lineEnding) {
+        index += advanceLineEnding(index);
+        continue;
+      }
+      index += 1;
+      column += 1;
+      continue;
+    }
+
+    if (isAfterClosingQuote) {
+      if (char === separator) {
+        isAfterClosingQuote = false;
+        isAtCellStart = true;
+        index += 1;
+        column += 1;
+        continue;
+      }
+      if (lineEnding) {
+        isAfterClosingQuote = false;
+        isAtCellStart = true;
+        index += advanceLineEnding(index);
+        continue;
+      }
+      return { line, column, offset: index };
+    }
+
+    if (char === '"') {
+      if (!isAtCellStart) return { line, column, offset: index };
+      isQuoted = true;
+      isAtCellStart = false;
+      openingQuote = { line, column, offset: index };
+      index += 1;
+      column += 1;
+      continue;
+    }
+    if (char === separator) {
+      isAtCellStart = true;
+      index += 1;
+      column += 1;
+      continue;
+    }
+    if (lineEnding) {
+      isAtCellStart = true;
+      index += advanceLineEnding(index);
+      continue;
+    }
+    isAtCellStart = false;
+    index += 1;
+    column += 1;
+  }
+
+  return isQuoted ? openingQuote : null;
+}
+
 function getLineEndingAt(content: string, index: number): DelimitedTableDocument['lineEnding'] | null {
   if (content[index] === '\r') {
     return content[index + 1] === '\n' ? '\r\n' : '\r';

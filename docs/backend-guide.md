@@ -6,7 +6,8 @@
 
 - `src-tauri/src/main.rs`: 애플리케이션 실행 진입점.
 - `src-tauri/src/lib.rs`: Tauri 빌더, 명령 등록, 플러그인 설정.
-- `src-tauri/src/file_commands.rs`: 파일 읽기/쓰기 명령과 파일 오류 응답.
+- `supported-text-formats.json`: 프론트엔드와 Rust가 함께 읽는 제품 지원 형식·확장자·샘플 목록.
+- `src-tauri/src/file_commands.rs`: 파일 읽기/쓰기 명령, 중앙 확장자 목록 기반 대화상자 필터와 파일 오류 응답.
 - `src-tauri/src/windows_wheel.rs`: Windows 가로 휠 처리.
 - `src-tauri/capabilities/default.json`, `src-tauri/capabilities/settings.json`: 창별 프론트엔드 명령 권한.
 - `src-tauri/tauri.conf.json`: 창 설정과 빌드 설정.
@@ -25,12 +26,14 @@
 - `write_file_content(path: String, content: String) -> Result<(), FileCommandError>`
   - 앞선 열기나 저장 대화상자에서 승인한 정규화 경로만 저장한다.
   - 같은 폴더의 임시 파일에 문자열을 먼저 쓴 뒤 대상 파일로 교체한다.
-- `save_file_dialog(default_name: String, content: String) -> Result<Option<String>, FileCommandError>`
+- `save_file_dialog(default_name: String, content: String, filters: Vec<DialogFilter>) -> Result<Option<String>, FileCommandError>`
   - Rust가 저장 경로를 직접 선택받아 저장하고, 성공한 경로만 승인 목록에 추가한다.
+  - 필터 이름의 길이와 제어 문자를 제한하고, 확장자는 `supported-text-formats.json`에 등록된 값만 허용한다.
 
 새 파일 입출력 기능을 추가할 때는 사용자가 대화상자로 선택했거나 운영체제가 파일 열기 의도로 넘긴 경로만 다루고, 실패를 `Result`로 반환한다.
 `FileCommandError`는 `code`와 `message`를 가진다. `code`는 오류 종류를 번역 테이블에 매핑하기 위한 짧은 코드이고, `message`는 운영체제나 파일 시스템에서 받은 상세 원문이다. 프론트엔드는 알려진 코드를 현재 표시 언어로 번역하고, 알 수 없는 오류에만 상세 원문을 fallback으로 사용한다.
 파일 원문은 UTF-8 기준 최대 16 MiB, 250,000줄까지만 열고 저장한다. 메타데이터 확인 뒤에도 제한보다 한 바이트만 더 읽어 파일 증가 경쟁에서 무제한 할당이 일어나지 않게 한다.
+열기 대화상자의 확장자, 저장 필터에 허용할 확장자, 설치 연결은 중앙 목록을 기준으로 한다. 형식을 추가할 때 Rust 상수를 따로 수정하지 않으며, 중복·누락은 `npm run validate:formats`에서 실패해야 한다.
 저장은 원본 파일 손상 가능성을 줄이기 위해 직접 덮어쓰지 않고 임시 파일 기록, 디스크 동기화, 파일 교체 순서로 처리한다. Windows에서 기존 파일을 교체할 때는 `ReplaceFileW`를 사용해 원본의 DACL, 암호화 상태, 대체 데이터 스트림 같은 보안 메타데이터를 보존한다.
 
 ## 창과 권한
@@ -64,7 +67,7 @@ Tauri 업데이트 서명 개인키는 저장소 밖에 두고 GitHub Actions �
 
 ## Windows 설치 파일
 
-NSIS는 Windows용 실행 설치 파일을 만드는 스크립트 기반 설치 도구다.
+NSIS는 Windows용 실행 설치 파일을 만드는 스크립트 기반 설치 도구다. `tauri.conf.json`의 파일 연결은 중앙 지원 목록의 모든 확장자를 `Editor` 역할로 등록해 설치 뒤 Windows의 `연결 프로그램`과 권장 앱 후보에 `text-pad`가 나타나게 한다.
 `src-tauri/installer.nsi`는 Tauri 2.11.2 기본 템플릿을 바탕으로 하며, 같은 버전이 이미 설치된 상태에서 사용자가 삭제를 선택하면 삭제 완료 후 설치 화면으로 돌아가지 않고 설치 프로그램을 종료한다.
 업그레이드나 다운그레이드에서 "삭제 후 설치"를 선택한 경우에는 기존처럼 삭제 뒤 설치를 계속 진행한다.
 
@@ -90,4 +93,5 @@ Windows WebView2는 일부 마우스 가로 휠 입력을 브라우저 `wheel` �
 ## 검증
 
 - 백엔드 또는 Tauri 설정 변경 후: `.agents/skills/text-pad-signed-build/SKILL.md`에 따라 `npm run tauri:build:signed`
+- 지원 형식 변경 후: `npm run validate:formats`
 - 프론트엔드와 함께 바뀐 경우: `npm run check` 후 `npm run tauri:build:signed`
