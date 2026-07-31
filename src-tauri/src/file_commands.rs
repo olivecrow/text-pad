@@ -380,6 +380,20 @@ fn open_file(
     })
 }
 
+fn open_existing_files<I>(
+    file_paths: I,
+    approved_paths: &ApprovedFilePaths,
+) -> Result<Vec<OpenedFile>, FileCommandError>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    file_paths
+        .into_iter()
+        .filter(|file_path| file_path.is_file())
+        .map(|file_path| open_file(&file_path, approved_paths))
+        .collect()
+}
+
 #[tauri::command]
 pub async fn open_file_dialog(
     app: AppHandle,
@@ -411,14 +425,15 @@ pub async fn open_file_dialog(
 pub fn get_startup_files(
     approved_paths: State<'_, ApprovedFilePaths>,
 ) -> Result<Vec<OpenedFile>, FileCommandError> {
-    env::args_os()
-        .skip(1)
-        .filter_map(|arg| {
-            let file_path = PathBuf::from(arg);
-            file_path.is_file().then_some(file_path)
-        })
-        .map(|file_path| open_file(&file_path, &approved_paths))
-        .collect()
+    open_existing_files(env::args_os().skip(1).map(PathBuf::from), &approved_paths)
+}
+
+#[tauri::command]
+pub fn open_file_paths(
+    paths: Vec<String>,
+    approved_paths: State<'_, ApprovedFilePaths>,
+) -> Result<Vec<OpenedFile>, FileCommandError> {
+    open_existing_files(paths.into_iter().map(PathBuf::from), &approved_paths)
 }
 
 #[tauri::command]
@@ -663,6 +678,29 @@ mod tests {
             Ok(_) => panic!("선택하지 않은 파일 경로를 승인하면 안 됩니다"),
             Err(err) => assert_eq!(err.code, "path_not_approved"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn opens_dropped_files_in_order_and_ignores_directories() -> io::Result<()> {
+        let dir = create_test_dir("dropped")?;
+        let first = dir.path.join("first.env");
+        let second = dir.path.join("second.txt");
+        fs::write(&first, "FIRST=1")?;
+        fs::write(&second, "두 번째")?;
+        let approved_paths = ApprovedFilePaths::default();
+
+        let opened = open_existing_files(
+            vec![first.clone(), dir.path.clone(), second.clone()],
+            &approved_paths,
+        )
+        .map_err(|err| io::Error::other(err.message))?;
+
+        assert_eq!(opened.len(), 2);
+        assert_eq!(opened[0].content, "FIRST=1");
+        assert_eq!(opened[1].content, "두 번째");
+        assert!(approved_paths.resolve_approved(&first).is_ok());
+        assert!(approved_paths.resolve_approved(&second).is_ok());
         Ok(())
     }
 }

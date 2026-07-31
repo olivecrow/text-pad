@@ -3,6 +3,7 @@ fn main() {
     let app_manifest = tauri_build::AppManifest::new().commands(&[
         "get_startup_files",
         "open_file_dialog",
+        "open_file_paths",
         "save_file_dialog",
         "write_file_content",
     ]);

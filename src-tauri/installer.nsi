@@ -668,6 +668,22 @@ Section Install
     {{/each}}
   {{/each}}
 
+  ; Register as a Windows Default Apps and Open With candidate.
+  WriteRegStr SHCTX "Software\RegisteredApplications" "${PRODUCTNAME}" "${MANUPRODUCTKEY}\Capabilities"
+  WriteRegStr SHCTX "${MANUPRODUCTKEY}\Capabilities" "ApplicationName" "${PRODUCTNAME}"
+  WriteRegStr SHCTX "${MANUPRODUCTKEY}\Capabilities" "ApplicationDescription" "${PRODUCTNAME} supported text file editor"
+  WriteRegStr SHCTX "${MANUPRODUCTKEY}\Capabilities" "ApplicationIcon" "$INSTDIR\${MAINBINARYNAME}.exe,0"
+  WriteRegStr SHCTX "Software\Classes\Applications\${MAINBINARYNAME}.exe" "FriendlyAppName" "${PRODUCTNAME}"
+  WriteRegStr SHCTX "Software\Classes\Applications\${MAINBINARYNAME}.exe\shell\open\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""
+  {{#each file_associations as |association| ~}}
+    {{#each association.ext as |ext| ~}}
+      WriteRegStr SHCTX "${MANUPRODUCTKEY}\Capabilities\FileAssociations" ".{{ext}}" "{{or association.name ext}}"
+      WriteRegStr SHCTX "Software\Classes\Applications\${MAINBINARYNAME}.exe\SupportedTypes" ".{{ext}}" ""
+      WriteRegStr SHCTX "Software\Classes\.{{ext}}\OpenWithProgids" "{{or association.name ext}}" ""
+    {{/each}}
+  {{/each}}
+  !insertmacro UPDATEFILEASSOC
+
   ; Register deep links
   {{#each deep_link_protocols as |protocol| ~}}
     WriteRegStr SHCTX "Software\Classes\\{{protocol}}" "URL Protocol" ""
@@ -800,8 +816,22 @@ Section Uninstall
   {{#each file_associations as |association| ~}}
     {{#each association.ext as |ext| ~}}
       !insertmacro APP_UNASSOCIATE "{{ext}}" "{{or association.name ext}}"
+      DeleteRegValue SHCTX "Software\Classes\.{{ext}}\OpenWithProgids" "{{or association.name ext}}"
+      DeleteRegKey /ifempty SHCTX "Software\Classes\.{{ext}}\OpenWithProgids"
     {{/each}}
   {{/each}}
+
+  ; Remove Default Apps and Open With registration owned by this installation.
+  ReadRegStr $R7 SHCTX "Software\RegisteredApplications" "${PRODUCTNAME}"
+  ${If} $R7 == "${MANUPRODUCTKEY}\Capabilities"
+    DeleteRegValue SHCTX "Software\RegisteredApplications" "${PRODUCTNAME}"
+  ${EndIf}
+  DeleteRegKey SHCTX "${MANUPRODUCTKEY}\Capabilities"
+  ReadRegStr $R7 SHCTX "Software\Classes\Applications\${MAINBINARYNAME}.exe\shell\open\command" ""
+  ${If} $R7 == "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""
+    DeleteRegKey SHCTX "Software\Classes\Applications\${MAINBINARYNAME}.exe"
+  ${EndIf}
+  !insertmacro UPDATEFILEASSOC
 
   ; Delete deep links
   {{#each deep_link_protocols as |protocol| ~}}

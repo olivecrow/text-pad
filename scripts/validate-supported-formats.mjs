@@ -57,6 +57,61 @@ if (JSON.stringify(associatedExtensions) !== JSON.stringify(extensions)) {
   throw new Error('Tauri file associations must exactly match supported-text-formats.json order and extensions.');
 }
 
+const windowsBundle = tauriConfig.bundle?.windows;
+if (windowsBundle?.nsis?.template !== 'installer.nsi') {
+  throw new Error('The NSIS installer must use src-tauri/installer.nsi.');
+}
+if (!windowsBundle?.wix?.fragmentPaths?.includes('default-app-capabilities.wxs')
+    || !windowsBundle?.wix?.componentRefs?.includes('DefaultAppCapabilities')) {
+  throw new Error('The MSI installer must include the DefaultAppCapabilities WiX fragment.');
+}
+
+const nsisSource = fs.readFileSync(path.join(root, 'src-tauri', 'installer.nsi'), 'utf8');
+for (const requiredToken of [
+  'Software\\RegisteredApplications',
+  'Capabilities\\FileAssociations',
+  'Applications\\${MAINBINARYNAME}.exe\\SupportedTypes',
+  'OpenWithProgids',
+  '!insertmacro UPDATEFILEASSOC'
+]) {
+  if (!nsisSource.includes(requiredToken)) {
+    throw new Error('The NSIS installer is missing required Default Apps registration: ' + requiredToken);
+  }
+}
+
+const wixSource = fs.readFileSync(path.join(root, 'src-tauri', 'default-app-capabilities.wxs'), 'utf8');
+const wixFileAssociationsBlock = wixSource.match(
+  /<RegistryKey Root="HKLM" Key="Software\\text-pad\\Capabilities\\FileAssociations">([\s\S]*?)<\/RegistryKey>/
+)?.[1];
+const wixSupportedTypesBlock = wixSource.match(
+  /<RegistryKey Key="SupportedTypes">([\s\S]*?)<\/RegistryKey>/
+)?.[1];
+if (!wixFileAssociationsBlock || !wixSupportedTypesBlock) {
+  throw new Error('The MSI Default Apps fragment must declare FileAssociations and SupportedTypes.');
+}
+const wixFileAssociationExtensions = [...wixFileAssociationsBlock.matchAll(
+  /<RegistryValue Name="\.([^"]+)" Type="string" Value="text-pad\.[^"]+" \/>/g
+)].map((match) => match[1]);
+const wixSupportedTypeExtensions = [...wixSupportedTypesBlock.matchAll(
+  /<RegistryValue Name="\.([^"]+)" Type="string" Value="" \/>/g
+)].map((match) => match[1]);
+if (JSON.stringify(wixFileAssociationExtensions) !== JSON.stringify(extensions)
+    || JSON.stringify(wixSupportedTypeExtensions) !== JSON.stringify(extensions)) {
+  throw new Error('MSI Default Apps registrations must exactly match supported-text-formats.json order and extensions.');
+}
+
+const mainCapability = JSON.parse(fs.readFileSync(
+  path.join(root, 'src-tauri', 'capabilities', 'default.json'),
+  'utf8'
+));
+if (!mainCapability.permissions?.includes('allow-open-file-paths')) {
+  throw new Error('The main window capability must allow open_file_paths for native file drops.');
+}
+const tauriBuildSource = fs.readFileSync(path.join(root, 'src-tauri', 'build.rs'), 'utf8');
+if (!tauriBuildSource.includes('"open_file_paths"')) {
+  throw new Error('The Tauri app manifest must generate a permission for open_file_paths.');
+}
+
 const frontendSource = fs.readFileSync(path.join(root, 'src', 'lib', 'document-formats.ts'), 'utf8');
 const backendSource = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'file_commands.rs'), 'utf8');
 if (!frontendSource.includes("from '../../supported-text-formats.json'")) {
@@ -66,4 +121,4 @@ if (!backendSource.includes('include_str!("../../supported-text-formats.json")')
   throw new Error('The backend file dialogs must embed supported-text-formats.json.');
 }
 
-console.log(`Validated ${manifest.formats.length} text formats, ${extensions.length} extensions, samples, and installer associations.`);
+console.log(`Validated ${manifest.formats.length} text formats, ${extensions.length} extensions, samples, and installer/default-app associations.`);

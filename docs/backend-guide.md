@@ -23,6 +23,10 @@
 - `get_startup_files() -> Result<Vec<OpenedFile>, FileCommandError>`
   - 운영체제가 앱 실행 인자로 넘긴 값 중 실제 파일만 제한 안에서 읽는다.
   - 파일 직접 열기나 기본 앱 연결로 실행된 파일을 시작 탭 데이터로 반환한다.
+- `open_file_paths(paths: Vec<String>) -> Result<Vec<OpenedFile>, FileCommandError>`
+  - 메인 창에 드롭된 경로 중 실제 파일만 UTF-8 크기·줄 수 제한 안에서 읽는다.
+  - 읽은 정규화 경로를 승인 목록에 추가하고 드롭 순서를 유지해 탭 데이터로 반환한다.
+  - `build.rs`의 앱 명령 목록에서 권한을 생성하고 메인 창의 Tauri capability에 `allow-open-file-paths`를 부여해야 하며, 검증 명령은 어느 한쪽이라도 누락되면 실패한다.
 - `write_file_content(path: String, content: String) -> Result<(), FileCommandError>`
   - 앞선 열기나 저장 대화상자에서 승인한 정규화 경로만 저장한다.
   - 같은 폴더의 임시 파일에 문자열을 먼저 쓴 뒤 대상 파일로 교체한다.
@@ -30,7 +34,7 @@
   - Rust가 저장 경로를 직접 선택받아 저장하고, 성공한 경로만 승인 목록에 추가한다.
   - 필터 이름의 길이와 제어 문자를 제한하고, 확장자는 `supported-text-formats.json`에 등록된 값만 허용한다.
 
-새 파일 입출력 기능을 추가할 때는 사용자가 대화상자로 선택했거나 운영체제가 파일 열기 의도로 넘긴 경로만 다루고, 실패를 `Result`로 반환한다.
+새 파일 입출력 기능을 추가할 때는 사용자가 대화상자로 선택했거나 운영체제가 파일 열기·드롭 의도로 넘긴 경로만 다루고, 실패를 `Result`로 반환한다.
 `FileCommandError`는 `code`와 `message`를 가진다. `code`는 오류 종류를 번역 테이블에 매핑하기 위한 짧은 코드이고, `message`는 운영체제나 파일 시스템에서 받은 상세 원문이다. 프론트엔드는 알려진 코드를 현재 표시 언어로 번역하고, 알 수 없는 오류에만 상세 원문을 fallback으로 사용한다.
 파일 원문은 UTF-8 기준 최대 16 MiB, 250,000줄까지만 열고 저장한다. 메타데이터 확인 뒤에도 제한보다 한 바이트만 더 읽어 파일 증가 경쟁에서 무제한 할당이 일어나지 않게 한다.
 열기 대화상자의 확장자, 저장 필터에 허용할 확장자, 설치 연결은 중앙 목록을 기준으로 한다. 형식을 추가할 때 Rust 상수를 따로 수정하지 않으며, 중복·누락은 `npm run validate:formats`에서 실패해야 한다.
@@ -67,7 +71,8 @@ Tauri 업데이트 서명 개인키는 저장소 밖에 두고 GitHub Actions �
 
 ## Windows 설치 파일
 
-NSIS는 Windows용 실행 설치 파일을 만드는 스크립트 기반 설치 도구다. `tauri.conf.json`의 파일 연결은 중앙 지원 목록의 모든 확장자를 `Editor` 역할로 등록해 설치 뒤 Windows의 `연결 프로그램`과 권장 앱 후보에 `text-pad`가 나타나게 한다.
+NSIS는 Windows용 실행 설치 파일을 만드는 스크립트 기반 설치 도구다. `tauri.conf.json`의 파일 연결은 중앙 지원 목록의 모든 확장자를 `Editor` 역할로 등록한다. `src-tauri/installer.nsi`는 `RegisteredApplications`, `Capabilities\FileAssociations`, `Applications\text-pad.exe\SupportedTypes`, `OpenWithProgids`도 함께 등록하고 셸에 변경을 알린다. MSI는 `src-tauri/default-app-capabilities.wxs` 조각으로 같은 기본 앱 후보 정보를 등록한다.
+Windows 8 이상에서는 설치 프로그램이 사용자의 기본 앱 선택을 강제로 바꾸지 않는다. 설치 뒤 `연결 프로그램`의 항상 사용 또는 Windows 기본 앱 설정에서 사용자가 `text-pad`를 선택하면 그 선택이 유지되어야 한다.
 `src-tauri/installer.nsi`는 Tauri 2.11.2 기본 템플릿을 바탕으로 하며, 같은 버전이 이미 설치된 상태에서 사용자가 삭제를 선택하면 삭제 완료 후 설치 화면으로 돌아가지 않고 설치 프로그램을 종료한다.
 업그레이드나 다운그레이드에서 "삭제 후 설치"를 선택한 경우에는 기존처럼 삭제 뒤 설치를 계속 진행한다.
 

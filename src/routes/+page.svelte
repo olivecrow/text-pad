@@ -1977,7 +1977,7 @@
     };
   });
 
-  function openFile(openedFile: OpenedFile) {
+  function openFile(openedFile: OpenedFile, replaceCleanUntitled = true) {
     const openedTab = createEditorTab({
       filePath: openedFile.path,
       fileName: getFileNameFromPath(openedFile.path),
@@ -1986,12 +1986,55 @@
     });
     const activeTab = getActiveTab();
 
-    if (activeTab && isCleanUntitledTab(activeTab)) {
+    if (replaceCleanUntitled && activeTab && isCleanUntitledTab(activeTab)) {
       replaceActiveTabWith(openedTab);
     } else {
       addTab(openedTab);
     }
   }
+
+  async function openDroppedFiles(paths: string[]) {
+    if (!paths.length || isSettingsWindow) return;
+
+    try {
+      isLoading = true;
+      errorMsg = null;
+      syncActiveTabState();
+      const openedFiles = await invoke<OpenedFile[]>("open_file_paths", { paths });
+      for (const openedFile of openedFiles) {
+        openFile(openedFile, false);
+      }
+    } catch (err: any) {
+      errorMsg = localizeError('error.readFile', err);
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (!isBrowser || !hasTauriRuntime() || isSettingsWindow) return;
+
+    let isDisposed = false;
+    let unlistenDragDrop: UnlistenFn | undefined;
+    getCurrentWindow().onDragDropEvent((event) => {
+      if (event.payload.type === 'drop') {
+        void openDroppedFiles(event.payload.paths);
+      }
+    }).then((unlisten) => {
+      if (isDisposed) {
+        unlisten();
+      } else {
+        unlistenDragDrop = unlisten;
+      }
+    }).catch((err) => {
+      console.error('Failed to listen for dropped files:', err);
+    });
+
+    return () => {
+      isDisposed = true;
+      if (unlistenDragDrop) unlistenDragDrop();
+    };
+  });
 
   async function loadStartupFiles() {
     if (hasLoadedStartupFiles || !hasTauriRuntime() || isSettingsWindow) return;
@@ -3474,16 +3517,22 @@
     getCurrentWindow().close().catch(() => {});
   }
 
-  async function handleTitlebarPointerDown(event: PointerEvent) {
-    if (!hasTauriRuntime() || event.button !== 0 || event.detail > 1) return;
-    await getCurrentWindow().startDragging().catch(() => {});
-  }
-
-  async function handleTitlebarDoubleClick(event: MouseEvent) {
-    if (!hasTauriRuntime() || event.button !== 0) return;
+  async function handleTitlebarMouseDown(event: MouseEvent) {
+    if (!hasTauriRuntime() || event.buttons !== 1 || event.detail > 2) return;
     event.preventDefault();
-    await getCurrentWindow().toggleMaximize().catch(() => {});
-    await refreshWindowMaximizedState();
+    const appWindow = getCurrentWindow();
+
+    if (event.detail === 2) {
+      await appWindow.toggleMaximize().catch((err) => {
+        console.error('Failed to toggle the window maximized state:', err);
+      });
+      await refreshWindowMaximizedState();
+      return;
+    }
+
+    await appWindow.startDragging().catch((err) => {
+      console.error('Failed to start dragging the window:', err);
+    });
   }
 
   async function handleWindowMinimize(event: MouseEvent) {
@@ -5184,10 +5233,8 @@
     <div class="title-tab-bar">
       <div
         class="titlebar-app-icon"
-        data-tauri-drag-region
         aria-hidden="true"
-        onpointerdown={handleTitlebarPointerDown}
-        ondblclick={handleTitlebarDoubleClick}
+        onmousedown={handleTitlebarMouseDown}
       >
         <img class="titlebar-app-image" src="/favicon.png" alt="" draggable="false" />
       </div>
@@ -5232,10 +5279,8 @@
         </button>
         <div
           class="titlebar-drag-region"
-          data-tauri-drag-region
           aria-hidden="true"
-          onpointerdown={handleTitlebarPointerDown}
-          ondblclick={handleTitlebarDoubleClick}
+          onmousedown={handleTitlebarMouseDown}
         ></div>
       </div>
 
