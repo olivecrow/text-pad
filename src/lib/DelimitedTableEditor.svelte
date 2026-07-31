@@ -12,6 +12,7 @@
     updateDelimitedTableCell,
     type DelimitedTableDocument
   } from './delimited-table';
+  import { translate, type AppLocale, type TranslationKey, type TranslationValues } from './i18n';
 
   interface DocumentChangeOptions {
     mergeKey?: string | null;
@@ -37,6 +38,7 @@
   interface Props {
     document: DelimitedTableDocument;
     formatLabel: string;
+    locale: AppLocale;
     editable: boolean;
     highlightHeader: boolean;
     showRowIndices: boolean;
@@ -50,6 +52,7 @@
   let {
     document,
     formatLabel,
+    locale,
     editable,
     highlightHeader,
     showRowIndices,
@@ -59,6 +62,10 @@
     onhighlightheaderchange,
     onshowrowindiceschange
   }: Props = $props();
+
+  function t(key: TranslationKey, values: TranslationValues = {}) {
+    return translate(locale, key, values);
+  }
 
   let tableEditorEl = $state<HTMLDivElement | null>(null);
   let dragPreviewHostEl = $state<HTMLDivElement | null>(null);
@@ -153,7 +160,9 @@
 
   function getColumnName(index: number): string {
     const headerValue = (document.rows[0]?.[index] ?? '').trim();
-    return headerValue ? `"${headerValue}" 열` : `${getColumnLabel(index)}열`;
+    return headerValue
+      ? t('table.columnWithHeader', { header: headerValue })
+      : t('table.column', { column: getColumnLabel(index) });
   }
 
   function selectCell(rowIndex: number, columnIndex: number) {
@@ -1022,8 +1031,8 @@
       class:dragging-handle={draggedRow === rowIndex}
       role="button"
       tabindex={editable ? 0 : -1}
-      aria-label={`${rowIndex + 1}행 이동`}
-      title={`${rowIndex + 1}행 이동 (드래그 또는 Alt+↑/↓)`}
+      aria-label={t('table.moveRow', { row: rowIndex + 1 })}
+      title={t('table.moveRowHint', { row: rowIndex + 1 })}
       onpointerdown={(event) => startRowPointerDrag(event, rowIndex)}
       onkeydown={(event) => handleRowHandleKeydown(event, rowIndex)}
       onfocus={() => selectedRow = rowIndex}
@@ -1036,8 +1045,8 @@
         <button
           class="edge-action-button edge-remove-button"
           type="button"
-          aria-label={`${rowIndex + 1}행 제거`}
-          title={`${rowIndex + 1}행 제거`}
+          aria-label={t('table.removeRow', { row: rowIndex + 1 })}
+          title={t('table.removeRow', { row: rowIndex + 1 })}
           onpointerdown={stopEdgeActionPointer}
           onclick={(event) => {
             event.stopPropagation();
@@ -1051,8 +1060,8 @@
         <button
           class="edge-action-button edge-insert-button"
           type="button"
-          aria-label={`${rowIndex + 1}행 앞에 행 추가`}
-          title={`${rowIndex + 1}행 앞에 행 추가`}
+          aria-label={t('table.addRowBefore', { row: rowIndex + 1 })}
+          title={t('table.addRowBefore', { row: rowIndex + 1 })}
           onpointerdown={stopEdgeActionPointer}
           onclick={(event) => {
             event.stopPropagation();
@@ -1067,8 +1076,8 @@
           <button
             class="edge-action-button edge-insert-button"
             type="button"
-            aria-label={`${rowIndex + 1}행 뒤에 행 추가`}
-            title={`${rowIndex + 1}행 뒤에 행 추가`}
+            aria-label={t('table.addRowAfter', { row: rowIndex + 1 })}
+            title={t('table.addRowAfter', { row: rowIndex + 1 })}
             onpointerdown={stopEdgeActionPointer}
             onclick={(event) => {
               event.stopPropagation();
@@ -1091,9 +1100,12 @@
     data-table-row={rowIndex}
     data-table-column={columnIndex}
     value={row[columnIndex] ?? ''}
+    dir="auto"
     rows={Math.min(4, Math.max(1, (row[columnIndex] ?? '').split(/\r\n|\r|\n/u).length))}
     readonly={!editable}
-    aria-label={isHeader ? `${getColumnName(columnIndex)} 머리글` : `${rowIndex + 1}행 ${getColumnName(columnIndex)}`}
+    aria-label={isHeader
+      ? t('table.headerCell', { column: getColumnName(columnIndex) })
+      : t('table.cell', { row: rowIndex + 1, column: getColumnName(columnIndex) })}
     spellcheck="false"
     onfocus={() => selectCell(rowIndex, columnIndex)}
     onpointerdown={() => selectCell(rowIndex, columnIndex)}
@@ -1103,10 +1115,10 @@
 {/snippet}
 
 <div class="table-editor" bind:this={tableEditorEl}>
-  <div class="table-toolbar" role="toolbar" aria-label={`${formatLabel} 표 편집 도구`}>
+  <div class="table-toolbar" role="toolbar" aria-label={t('table.toolbar', { format: formatLabel })}>
     <div class="table-summary">
       <span class="format-badge">{formatLabel}</span>
-      <span>{document.rows.length}행 × {columnCount}열</span>
+      <span>{t('table.dimensions', { rows: document.rows.length, columns: columnCount })}</span>
     </div>
 
     <div class="toolbar-spacer"></div>
@@ -1117,9 +1129,9 @@
       type="button"
       aria-pressed={highlightHeader}
       onclick={() => onhighlightheaderchange(!highlightHeader)}
-      title="첫 번째 행의 헤더 강조 켜기 또는 끄기"
+      title={t('table.toggleHeader')}
     >
-      첫 행
+      {t('table.firstRow')}
     </button>
     <button
       class="compact-tool toggle-tool"
@@ -1127,14 +1139,14 @@
       type="button"
       aria-pressed={showRowIndices}
       onclick={() => onshowrowindiceschange(!showRowIndices)}
-      title="왼쪽 행 번호 표시 또는 숨기기"
+      title={t('table.toggleRowNumbers')}
     >
-      행 번호
+      {t('table.rowNumbers')}
     </button>
   </div>
 
   {#if !editable}
-    <div class="table-readonly-note">이 형식의 렌더 편집이 꺼져 있습니다.</div>
+    <div class="table-readonly-note">{t('table.readonly')}</div>
   {/if}
 
   <div class="table-scroll-region">
@@ -1166,8 +1178,8 @@
                 class:dragging-handle={draggedColumn === columnIndex}
                 role="button"
                 tabindex={editable ? 0 : -1}
-                aria-label={`${getColumnName(columnIndex)} 이동`}
-                title={`${getColumnName(columnIndex)} 이동 (드래그 또는 Alt+←/→)`}
+                aria-label={t('table.moveColumn', { column: getColumnName(columnIndex) })}
+                title={t('table.moveColumnHint', { column: getColumnName(columnIndex) })}
                 onpointerdown={(event) => startColumnPointerDrag(event, columnIndex)}
                 onkeydown={(event) => handleColumnHandleKeydown(event, columnIndex)}
                 onfocus={() => selectedColumn = columnIndex}
@@ -1178,8 +1190,8 @@
               <button
                 class="column-resize-handle"
                 type="button"
-                aria-label={`${getColumnName(columnIndex)} 너비 조절, 현재 ${getColumnWidth(columnIndex)}픽셀`}
-                title={`${getColumnName(columnIndex)} 너비 조절 (드래그, 두 번 클릭 시 내용 맞춤)`}
+                aria-label={t('table.resizeColumn', { column: getColumnName(columnIndex), width: getColumnWidth(columnIndex) })}
+                title={t('table.resizeColumnHint', { column: getColumnName(columnIndex) })}
                 onpointerdown={(event) => startColumnResize(event, columnIndex)}
                 ondblclick={(event) => handleColumnResizeDoubleClick(event, columnIndex)}
                 onkeydown={(event) => handleColumnResizeKeydown(event, columnIndex)}
@@ -1189,8 +1201,8 @@
                   <button
                     class="edge-action-button edge-remove-button"
                     type="button"
-                    aria-label={`${getColumnName(columnIndex)} 제거`}
-                    title={`${getColumnName(columnIndex)} 제거`}
+                    aria-label={t('table.removeColumn', { column: getColumnName(columnIndex) })}
+                    title={t('table.removeColumn', { column: getColumnName(columnIndex) })}
                     onpointerdown={stopEdgeActionPointer}
                     onclick={(event) => {
                       event.stopPropagation();
@@ -1204,8 +1216,8 @@
                   <button
                     class="edge-action-button edge-insert-button"
                     type="button"
-                    aria-label={`${getColumnName(columnIndex)} 앞에 열 추가`}
-                    title={`${getColumnName(columnIndex)} 앞에 열 추가`}
+                    aria-label={t('table.addColumnBefore', { column: getColumnName(columnIndex) })}
+                    title={t('table.addColumnBefore', { column: getColumnName(columnIndex) })}
                     onpointerdown={stopEdgeActionPointer}
                     onclick={(event) => {
                       event.stopPropagation();
@@ -1220,8 +1232,8 @@
                     <button
                       class="edge-action-button edge-insert-button"
                       type="button"
-                      aria-label={`${getColumnName(columnIndex)} 뒤에 열 추가`}
-                      title={`${getColumnName(columnIndex)} 뒤에 열 추가`}
+                      aria-label={t('table.addColumnAfter', { column: getColumnName(columnIndex) })}
+                      title={t('table.addColumnAfter', { column: getColumnName(columnIndex) })}
                       onpointerdown={stopEdgeActionPointer}
                       onclick={(event) => {
                         event.stopPropagation();

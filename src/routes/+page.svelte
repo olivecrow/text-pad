@@ -16,7 +16,9 @@
     isDocumentFormatEditEnabled,
     isDocumentFormatRenderEnabled,
     normalizeDocumentFeatureSettings,
-    parseDocumentForRender
+    getOpenFileDialogFilters,
+    parseDocumentForRender,
+    getSaveFileDialogFilters
   } from "$lib/document-formats";
   import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatCategory, DocumentFormatCategoryId, DocumentFormatId } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
@@ -30,6 +32,18 @@
   import { EditorUndoHistory, type EditorSelection, type EditorSnapshot } from "$lib/editor-undo";
   import { onDestroy, tick, untrack } from "svelte";
   import AboutDialog from "$lib/AboutDialog.svelte";
+  import {
+    getLanguageNativeName,
+    isAppLocale,
+    isRtlLocale,
+    resolveSystemLocale,
+    supportedLanguages,
+    translate,
+    type AppLocale,
+    type LanguagePreference,
+    type TranslationKey,
+    type TranslationValues
+  } from "$lib/i18n";
   import DelimitedTableEditor from "$lib/DelimitedTableEditor.svelte";
   import { APP_VERSION_FALLBACK } from "$lib/app-metadata";
   import {
@@ -69,12 +83,27 @@
 
   let nextTabId = 1;
   let nextUntitledNumber = 1;
-  const untitledFileName = "제목 없음";
   const invalidFileNameCharsPattern = /[<>:"/\\|?*\x00-\x1F]/g;
   const isBrowser = typeof window !== 'undefined';
   const maxEnhancedRenderChars = 2 * 1024 * 1024;
   const maxEnhancedRenderLines = 100_000;
   const maxDelimitedTableCells = 50_000;
+  const languagePreferenceKey = 'pref_language';
+
+  function getInitialLanguagePreference(): LanguagePreference {
+    if (!isBrowser) return 'system';
+    const savedPreference = localStorage.getItem(languagePreferenceKey);
+    return savedPreference === 'system' || isAppLocale(savedPreference) ? savedPreference : 'system';
+  }
+
+  let systemLocale = $state<AppLocale>(resolveSystemLocale(isBrowser ? navigator.languages : []));
+  let languagePreference = $state<LanguagePreference>(getInitialLanguagePreference());
+  let locale = $derived<AppLocale>(languagePreference === 'system' ? systemLocale : languagePreference);
+  let untitledFileName = $derived(translate(locale, 'app.untitled'));
+
+  function t(key: TranslationKey, values: TranslationValues = {}) {
+    return translate(locale, key, values);
+  }
 
   function hasTauriRuntime(): boolean {
     if (!isBrowser) return false;
@@ -114,6 +143,12 @@
 
   function getDisplayFileName(tab: Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent'>): string {
     return tab.filePath ? tab.fileName : getFirstLineTitle(tab.fileContent);
+  }
+
+  function getCurrentWindowTitle(): string {
+    if (isSettingsWindow) return t('settings.windowTitle');
+    const displayName = getDisplayFileName({ filePath, fileName, fileContent });
+    return `${isDirty ? '*' : ''}${t('app.windowTitle', { fileName: displayName })}`;
   }
 
   function getUnsavedFileNameFromContent(content: string): string {
@@ -221,8 +256,8 @@
   let openDropdown = $state<'file' | 'edit' | 'help' | null>(null);
   type FormatSettingsView = `format:${DocumentFormatId}`;
   type FormatCategorySettingsView = `category:${DocumentFormatCategoryId}`;
-  type SettingsView = 'sourceAppearance' | 'renderAppearance' | 'renderEditing' | FormatCategorySettingsView | FormatSettingsView;
-  let activeSettingsView = $state<SettingsView>('renderAppearance');
+  type SettingsView = 'general' | 'sourceAppearance' | 'renderAppearance' | 'renderEditing' | FormatCategorySettingsView | FormatSettingsView;
+  let activeSettingsView = $state<SettingsView>('general');
   let isSourceSettingsExpanded = $state<boolean>(true);
   let isRenderSettingsExpanded = $state<boolean>(true);
   let expandedFormatCategories = $state<Record<DocumentFormatCategoryId, boolean>>({
@@ -370,11 +405,49 @@
 
   let canPersistPreferences = $state<boolean>(false);
   const documentFeaturePreferenceKey = 'pref_document_format_features';
-  const closeSaveButtons = {
-    yes: "저장",
-    no: "저장 안 함",
-    cancel: "취소"
+  function getCloseSaveButtons() {
+    return {
+      yes: t('dialog.saveChanges.save'),
+      no: t('dialog.saveChanges.dontSave'),
+      cancel: t('dialog.saveChanges.cancel')
+    };
+  }
+
+  const fileErrorTranslationKeys: Partial<Record<string, TranslationKey>> = {
+    file_too_large: 'error.fileTooLarge',
+    too_many_lines: 'error.tooManyLines',
+    path_not_approved: 'error.pathNotApproved',
+    invalid_data: 'error.invalidData',
+    invalid_path: 'error.invalidPath',
+    state_error: 'error.fileState'
   };
+
+  function getErrorPayload(error: unknown): { code?: unknown; message?: unknown } | null {
+    if (error && typeof error === 'object') return error as { code?: unknown; message?: unknown };
+    if (typeof error !== 'string') return null;
+    try {
+      const parsed = JSON.parse(error);
+      return parsed && typeof parsed === 'object'
+        ? parsed as { code?: unknown; message?: unknown }
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function getErrorDetail(error: unknown): string {
+    const payload = getErrorPayload(error);
+    if (typeof payload?.code === 'string') {
+      const translationKey = fileErrorTranslationKeys[payload.code];
+      if (translationKey) return t(translationKey);
+    }
+    if (typeof payload?.message === 'string') return payload.message;
+    return typeof error === 'string' ? error : String(error);
+  }
+
+  function localizeError(key: TranslationKey, error: unknown): string {
+    return t(key, { detail: getErrorDetail(error) });
+  }
   const renderAutoClosingPairs: Record<string, string> = {
     '(': ')',
     '[': ']',
@@ -518,7 +591,9 @@
   }
 
   function formatDelimitedTableReorderDuration(durationMs: number): string {
-    return `${(durationMs / 1000).toFixed(durationMs % 1000 === 0 ? 0 : 2)}초`;
+    return t('common.seconds', {
+      seconds: (durationMs / 1000).toFixed(durationMs % 1000 === 0 ? 0 : 2)
+    });
   }
 
   function getTextareaValueFromContent(content: string): string {
@@ -788,6 +863,12 @@
     }
   });
 
+  $effect(() => {
+    if (!isBrowser) return;
+    document.documentElement.lang = locale;
+    document.documentElement.dir = isRtlLocale(locale) ? 'rtl' : 'ltr';
+  });
+
   // 기본 색상 복원
   function resetColorsToDefault() {
     if (!isBrowser) return;
@@ -801,6 +882,12 @@
   // 마운트 시 localStorage Preferences 로드
   $effect(() => {
     if (!isBrowser) return;
+
+    const savedLanguagePreference = localStorage.getItem(languagePreferenceKey);
+    if (savedLanguagePreference === 'system' || isAppLocale(savedLanguagePreference)) {
+      languagePreference = savedLanguagePreference;
+    }
+    systemLocale = resolveSystemLocale(navigator.languages);
 
     const savedThemeMode = localStorage.getItem('pref_theme_mode');
     if (savedThemeMode === 'system' || savedThemeMode === 'light' || savedThemeMode === 'dark') {
@@ -876,6 +963,7 @@
   });
 
   // 상태 변경 감지 자동 로컬스토리지 동기화
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(languagePreferenceKey, languagePreference); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_theme_mode', themeMode); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_source_font_size', sourceFontSize.toString()); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_font_size', renderFontSize.toString()); });
@@ -906,7 +994,7 @@
     const label = getCurrentWindow().label;
     isSettingsWindow = label === 'settings';
     if (isSettingsWindow) {
-      activeSettingsView = 'renderAppearance';
+      activeSettingsView = 'general';
       getCurrentWindow().onCloseRequested((event) => {
         event.preventDefault();
         getCurrentWindow().hide();
@@ -989,15 +1077,16 @@
     }
     closeAllDropdown();
 
+    const closeSaveButtons = getCloseSaveButtons();
     let result: string;
     try {
-      result = await message(`'${getDisplayFileName(tab)}'의 변경 내용을 저장하시겠습니까?`, {
-        title: "저장 확인",
+      result = await message(t('dialog.saveChanges.prompt', { fileName: getDisplayFileName(tab) }), {
+        title: t('dialog.saveChanges.title'),
         kind: "warning",
         buttons: closeSaveButtons
       });
     } catch (err: any) {
-      errorMsg = typeof err === "string" ? err : err.message || String(err);
+      errorMsg = localizeError('error.unexpected', err);
       return false;
     }
 
@@ -1019,7 +1108,7 @@
       closeAllDropdown();
       return await saveOperation();
     } catch (err: any) {
-      errorMsg = typeof err === "string" ? err : err.message || String(err);
+      errorMsg = localizeError('error.saveFile', err);
       return false;
     } finally {
       isLoading = false;
@@ -1063,7 +1152,8 @@
 
     const targetPath = await invoke<string | null>("save_file_dialog", {
       defaultName: getSuggestedSaveFileName(tab),
-      content: tab.fileContent
+      content: tab.fileContent,
+      filterNames: getSaveFileDialogFilters(locale).map((filter) => filter.name)
     });
     if (!targetPath) return false;
 
@@ -1082,7 +1172,8 @@
 
     const targetPath = await invoke<string | null>("save_file_dialog", {
       defaultName: getSuggestedSaveFileName(tab),
-      content: tab.fileContent
+      content: tab.fileContent,
+      filterNames: getSaveFileDialogFilters(locale).map((filter) => filter.name)
     });
     if (!targetPath) {
       return false;
@@ -1095,6 +1186,7 @@
   // storage 변경 감지 핸들러 (창 간 실시간 동기화)
   function handleStorageChange(e: StorageEvent) {
     if (!e.key) return;
+    if (e.key === languagePreferenceKey && e.newValue && (e.newValue === 'system' || isAppLocale(e.newValue))) languagePreference = e.newValue;
     if (e.key === 'pref_theme_mode' && e.newValue && (e.newValue === 'system' || e.newValue === 'light' || e.newValue === 'dark')) themeMode = e.newValue;
     if (e.key === 'pref_source_font_size' && e.newValue) sourceFontSize = parseInt(e.newValue, 10);
     if (e.key === 'pref_render_font_size' && e.newValue) renderFontSize = parseInt(e.newValue, 10);
@@ -1598,7 +1690,7 @@
     }
 
     const timer = setTimeout(() => {
-      documentDiagnostic = getDocumentDiagnostic(content, { pathOrName, featureSettings });
+      documentDiagnostic = getDocumentDiagnostic(content, { pathOrName, featureSettings, locale });
     }, syntaxDiagnosticDelayMs);
 
     return () => clearTimeout(timer);
@@ -1861,7 +1953,7 @@
         openFile(startupFile);
       }
     } catch (err: any) {
-      errorMsg = typeof err === "string" ? err : err.message || String(err);
+      errorMsg = localizeError('error.readFile', err);
     } finally {
       isLoading = false;
     }
@@ -1878,7 +1970,7 @@
     const appWindow = getCurrentWindow();
 
     try {
-      await appWindow.setTitle(`${isDirty ? "*" : ""}${fileName} - 메모장`);
+      await appWindow.setTitle(getCurrentWindowTitle());
       await appWindow.show();
       await appWindow.setFocus();
     } catch (err) {
@@ -1906,22 +1998,28 @@
   function getUpdatePromptText(update: Update): string {
     const releaseNotes = update.body?.trim();
     const notes = releaseNotes
-      ? `\n\n릴리스 내용:\n${releaseNotes.slice(0, 600)}${releaseNotes.length > 600 ? '\n…' : ''}`
+      ? `\n\n${t('update.releaseNotes', {
+          notes: `${releaseNotes.slice(0, 600)}${releaseNotes.length > 600 ? '\n…' : ''}`
+        })}`
       : '';
-    return `새 버전 ${update.version}을(를) 사용할 수 있습니다.\n현재 버전: ${update.currentVersion}\n\n지금 다운로드하고 설치하시겠습니까?${notes}`;
+    return t('update.availablePrompt', {
+      version: update.version,
+      currentVersion: update.currentVersion,
+      notes
+    });
   }
 
   async function checkForUpdates(showNoUpdateStatus: boolean) {
     if (isCheckingForUpdate || isInstallingUpdate) {
       if (showNoUpdateStatus) {
-        showTransientStatus(isInstallingUpdate ? '업데이트를 설치하는 중입니다.' : '업데이트를 확인하는 중입니다.');
+        showTransientStatus(isInstallingUpdate ? t('update.installing') : t('update.checking'));
       }
       return;
     }
 
     isCheckingForUpdate = true;
     if (showNoUpdateStatus) {
-      showTransientStatus('업데이트를 확인하는 중입니다.', 20_000);
+      showTransientStatus(t('update.checking'), 20_000);
     }
 
     let update: Update | null = null;
@@ -1929,22 +2027,22 @@
       update = await checkForAppUpdate();
       if (!update) {
         if (showNoUpdateStatus) {
-          showTransientStatus(`최신 버전입니다. (${installedAppVersion})`);
+          showTransientStatus(t('update.latest', { version: installedAppVersion }));
         }
         return;
       }
 
       const shouldInstall = await ask(getUpdatePromptText(update), {
-        title: 'text-pad 업데이트',
+        title: t('update.title'),
         kind: 'info',
-        okLabel: '업데이트',
-        cancelLabel: '나중에'
+        okLabel: t('update.install'),
+        cancelLabel: t('update.later')
       });
 
       if (!shouldInstall) {
         await closeAppUpdate(update);
         update = null;
-        showTransientStatus('업데이트를 나중에 설치할 수 있습니다.');
+        showTransientStatus(t('update.postponed'));
         return;
       }
 
@@ -1952,7 +2050,7 @@
       if (!canRestart) {
         await closeAppUpdate(update);
         update = null;
-        showTransientStatus('업데이트 설치를 취소했습니다.');
+        showTransientStatus(t('update.cancelled'));
         return;
       }
 
@@ -1962,15 +2060,15 @@
       const handleDownloadEvent = (event: DownloadEvent) => {
         if (event.event === 'Started') {
           contentLength = event.data.contentLength;
-          showTransientStatus('업데이트를 다운로드하는 중입니다.', 120_000);
+          showTransientStatus(t('update.downloading'), 120_000);
         } else if (event.event === 'Progress') {
           downloadedBytes += event.data.chunkLength;
           if (contentLength && contentLength > 0) {
             const percent = Math.min(100, Math.round((downloadedBytes / contentLength) * 100));
-            showTransientStatus(`업데이트를 다운로드하는 중입니다. ${percent}%`, 120_000);
+            showTransientStatus(t('update.downloadingProgress', { percent }), 120_000);
           }
         } else if (event.event === 'Finished') {
-          showTransientStatus('업데이트를 설치하고 다시 시작합니다.', 120_000);
+          showTransientStatus(t('update.restarting'), 120_000);
         }
       };
 
@@ -1982,7 +2080,7 @@
       const detail = err instanceof Error ? err.message : String(err);
       console.error('Failed to update application:', err);
       if (showNoUpdateStatus || update || isInstallingUpdate) {
-        showTransientStatus(`업데이트를 확인하지 못했습니다: ${detail}`, 7_000);
+        showTransientStatus(t('update.failed', { detail }), 7_000);
       }
     } finally {
       isCheckingForUpdate = false;
@@ -2035,7 +2133,7 @@
   $effect(() => {
     if (!hasTauriRuntime()) return;
     const appWindow = getCurrentWindow();
-    const title = `${isDirty ? "*" : ""}${fileName} - 메모장`;
+    const title = getCurrentWindowTitle();
     appWindow.setTitle(title).catch(() => {});
   });
 
@@ -3072,13 +3170,15 @@
       errorMsg = null;
       syncActiveTabState();
       closeAllDropdown();
-      const openedFile = await invoke<OpenedFile | null>("open_file_dialog");
+      const openedFile = await invoke<OpenedFile | null>("open_file_dialog", {
+        filterName: getOpenFileDialogFilters(locale)[0]?.name ?? t('filter.textFiles')
+      });
 
       if (openedFile) {
         openFile(openedFile);
       }
     } catch (err: any) {
-      errorMsg = typeof err === "string" ? err : err.message || String(err);
+      errorMsg = localizeError('error.readFile', err);
     } finally {
       isLoading = false;
     }
@@ -3169,7 +3269,7 @@
 
         const settingsWin = new WebviewWindow('settings', {
           url: settingsUrl,
-          title: '설정',
+          title: t('settings.windowTitle'),
           width: 800,
           height: 580,
           resizable: true,
@@ -3190,7 +3290,7 @@
       }
     } catch (err: any) {
       try {
-        await message(`Error: ${err.message || err}`);
+        await message(localizeError('error.openSettings', err));
       } catch {}
       console.error('Failed to open settings window:', err);
     }
@@ -3263,9 +3363,8 @@
     }
     const now = new Date();
 
-    const timeStr = now.toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit', hour12: true });
-    const dateStr = now.toLocaleDateString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit' })
-      .replace(/\. /g, '-').replace(/\./g, '');
+    const timeStr = now.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
+    const dateStr = now.toLocaleDateString(locale, { year: 'numeric', month: '2-digit', day: '2-digit' });
 
     const formatted = `${timeStr} ${dateStr}`;
 
@@ -4296,7 +4395,16 @@
   ">
     <div class="settings-body window-mode">
       <!-- 좌측 네비게이션 메뉴 -->
-      <aside class="settings-sidebar" aria-label="설정 분류">
+      <aside class="settings-sidebar" aria-label={t('settings.sidebarLabel')}>
+        <button
+          type="button"
+          class="sidebar-item"
+          class:active={activeSettingsView === 'general'}
+          onclick={() => activeSettingsView = 'general'}
+        >
+          <Settings size={16} class="tab-icon"/> {t('settings.general')}
+        </button>
+
         <div class="sidebar-tree-group">
           <button
             type="button"
@@ -4305,7 +4413,7 @@
             onclick={() => isSourceSettingsExpanded = !isSourceSettingsExpanded}
           >
             <ChevronDown size={14} class={isSourceSettingsExpanded ? 'tree-chevron' : 'tree-chevron collapsed'}/>
-            <FileCode2 size={16} class="tab-icon"/> 원본 모드
+            <FileCode2 size={16} class="tab-icon"/> {t('settings.sourceMode')}
           </button>
           {#if isSourceSettingsExpanded}
             <button
@@ -4314,7 +4422,7 @@
               class:active={activeSettingsView === 'sourceAppearance'}
               onclick={() => activeSettingsView = 'sourceAppearance'}
             >
-              <PaintRoller size={15} class="tab-icon"/> 모양
+              <PaintRoller size={15} class="tab-icon"/> {t('settings.appearance')}
             </button>
           {/if}
         </div>
@@ -4327,7 +4435,7 @@
             onclick={() => isRenderSettingsExpanded = !isRenderSettingsExpanded}
           >
             <ChevronDown size={14} class={isRenderSettingsExpanded ? 'tree-chevron' : 'tree-chevron collapsed'}/>
-            <PaintRoller size={16} class="tab-icon"/> 렌더 모드
+            <PaintRoller size={16} class="tab-icon"/> {t('settings.renderMode')}
           </button>
           {#if isRenderSettingsExpanded}
             <button
@@ -4336,7 +4444,7 @@
               class:active={activeSettingsView === 'renderAppearance'}
               onclick={() => activeSettingsView = 'renderAppearance'}
             >
-              <PaintRoller size={15} class="tab-icon"/> 모양
+              <PaintRoller size={15} class="tab-icon"/> {t('settings.appearance')}
             </button>
             <button
               type="button"
@@ -4344,7 +4452,7 @@
               class:active={activeSettingsView === 'renderEditing'}
               onclick={() => activeSettingsView = 'renderEditing'}
             >
-              <PenLine size={15} class="tab-icon"/> 편집
+              <PenLine size={15} class="tab-icon"/> {t('settings.editing')}
             </button>
             {#each configurableDocumentFormatCategories as category}
               <div class="sidebar-tree-group format-category-group">
@@ -4368,7 +4476,7 @@
                   {:else}
                     <Code2 size={15} class="tab-icon"/>
                   {/if}
-                  {category.label}
+                  {t(category.labelKey)}
                 </button>
                 {#if expandedFormatCategories[category.id]}
                   {#each getDocumentFormatsForCategory(category) as format}
@@ -4378,7 +4486,7 @@
                       class:active={activeSettingsView === getDocumentFormatSettingsView(format.id)}
                       onclick={() => activeSettingsView = getDocumentFormatSettingsView(format.id)}
                     >
-                      <FileCode2 size={14} class="tab-icon"/> {format.label}
+                      <FileCode2 size={14} class="tab-icon"/> {t(format.labelKey)}
                     </button>
                   {/each}
                 {/if}
@@ -4390,11 +4498,25 @@
 
       <!-- 우측 메인 콘텐츠 영역 -->
       <div class="settings-main">
-        {#if activeSettingsView === 'sourceAppearance'}
+        {#if activeSettingsView === 'general'}
           <div class="settings-section">
-            <h4 class="section-title">글꼴 설정</h4>
+            <h4 class="section-title">{t('settings.languageSection')}</h4>
             <div class="settings-row">
-              <label for="source-font-size-input-window">글꼴 크기 (pt)</label>
+              <label for="language-select-window">{t('settings.languageLabel')}</label>
+              <select id="language-select-window" bind:value={languagePreference} class="tab-size-select language-select">
+                <option value="system">{t('settings.systemLanguage', { language: getLanguageNativeName(systemLocale) })}</option>
+                {#each supportedLanguages as language}
+                  <option value={language.code}>{language.nativeName}</option>
+                {/each}
+              </select>
+            </div>
+            <p class="settings-category-note">{t('settings.languageDescription')}</p>
+          </div>
+        {:else if activeSettingsView === 'sourceAppearance'}
+          <div class="settings-section">
+            <h4 class="section-title">{t('settings.fontSettings')}</h4>
+            <div class="settings-row">
+              <label for="source-font-size-input-window">{t('settings.fontSize')}</label>
               <div class="size-control">
                 <input
                   id="source-font-size-input-window"
@@ -4411,9 +4533,9 @@
           </div>
         {:else if activeSettingsView === 'renderAppearance'}
           <div class="settings-section">
-            <h4 class="section-title">화면 및 글꼴</h4>
+            <h4 class="section-title">{t('settings.displayAndFont')}</h4>
             <div class="settings-row">
-              <label for="render-font-size-input-window">글꼴 크기 (pt)</label>
+              <label for="render-font-size-input-window">{t('settings.fontSize')}</label>
               <div class="size-control">
                 <input
                   id="render-font-size-input-window"
@@ -4429,7 +4551,7 @@
             </div>
 
             <div class="settings-row">
-              <label for="tab-size-select-window">들여쓰기 너비 (공백 개수)</label>
+              <label for="tab-size-select-window">{t('settings.indentWidth')}</label>
               <select id="tab-size-select-window" bind:value={tabSize} class="tab-size-select">
                 <option value={2}>2</option>
                 <option value={4}>4</option>
@@ -4438,13 +4560,13 @@
             </div>
 
             <div class="settings-row">
-              <label for="render-font-family-select-window">렌더 모드 글꼴</label>
+              <label for="render-font-family-select-window">{t('settings.renderFont')}</label>
               <select id="render-font-family-select-window" bind:value={renderFontFamily} class="tab-size-select" style="width: 195px; text-align-last: center;">
-                <optgroup label="기본">
+                <optgroup label={t('settings.fontGroupDefault')}>
                   <option value="nanum-gothic">나눔고딕</option>
-                  <option value="notepad">기본 글꼴</option>
+                  <option value="notepad">{t('settings.defaultFont')}</option>
                 </optgroup>
-                <optgroup label="고정폭 (Monospace)">
+                <optgroup label={t('settings.fontGroupMonospace')}>
                   <option value="jetbrains-mono">JetBrains Mono</option>
                   <option value="d2coding">D2Coding</option>
                   <option value="nanum-gothic-coding">나눔고딕 코딩</option>
@@ -4459,7 +4581,7 @@
 
           <div class="settings-section">
             <div class="settings-row" style="margin-bottom: 0.75rem;">
-              <h4 class="section-title">시각적 테마 색상 설정</h4>
+              <h4 class="section-title">{t('settings.themeColors')}</h4>
 
               <div class="theme-edit-toggle">
                 <button
@@ -4467,85 +4589,85 @@
                   class:active={editingTheme === 'light'}
                   onclick={() => editingTheme = 'light'}
                 >
-                  <Sun size={16} class="tab-icon"/> 라이트
+                  <Sun size={16} class="tab-icon"/> {t('settings.themeLight')}
                 </button>
                 <button
                   class="theme-toggle-btn"
                   class:active={editingTheme === 'dark'}
                   onclick={() => editingTheme = 'dark'}
                 >
-                  <Moon size={16} class="tab-icon"/> 다크
+                  <Moon size={16} class="tab-icon"/> {t('settings.themeDark')}
                 </button>
               </div>
             </div>
 
             {#if editingTheme === 'dark'}
-              {@render colorSettingRow('color-render-bg-window-dark', '렌더 모드 배경색', darkColors, 'renderBg')}
-              {@render colorSettingRow('color-render-text-window-dark', '렌더 모드 기본 글자 색상', darkColors, 'renderText')}
+              {@render colorSettingRow('color-render-bg-window-dark', t('settings.color.renderBackground'), darkColors, 'renderBg')}
+              {@render colorSettingRow('color-render-text-window-dark', t('settings.color.renderText'), darkColors, 'renderText')}
 
               <div class="settings-row color-row">
-                <label for="render-font-weight-window-dark">렌더 모드 폰트 굵기</label>
+                <label for="render-font-weight-window-dark">{t('settings.fontWeight')}</label>
                 <select id="render-font-weight-window-dark" bind:value={darkColors.renderFontWeight} class="tab-size-select" style="width: 140px;">
-                  <option value="300">Light</option>
-                  <option value="400">Normal</option>
-                  <option value="500">Medium</option>
-                  <option value="600">Semi Bold</option>
-                  <option value="700">Bold</option>
+                  <option value="300">{t('settings.weightLight')}</option>
+                  <option value="400">{t('settings.weightNormal')}</option>
+                  <option value="500">{t('settings.weightMedium')}</option>
+                  <option value="600">{t('settings.weightSemiBold')}</option>
+                  <option value="700">{t('settings.weightBold')}</option>
                 </select>
               </div>
 
-              {@render colorSettingRow('color-hl-code-bg-window-dark', '코드 배경색', darkColors, 'codeBg')}
-              {@render colorSettingRow('color-hl-code-text-window-dark', '코드 기본 글자 색상', darkColors, 'codeText')}
-              {@render colorSettingRow('color-hl-key-strong-window-dark', '키 색상 1단계 (진한색)', darkColors, 'keyStrong')}
-              {@render colorSettingRow('color-hl-key-medium-window-dark', '키 색상 2단계 (중간색)', darkColors, 'keyMedium')}
-              {@render colorSettingRow('color-hl-key-light-window-dark', '키 색상 3단계 (연한색)', darkColors, 'keyLight')}
-              {@render colorSettingRow('color-hl-string-window-dark', `문자열 색상 ('...', "...")`, darkColors, 'string')}
-              {@render colorSettingRow('color-hl-number-window-dark', '숫자 색상 (0-9)', darkColors, 'number')}
-              {@render colorSettingRow('color-hl-list-marker-window-dark', '글머리 기호 색상', darkColors, 'listMarker')}
-              {@render colorSettingRow('color-hl-comment-window-dark', '파일 형식별 주석 색상', darkColors, 'comment')}
-              {@render colorSettingRow('color-hl-paren-window-dark', '소괄호 색상 ( )', darkColors, 'paren')}
-              {@render colorSettingRow('color-hl-bracket-window-dark', '대괄호 색상 [ ]', darkColors, 'bracket')}
-              {@render colorSettingRow('color-hl-brace-window-dark', '중괄호 색상 { }', darkColors, 'brace')}
-              {@render colorSettingRow('color-indent-guide-window-dark', '들여쓰기 가이드라인 색상', darkColors, 'guide')}
+              {@render colorSettingRow('color-hl-code-bg-window-dark', t('settings.color.codeBackground'), darkColors, 'codeBg')}
+              {@render colorSettingRow('color-hl-code-text-window-dark', t('settings.color.codeText'), darkColors, 'codeText')}
+              {@render colorSettingRow('color-hl-key-strong-window-dark', t('settings.color.keyStrong'), darkColors, 'keyStrong')}
+              {@render colorSettingRow('color-hl-key-medium-window-dark', t('settings.color.keyMedium'), darkColors, 'keyMedium')}
+              {@render colorSettingRow('color-hl-key-light-window-dark', t('settings.color.keyLight'), darkColors, 'keyLight')}
+              {@render colorSettingRow('color-hl-string-window-dark', t('settings.color.string'), darkColors, 'string')}
+              {@render colorSettingRow('color-hl-number-window-dark', t('settings.color.number'), darkColors, 'number')}
+              {@render colorSettingRow('color-hl-list-marker-window-dark', t('settings.color.listMarker'), darkColors, 'listMarker')}
+              {@render colorSettingRow('color-hl-comment-window-dark', t('settings.color.comment'), darkColors, 'comment')}
+              {@render colorSettingRow('color-hl-paren-window-dark', t('settings.color.parenthesis'), darkColors, 'paren')}
+              {@render colorSettingRow('color-hl-bracket-window-dark', t('settings.color.bracket'), darkColors, 'bracket')}
+              {@render colorSettingRow('color-hl-brace-window-dark', t('settings.color.brace'), darkColors, 'brace')}
+              {@render colorSettingRow('color-indent-guide-window-dark', t('settings.color.indentGuide'), darkColors, 'guide')}
             {:else}
-              {@render colorSettingRow('color-render-bg-window-light', '렌더 모드 배경색', lightColors, 'renderBg')}
-              {@render colorSettingRow('color-render-text-window-light', '렌더 모드 기본 글자 색상', lightColors, 'renderText')}
+              {@render colorSettingRow('color-render-bg-window-light', t('settings.color.renderBackground'), lightColors, 'renderBg')}
+              {@render colorSettingRow('color-render-text-window-light', t('settings.color.renderText'), lightColors, 'renderText')}
 
               <div class="settings-row color-row">
-                <label for="render-font-weight-window-light">렌더 모드 폰트 굵기</label>
+                <label for="render-font-weight-window-light">{t('settings.fontWeight')}</label>
                 <select id="render-font-weight-window-light" bind:value={lightColors.renderFontWeight} class="tab-size-select" style="width: 140px;">
-                  <option value="300">Light</option>
-                  <option value="400">Normal</option>
-                  <option value="500">Medium</option>
-                  <option value="600">Semi Bold</option>
-                  <option value="700">Bold</option>
+                  <option value="300">{t('settings.weightLight')}</option>
+                  <option value="400">{t('settings.weightNormal')}</option>
+                  <option value="500">{t('settings.weightMedium')}</option>
+                  <option value="600">{t('settings.weightSemiBold')}</option>
+                  <option value="700">{t('settings.weightBold')}</option>
                 </select>
               </div>
 
-              {@render colorSettingRow('color-hl-code-bg-window-light', '코드 배경색', lightColors, 'codeBg')}
-              {@render colorSettingRow('color-hl-code-text-window-light', '코드 기본 글자 색상', lightColors, 'codeText')}
-              {@render colorSettingRow('color-hl-key-strong-window-light', '키 색상 1단계 (진한색)', lightColors, 'keyStrong')}
-              {@render colorSettingRow('color-hl-key-medium-window-light', '키 색상 2단계 (중간색)', lightColors, 'keyMedium')}
-              {@render colorSettingRow('color-hl-key-light-window-light', '키 색상 3단계 (연한색)', lightColors, 'keyLight')}
-              {@render colorSettingRow('color-hl-string-window-light', `문자열 색상 ('...', "...")`, lightColors, 'string')}
-              {@render colorSettingRow('color-hl-number-window-light', '숫자 색상 (0-9)', lightColors, 'number')}
-              {@render colorSettingRow('color-hl-list-marker-window-light', '글머리 기호 색상', lightColors, 'listMarker')}
-              {@render colorSettingRow('color-hl-comment-window-light', '파일 형식별 주석 색상', lightColors, 'comment')}
-              {@render colorSettingRow('color-hl-paren-window-light', '소괄호 색상 ( )', lightColors, 'paren')}
-              {@render colorSettingRow('color-hl-bracket-window-light', '대괄호 색상 [ ]', lightColors, 'bracket')}
-              {@render colorSettingRow('color-hl-brace-window-light', '중괄호 색상 { }', lightColors, 'brace')}
-              {@render colorSettingRow('color-indent-guide-window-light', '들여쓰기 가이드라인 색상', lightColors, 'guide')}
+              {@render colorSettingRow('color-hl-code-bg-window-light', t('settings.color.codeBackground'), lightColors, 'codeBg')}
+              {@render colorSettingRow('color-hl-code-text-window-light', t('settings.color.codeText'), lightColors, 'codeText')}
+              {@render colorSettingRow('color-hl-key-strong-window-light', t('settings.color.keyStrong'), lightColors, 'keyStrong')}
+              {@render colorSettingRow('color-hl-key-medium-window-light', t('settings.color.keyMedium'), lightColors, 'keyMedium')}
+              {@render colorSettingRow('color-hl-key-light-window-light', t('settings.color.keyLight'), lightColors, 'keyLight')}
+              {@render colorSettingRow('color-hl-string-window-light', t('settings.color.string'), lightColors, 'string')}
+              {@render colorSettingRow('color-hl-number-window-light', t('settings.color.number'), lightColors, 'number')}
+              {@render colorSettingRow('color-hl-list-marker-window-light', t('settings.color.listMarker'), lightColors, 'listMarker')}
+              {@render colorSettingRow('color-hl-comment-window-light', t('settings.color.comment'), lightColors, 'comment')}
+              {@render colorSettingRow('color-hl-paren-window-light', t('settings.color.parenthesis'), lightColors, 'paren')}
+              {@render colorSettingRow('color-hl-bracket-window-light', t('settings.color.bracket'), lightColors, 'bracket')}
+              {@render colorSettingRow('color-hl-brace-window-light', t('settings.color.brace'), lightColors, 'brace')}
+              {@render colorSettingRow('color-indent-guide-window-light', t('settings.color.indentGuide'), lightColors, 'guide')}
             {/if}
 
             <div class="settings-action-row">
               <button class="reset-colors-btn" onclick={resetColorsToDefault}>
-                기본 색상으로 복원
+                {t('settings.resetColors')}
               </button>
             </div>
           </div>
         {:else if activeSettingsView === 'renderEditing'}
           <div class="settings-section">
-            <h4 class="section-title">자동 입력</h4>
+            <h4 class="section-title">{t('settings.autoInput')}</h4>
             <label class="settings-check-row" for="render-auto-pair-editing-window">
               <input
                 id="render-auto-pair-editing-window"
@@ -4554,8 +4676,8 @@
                 bind:checked={renderAutoPairEditing}
               />
               <span class="settings-check-copy">
-                <span class="settings-check-title">쌍 문자 자동 입력 및 삭제</span>
-                <span class="settings-check-description">( )나 &#123; &#125; 같은 괄호 및 따옴표를 하나만 입력해도 자동으로 쌍을 생성합니다.</span>
+                <span class="settings-check-title">{t('settings.autoPair.title')}</span>
+                <span class="settings-check-description">{t('settings.autoPair.description')}</span>
               </span>
             </label>
             <label class="settings-check-row" for="render-auto-symbol-substitution-window">
@@ -4566,8 +4688,8 @@
                 bind:checked={renderAutoSymbolSubstitution}
               />
               <span class="settings-check-copy">
-                <span class="settings-check-title">화살표 기호 자동 변환</span>
-                <span class="settings-check-description">-->나 ==> 같은 기호를 단독으로 입력한 뒤 스페이스를 누르면 →나 ⇒로 변환합니다.</span>
+                <span class="settings-check-title">{t('settings.autoSymbols.title')}</span>
+                <span class="settings-check-description">{t('settings.autoSymbols.description')}</span>
               </span>
             </label>
             <label class="settings-check-row" for="render-preserve-indent-on-enter-window">
@@ -4578,8 +4700,8 @@
                 bind:checked={renderPreserveIndentOnEnter}
               />
               <span class="settings-check-copy">
-                <span class="settings-check-title">줄바꿈 시 들여쓰기 유지</span>
-                <span class="settings-check-description">들여쓰기된 줄에서 Enter를 누르면 다음 줄에도 같은 들여쓰기를 넣습니다.</span>
+                <span class="settings-check-title">{t('settings.preserveIndent.title')}</span>
+                <span class="settings-check-description">{t('settings.preserveIndent.description')}</span>
               </span>
             </label>
           </div>
@@ -4587,19 +4709,19 @@
           <div class="settings-section">
             <div class="settings-format-module">
               <div class="settings-format-heading">
-                <h4 class="section-title">{activeSettingsCategory.label}</h4>
-                <span class="settings-check-description">{activeSettingsCategory.description}</span>
+                <h4 class="section-title">{t(activeSettingsCategory.labelKey)}</h4>
+                <span class="settings-check-description">{t(activeSettingsCategory.descriptionKey)}</span>
               </div>
-              <div class="settings-category-formats" aria-label={`${activeSettingsCategory.label} 형식`}>
+              <div class="settings-category-formats" aria-label={t('settings.categoryFormats', { category: t(activeSettingsCategory.labelKey) })}>
                 {#each getDocumentFormatsForCategory(activeSettingsCategory) as format}
-                  <span class="settings-format-chip">{format.label}</span>
+                  <span class="settings-format-chip">{t(format.labelKey)}</span>
                 {/each}
               </div>
             </div>
 
             {#if activeSettingsCategory.id === 'table'}
               <div class="settings-format-module">
-                <h5 class="settings-subsection-title">표시</h5>
+                <h5 class="settings-subsection-title">{t('settings.table.display')}</h5>
                 <label class="settings-check-row" for="delimited-table-highlight-header-window">
                   <input
                     id="delimited-table-highlight-header-window"
@@ -4608,8 +4730,8 @@
                     bind:checked={delimitedTableHighlightHeader}
                   />
                   <span class="settings-check-copy">
-                    <span class="settings-check-title">첫 행 강조</span>
-                    <span class="settings-check-description">CSV와 TSV에서 데이터의 첫 번째 행을 머리글로 강조합니다.</span>
+                    <span class="settings-check-title">{t('settings.table.highlightHeader.title')}</span>
+                    <span class="settings-check-description">{t('settings.table.highlightHeader.description')}</span>
                   </span>
                 </label>
                 <label class="settings-check-row" for="delimited-table-show-row-indices-window">
@@ -4620,14 +4742,14 @@
                     bind:checked={delimitedTableShowRowIndices}
                   />
                   <span class="settings-check-copy">
-                    <span class="settings-check-title">행 번호 표시</span>
-                    <span class="settings-check-description">CSV와 TSV 표의 왼쪽 조작 여백에 행 번호를 표시합니다.</span>
+                    <span class="settings-check-title">{t('settings.table.rowNumbers.title')}</span>
+                    <span class="settings-check-description">{t('settings.table.rowNumbers.description')}</span>
                   </span>
                 </label>
               </div>
 
               <div class="settings-format-module">
-                <h5 class="settings-subsection-title">행·열 이동</h5>
+                <h5 class="settings-subsection-title">{t('settings.table.reorderSection')}</h5>
                 <label class="settings-check-row" for="delimited-table-reorder-animation-window">
                   <input
                     id="delimited-table-reorder-animation-window"
@@ -4636,8 +4758,8 @@
                     bind:checked={delimitedTableAnimateReorder}
                   />
                   <span class="settings-check-copy">
-                    <span class="settings-check-title">이동 애니메이션</span>
-                    <span class="settings-check-description">드롭할 때 주변 행과 열을 밀고 대상을 삽입 위치로 이동시킵니다.</span>
+                    <span class="settings-check-title">{t('settings.table.reorder.title')}</span>
+                    <span class="settings-check-description">{t('settings.table.reorder.description')}</span>
                   </span>
                 </label>
                 <label
@@ -4645,7 +4767,7 @@
                   class:disabled={!delimitedTableAnimateReorder}
                   for="delimited-table-reorder-duration-window"
                 >
-                  <span>이동 시간</span>
+                  <span>{t('settings.table.reorder.duration')}</span>
                   <input
                     id="delimited-table-reorder-duration-window"
                     class="settings-duration-range"
@@ -4664,7 +4786,7 @@
               </div>
             {:else}
               <p class="settings-category-note">
-                렌더 표시와 편집 여부는 아래의 개별 파일 형식에서 설정합니다.
+                {t('settings.categoryNote')}
               </p>
             {/if}
           </div>
@@ -4672,9 +4794,9 @@
           <div class="settings-section">
             <div class="settings-format-module">
               <div class="settings-format-heading">
-                <h4 class="section-title">{activeSettingsFormat.label}</h4>
+                <h4 class="section-title">{t(activeSettingsFormat.labelKey)}</h4>
                 <span class="settings-check-description">
-                  {activeSettingsFormat.extensions.length > 0 ? activeSettingsFormat.extensions.map((extension) => `.${extension}`).join(', ') : '확장자가 없는 기본 텍스트'}
+                  {activeSettingsFormat.extensions.length > 0 ? activeSettingsFormat.extensions.map((extension) => `.${extension}`).join(', ') : t('settings.noExtension')}
                 </span>
               </div>
               <label class="settings-check-row" for={`document-format-${activeSettingsFormat.id}-render-window`}>
@@ -4686,8 +4808,8 @@
                   onchange={(event) => setDocumentFormatFeature(activeSettingsFormat.id, 'render', (event.currentTarget as HTMLInputElement).checked)}
                 />
                 <span class="settings-check-copy">
-                  <span class="settings-check-title">렌더 표시</span>
-                  <span class="settings-check-description">{activeSettingsFormat.renderDescription}</span>
+                  <span class="settings-check-title">{t('settings.renderDisplay.title')}</span>
+                  <span class="settings-check-description">{t(activeSettingsFormat.renderDescriptionKey)}</span>
                 </span>
               </label>
               <label class="settings-check-row" for={`document-format-${activeSettingsFormat.id}-edit-window`}>
@@ -4699,8 +4821,8 @@
                   onchange={(event) => setDocumentFormatFeature(activeSettingsFormat.id, 'edit', (event.currentTarget as HTMLInputElement).checked)}
                 />
                 <span class="settings-check-copy">
-                  <span class="settings-check-title">렌더 편집</span>
-                  <span class="settings-check-description">{activeSettingsFormat.editDescription}</span>
+                  <span class="settings-check-title">{t('settings.renderEditing.title')}</span>
+                  <span class="settings-check-description">{t(activeSettingsFormat.editDescriptionKey)}</span>
                 </span>
               </label>
             </div>
@@ -4742,7 +4864,7 @@
       </div>
 
       <div class="titlebar-tabs">
-        <div class="tab-list" role="tablist" aria-label="열린 파일 탭">
+        <div class="tab-list" role="tablist" aria-label={t('window.openTabs')}>
           {#each tabs as tab (tab.id)}
             <div class="tab-item" class:active={tab.id === activeTabId} class:dirty={tab.isDirty}>
               <button
@@ -4761,8 +4883,8 @@
               <button
                 type="button"
                 class="tab-close-btn"
-                aria-label={`${getDisplayFileName(tab)} 탭 닫기`}
-                title="탭 닫기"
+                aria-label={t('window.closeTab', { fileName: getDisplayFileName(tab) })}
+                title={t('window.closeTabTitle')}
                 onclick={(event) => handleCloseTab(tab.id, event)}
               >
                 <X size={14} aria-hidden="true" />
@@ -4773,8 +4895,8 @@
         <button
           type="button"
           class="tab-add-btn"
-          aria-label="새 탭"
-          title="새 탭"
+          aria-label={t('window.newTab')}
+          title={t('window.newTab')}
           onclick={handleAddTab}
         >
           <Plus size={16} aria-hidden="true" />
@@ -4788,12 +4910,12 @@
         ></div>
       </div>
 
-      <div class="window-control-group" aria-label="창 제어">
+      <div class="window-control-group" aria-label={t('window.controls')}>
         <button
           type="button"
           class="window-control-btn"
-          aria-label="창 최소화"
-          title="최소화"
+          aria-label={t('window.minimize')}
+          title={t('window.minimizeTitle')}
           onclick={handleWindowMinimize}
         >
           <Minus size={16} aria-hidden="true" />
@@ -4801,8 +4923,8 @@
         <button
           type="button"
           class="window-control-btn"
-          aria-label={isWindowMaximized ? "창 복원" : "창 최대화"}
-          title={isWindowMaximized ? "복원" : "최대화"}
+          aria-label={isWindowMaximized ? t('window.restore') : t('window.maximize')}
+          title={isWindowMaximized ? t('window.restoreTitle') : t('window.maximizeTitle')}
           onclick={handleWindowToggleMaximize}
         >
           {#if isWindowMaximized}
@@ -4814,8 +4936,8 @@
         <button
           type="button"
           class="window-control-btn close"
-          aria-label="창 닫기"
-          title="닫기"
+          aria-label={t('window.close')}
+          title={t('window.closeTitle')}
           onclick={handleWindowClose}
         >
           <X size={16} aria-hidden="true" />
@@ -4833,29 +4955,29 @@
             onclick={(e) => toggleDropdown('file', e)}
             onmouseenter={() => handleMouseEnter('file')}
           >
-            파일(F)
+            {t('menu.file')}
           </button>
           {#if openDropdown === 'file'}
             <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
               <button class="dropdown-item" onclick={handleNewFile}>
-                <span class="item-label">새 탭</span>
+                <span class="item-label">{t('menu.newTab')}</span>
                 <span class="shortcut-label">Ctrl+N</span>
               </button>
               <button class="dropdown-item" onclick={handleOpenFile}>
-                <span class="item-label">열기...</span>
+                <span class="item-label">{t('menu.open')}</span>
                 <span class="shortcut-label">Ctrl+O</span>
               </button>
               <button class="dropdown-item" onclick={handleSaveFile}>
-                <span class="item-label">저장</span>
+                <span class="item-label">{t('menu.save')}</span>
                 <span class="shortcut-label">Ctrl+S</span>
               </button>
               <button class="dropdown-item" onclick={handleSaveAsFile}>
-                <span class="item-label">다른 이름으로 저장...</span>
+                <span class="item-label">{t('menu.saveAs')}</span>
                 <span class="shortcut-label">Ctrl+Shift+S</span>
               </button>
               <div class="menu-divider"></div>
               <button class="dropdown-item" onclick={handleExit}>
-                <span class="item-label">끝내기</span>
+                <span class="item-label">{t('menu.exit')}</span>
                 <span class="shortcut-label">Alt+F4</span>
               </button>
             </div>
@@ -4869,42 +4991,42 @@
             onclick={(e) => toggleDropdown('edit', e)}
             onmouseenter={() => handleMouseEnter('edit')}
           >
-            편집(E)
+            {t('menu.edit')}
           </button>
           {#if openDropdown === 'edit'}
             <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
               <button class="dropdown-item" onclick={handleUndo} disabled={!canUndoActiveTab()}>
-                <span class="item-label">실행 취소</span>
+                <span class="item-label">{t('menu.undo')}</span>
                 <span class="shortcut-label">Ctrl+Z</span>
               </button>
               <button class="dropdown-item" onclick={handleRedo} disabled={!canRedoActiveTab()}>
-                <span class="item-label">다시 실행</span>
+                <span class="item-label">{t('menu.redo')}</span>
                 <span class="shortcut-label">Ctrl+Y</span>
               </button>
               <div class="menu-divider"></div>
               <button class="dropdown-item" onclick={handleCut} disabled={!fileContent}>
-                <span class="item-label">잘라내기</span>
+                <span class="item-label">{t('menu.cut')}</span>
                 <span class="shortcut-label">Ctrl+X</span>
               </button>
               <button class="dropdown-item" onclick={handleCopy} disabled={!fileContent}>
-                <span class="item-label">복사</span>
+                <span class="item-label">{t('menu.copy')}</span>
                 <span class="shortcut-label">Ctrl+C</span>
               </button>
               <button class="dropdown-item" onclick={handlePaste}>
-                <span class="item-label">붙여넣기</span>
+                <span class="item-label">{t('menu.paste')}</span>
                 <span class="shortcut-label">Ctrl+V</span>
               </button>
               <button class="dropdown-item" onclick={handleDelete} disabled={!fileContent}>
-                <span class="item-label">삭제</span>
+                <span class="item-label">{t('menu.delete')}</span>
                 <span class="shortcut-label">Del</span>
               </button>
               <div class="menu-divider"></div>
               <button class="dropdown-item" onclick={handleSelectAll}>
-                <span class="item-label">모두 선택</span>
+                <span class="item-label">{t('menu.selectAll')}</span>
                 <span class="shortcut-label">Ctrl+A</span>
               </button>
               <button class="dropdown-item" onclick={insertDateTime}>
-                <span class="item-label">시간/날짜</span>
+                <span class="item-label">{t('menu.dateTime')}</span>
                 <span class="shortcut-label">F5</span>
               </button>
             </div>
@@ -4918,7 +5040,7 @@
             onclick={(e) => toggleDropdown('help', e)}
             onmouseenter={() => handleMouseEnter('help')}
           >
-            도움말(H)
+            {t('menu.help')}
           </button>
           {#if openDropdown === 'help'}
             <div class="dropdown-menu help-menu">
@@ -4928,12 +5050,12 @@
                 disabled={isCheckingForUpdate || isInstallingUpdate}
               >
                 <span class="item-label">
-                  {isInstallingUpdate ? '업데이트 설치 중...' : isCheckingForUpdate ? '업데이트 확인 중...' : '업데이트 확인'}
+                  {isInstallingUpdate ? t('update.menuInstalling') : isCheckingForUpdate ? t('update.menuChecking') : t('update.menuCheck')}
                 </span>
               </button>
               <div class="menu-divider"></div>
               <button class="dropdown-item" onclick={handleAboutDialogOpen}>
-                <span class="item-label">정보</span>
+                <span class="item-label">{t('menu.about')}</span>
               </button>
             </div>
           {/if}
@@ -4959,7 +5081,7 @@
             if (themeMode === 'system') themeMode = systemIsDark ? 'light' : 'dark';
             else themeMode = themeMode === 'light' ? 'dark' : 'light';
           }}
-          title="테마 모드 변경"
+          title={t('toolbar.changeTheme')}
         >
           {#if currentTheme === 'dark'}
             <Moon size={18} />
@@ -4972,7 +5094,7 @@
           class="render-mode-toggle"
           class:active={isRenderMode}
           onclick={toggleRenderMode}
-          title={isRenderMode ? "원본 모드로 전환" : "렌더 모드로 전환"}
+          title={isRenderMode ? t('toolbar.switchToSource') : t('toolbar.switchToRender')}
         >
           {#if isRenderMode}
             <PaintRoller size={18} />
@@ -4984,7 +5106,7 @@
         <button
           class="settings-trigger"
           onclick={handleSettingsTrigger}
-          title="설정"
+          title={t('toolbar.settings')}
         >
           <Settings size={18} />
         </button>
@@ -5004,7 +5126,8 @@
         {#if shouldShowDelimitedTableEditor && activeDelimitedTableDocument}
           <DelimitedTableEditor
             document={activeDelimitedTableDocument}
-            formatLabel={activeDocumentFormat.label}
+            formatLabel={t(activeDocumentFormat.labelKey)}
+            locale={locale}
             editable={isActiveDocumentEditEnabled}
             highlightHeader={delimitedTableHighlightHeader}
             showRowIndices={delimitedTableShowRowIndices}
@@ -5077,6 +5200,7 @@
             onfocus={handleEditorFocus}
             onblur={handleEditorBlur}
             spellcheck="false"
+            dir="auto"
           ></textarea>
           {#if steadyEditorCaretVisible && steadyEditorCaretCollapsed}
             {#key steadyEditorCaretBlinkKey}
@@ -5115,24 +5239,24 @@
       </div>
       <div class="status-right">
         {#if isRenderMode && !isEnhancedDocumentWithinBudget}
-          <span class="status-item" title="안전한 편집을 위해 고비용 렌더링을 생략했습니다">
-            큰 파일 · 원본 표시
+          <span class="status-item" title={t('status.largeFileRawHint')}>
+            {t('status.largeFileRaw')}
           </span>
         {/if}
         {#if shouldShowDocumentSyntaxStatus}
           <span
             class="status-item"
             class:status-error={!!documentDiagnostic}
-            title={documentDiagnostic?.message || `${activeDocumentFormat.label} 문법 문제가 없습니다`}
+            title={documentDiagnostic?.message || t('diagnostic.noProblems', { format: t(activeDocumentFormat.labelKey) })}
           >
             {#if documentDiagnostic}
-              {activeDocumentFormat.label} 오류 {documentDiagnostic.line}:{documentDiagnostic.column}
+              {t('diagnostic.errorStatus', { format: t(activeDocumentFormat.labelKey), line: documentDiagnostic.line, column: documentDiagnostic.column })}
             {:else}
-              {activeDocumentFormat.label} 정상
+              {t('diagnostic.okStatus', { format: t(activeDocumentFormat.labelKey) })}
             {/if}
           </span>
         {/if}
-        <span class="status-item">Ln {cursorLine}, Col {cursorCol}</span>
+        <span class="status-item">{t('status.lineColumn', { line: cursorLine, column: cursorCol })}</span>
         <span class="status-item">100%</span>
         <span class="status-item">Windows (CRLF)</span>
         <span class="status-item">UTF-8</span>
@@ -5142,6 +5266,7 @@
     <AboutDialog
       open={isAboutDialogOpen}
       version={installedAppVersion}
+      locale={locale}
       onclose={() => isAboutDialogOpen = false}
     />
   </div>

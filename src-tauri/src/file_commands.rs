@@ -14,6 +14,19 @@ use tempfile::NamedTempFile;
 const MAX_FILE_SIZE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FILE_LINE_COUNT: usize = 250_000;
 const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &["txt", "json", "csv", "tsv", "yaml", "yml"];
+const MAX_DIALOG_FILTER_NAME_CHARS: usize = 64;
+
+fn dialog_filter_name(provided: Option<&str>, fallback: &str) -> String {
+    let provided = provided.map(str::trim).unwrap_or_default();
+    if provided.is_empty()
+        || provided.chars().count() > MAX_DIALOG_FILTER_NAME_CHARS
+        || provided.chars().any(char::is_control)
+    {
+        fallback.to_string()
+    } else {
+        provided.to_string()
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct FileCommandError {
@@ -29,10 +42,10 @@ impl FileCommandError {
         }
     }
 
-    fn from_io(context: &'static str, err: io::Error) -> Self {
+    fn from_io(err: io::Error) -> Self {
         Self {
             code: file_error_code(err.kind()),
-            message: format!("{context}: {err}"),
+            message: err.to_string(),
         }
     }
 }
@@ -59,8 +72,7 @@ impl ApprovedFilePaths {
     }
 
     fn resolve_approved(&self, path: &Path) -> Result<PathBuf, FileCommandError> {
-        let normalized = normalize_save_path(path)
-            .map_err(|err| FileCommandError::from_io("파일 경로를 확인할 수 없습니다", err))?;
+        let normalized = normalize_save_path(path).map_err(|err| FileCommandError::from_io(err))?;
         let paths = self.paths.lock().map_err(|_| {
             FileCommandError::new("state_error", "승인된 파일 경로 상태를 사용할 수 없습니다")
         })?;
@@ -92,7 +104,7 @@ fn target_parent_dir(file_path: &Path) -> io::Result<&Path> {
     if file_path.file_name().is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "파일 이름이 없는 경로입니다",
+            "The path does not contain a file name",
         ));
     }
 
@@ -167,11 +179,10 @@ fn read_file_content_with_limits(
     max_bytes: usize,
     max_lines: usize,
 ) -> Result<String, FileCommandError> {
-    let file = File::open(file_path)
-        .map_err(|err| FileCommandError::from_io("파일을 읽을 수 없습니다", err))?;
+    let file = File::open(file_path).map_err(|err| FileCommandError::from_io(err))?;
     let metadata = file
         .metadata()
-        .map_err(|err| FileCommandError::from_io("파일 정보를 읽을 수 없습니다", err))?;
+        .map_err(|err| FileCommandError::from_io(err))?;
 
     if metadata.len() > max_bytes as u64 {
         return Err(FileCommandError::new(
@@ -186,7 +197,7 @@ fn read_file_content_with_limits(
     let mut content = Vec::with_capacity(metadata.len() as usize);
     file.take((max_bytes as u64).saturating_add(1))
         .read_to_end(&mut content)
-        .map_err(|err| FileCommandError::from_io("파일을 읽을 수 없습니다", err))?;
+        .map_err(|err| FileCommandError::from_io(err))?;
     validate_content_limits(&content, max_bytes, max_lines)?;
 
     String::from_utf8(content).map_err(|err| {
@@ -264,8 +275,7 @@ fn open_file(
     file_path: &Path,
     approved_paths: &ApprovedFilePaths,
 ) -> Result<OpenedFile, FileCommandError> {
-    let normalized = normalize_existing_file_path(file_path)
-        .map_err(|err| FileCommandError::from_io("파일 경로를 확인할 수 없습니다", err))?;
+    let normalized = normalize_existing_file_path(file_path).map_err(FileCommandError::from_io)?;
     let content = read_file_content_from_path(&normalized)?;
     approved_paths.approve(normalized.clone())?;
 
@@ -278,12 +288,14 @@ fn open_file(
 #[tauri::command]
 pub async fn open_file_dialog(
     app: AppHandle,
+    filter_name: String,
     approved_paths: State<'_, ApprovedFilePaths>,
 ) -> Result<Option<OpenedFile>, FileCommandError> {
+    let filter_name = dialog_filter_name(Some(&filter_name), "Text files");
     let selected = app
         .dialog()
         .file()
-        .add_filter("텍스트 파일", SUPPORTED_TEXT_EXTENSIONS)
+        .add_filter(filter_name, SUPPORTED_TEXT_EXTENSIONS)
         .blocking_pick_file();
     let Some(selected) = selected else {
         return Ok(None);
@@ -320,8 +332,7 @@ pub fn write_file_content(
 ) -> Result<(), FileCommandError> {
     validate_content_limits(content.as_bytes(), MAX_FILE_SIZE_BYTES, MAX_FILE_LINE_COUNT)?;
     let file_path = approved_paths.resolve_approved(Path::new(&path))?;
-    write_file_content_to_path(&file_path, &content)
-        .map_err(|err| FileCommandError::from_io("파일을 저장할 수 없습니다", err))
+    write_file_content_to_path(&file_path, &content).map_err(FileCommandError::from_io)
 }
 
 #[tauri::command]
@@ -329,19 +340,28 @@ pub async fn save_file_dialog(
     app: AppHandle,
     default_name: String,
     content: String,
+    filter_names: Vec<String>,
     approved_paths: State<'_, ApprovedFilePaths>,
 ) -> Result<Option<String>, FileCommandError> {
     validate_content_limits(content.as_bytes(), MAX_FILE_SIZE_BYTES, MAX_FILE_LINE_COUNT)?;
 
+    let text_filter_name =
+        dialog_filter_name(filter_names.first().map(String::as_str), "Text files");
+    let json_filter_name =
+        dialog_filter_name(filter_names.get(1).map(String::as_str), "JSON files");
+    let csv_filter_name = dialog_filter_name(filter_names.get(2).map(String::as_str), "CSV files");
+    let tsv_filter_name = dialog_filter_name(filter_names.get(3).map(String::as_str), "TSV files");
+    let yaml_filter_name =
+        dialog_filter_name(filter_names.get(4).map(String::as_str), "YAML files");
     let selected = app
         .dialog()
         .file()
         .set_file_name(default_name)
-        .add_filter("텍스트 파일", &["txt"])
-        .add_filter("JSON 파일", &["json"])
-        .add_filter("CSV 파일", &["csv"])
-        .add_filter("TSV 파일", &["tsv"])
-        .add_filter("YAML 파일", &["yaml", "yml"])
+        .add_filter(text_filter_name, &["txt"])
+        .add_filter(json_filter_name, &["json"])
+        .add_filter(csv_filter_name, &["csv"])
+        .add_filter(tsv_filter_name, &["tsv"])
+        .add_filter(yaml_filter_name, &["yaml", "yml"])
         .blocking_save_file();
     let Some(selected) = selected else {
         return Ok(None);
@@ -352,11 +372,11 @@ pub async fn save_file_dialog(
             format!("선택한 파일 경로가 올바르지 않습니다: {err}"),
         )
     })?;
-    let normalized = normalize_save_path(&selected_path)
-        .map_err(|err| FileCommandError::from_io("저장 경로를 확인할 수 없습니다", err))?;
+    let normalized =
+        normalize_save_path(&selected_path).map_err(|err| FileCommandError::from_io(err))?;
 
     write_file_content_to_path(&normalized, &content)
-        .map_err(|err| FileCommandError::from_io("파일을 저장할 수 없습니다", err))?;
+        .map_err(|err| FileCommandError::from_io(err))?;
     approved_paths.approve(normalized.clone())?;
 
     Ok(Some(normalized.to_string_lossy().into_owned()))

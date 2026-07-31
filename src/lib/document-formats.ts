@@ -19,6 +19,7 @@ import {
   type FlatToken,
   type ParsedLine as StructuredParsedLine
 } from './structured-rendering';
+import { translate, type AppLocale, type TranslationKey } from './i18n';
 
 export type ParsedLine = StructuredParsedLine;
 
@@ -49,8 +50,8 @@ export type DocumentFormatCategoryId = 'document' | 'structured' | 'table' | 'co
 
 export interface DocumentFormatCategory {
   id: DocumentFormatCategoryId;
-  label: string;
-  description: string;
+  labelKey: TranslationKey;
+  descriptionKey: TranslationKey;
   formatIds: DocumentFormatId[];
 }
 
@@ -63,12 +64,12 @@ export type DocumentFeatureSettings = Record<DocumentFormatId, DocumentFormatFea
 
 export interface DocumentFormat {
   id: DocumentFormatId;
-  label: string;
+  labelKey: TranslationKey;
   extensions: string[];
   defaultExtension: string;
   validatesSyntax: boolean;
-  renderDescription: string;
-  editDescription: string;
+  renderDescriptionKey: TranslationKey;
+  editDescriptionKey: TranslationKey;
   commentSyntax?: CommentSyntax;
 }
 
@@ -105,144 +106,141 @@ const hashCommentSyntax: CommentSyntax = {
   line: [hashLineComment]
 };
 
-const genericRenderDescription = '기본 강조와 색상 코드 표시를 사용하고, 주석 규칙이 있는 형식은 주석도 표시합니다.';
-const genericEditDescription = '렌더된 색상 코드를 클릭해 색상 선택기로 바꿉니다.';
-
 const plainTextFormat: DocumentFormat = {
   id: 'plain',
-  label: '텍스트',
+  labelKey: 'format.plain.label',
   extensions: ['txt'],
   defaultExtension: 'txt',
   validatesSyntax: false,
-  renderDescription: genericRenderDescription,
-  editDescription: genericEditDescription
+  renderDescriptionKey: 'format.render.generic',
+  editDescriptionKey: 'format.edit.generic'
 };
 
 const markdownFormat: DocumentFormat = {
   id: 'markdown',
-  label: 'Markdown',
+  labelKey: 'format.markdown.label',
   extensions: ['md'],
   defaultExtension: 'md',
   validatesSyntax: false,
-  renderDescription: genericRenderDescription,
-  editDescription: genericEditDescription,
+  renderDescriptionKey: 'format.render.generic',
+  editDescriptionKey: 'format.edit.generic',
   commentSyntax: { block: [htmlBlockComment] }
 };
 
 const jsonFormat: DocumentFormat = {
   id: 'json',
-  label: 'JSON',
+  labelKey: 'format.json.label',
   extensions: ['json'],
   defaultExtension: 'json',
   validatesSyntax: true,
-  renderDescription: '키, 값, 구분자, 괄호와 문법 오류 표시를 사용합니다.',
-  editDescription: '렌더된 true와 false 값을 클릭해 반대로 바꿉니다.'
+  renderDescriptionKey: 'format.json.render',
+  editDescriptionKey: 'format.json.edit'
 };
 
 const csvFormat: DocumentFormat = {
   id: 'csv',
-  label: 'CSV',
+  labelKey: 'format.csv.label',
   extensions: ['csv'],
   defaultExtension: 'csv',
   validatesSyntax: false,
-  renderDescription: '쉼표로 구분된 셀을 컴팩트한 표로 표시하고 첫 행 강조와 행 번호 표시를 제공합니다.',
-  editDescription: '셀을 직접 편집하고 행과 열을 추가, 제거하거나 드래그로 이동합니다.'
+  renderDescriptionKey: 'format.csv.render',
+  editDescriptionKey: 'format.csv.edit'
 };
 
 const tsvFormat: DocumentFormat = {
   id: 'tsv',
-  label: 'TSV',
+  labelKey: 'format.tsv.label',
   extensions: ['tsv'],
   defaultExtension: 'tsv',
   validatesSyntax: false,
-  renderDescription: '탭으로 구분된 셀을 컴팩트한 표로 표시하고 첫 행 강조와 행 번호 표시를 제공합니다.',
-  editDescription: '셀을 직접 편집하고 행과 열을 추가, 제거하거나 드래그로 이동합니다.'
+  renderDescriptionKey: 'format.tsv.render',
+  editDescriptionKey: 'format.tsv.edit'
 };
 
 const yamlFormat: DocumentFormat = {
   id: 'yaml',
-  label: 'YAML',
+  labelKey: 'format.yaml.label',
   extensions: ['yaml', 'yml'],
   defaultExtension: 'yaml',
   validatesSyntax: true,
-  renderDescription: '키, 값, 목록 표식, 주석, 문서 구분자와 문법 오류 표시를 사용합니다.',
-  editDescription: '렌더된 true와 false 값을 클릭해 반대로 바꿉니다.',
+  renderDescriptionKey: 'format.yaml.render',
+  editDescriptionKey: 'format.yaml.edit',
   commentSyntax: hashCommentSyntax
 };
 
 const iniFormat: DocumentFormat = {
   id: 'ini',
-  label: 'INI/CFG',
+  labelKey: 'format.ini.label',
   extensions: ['ini', 'cfg'],
   defaultExtension: 'ini',
   validatesSyntax: false,
-  renderDescription: genericRenderDescription,
-  editDescription: genericEditDescription,
+  renderDescriptionKey: 'format.render.generic',
+  editDescriptionKey: 'format.edit.generic',
   commentSyntax: { line: [semicolonLineComment, iniHashLineComment] }
 };
 
 const logFormat: DocumentFormat = {
   id: 'log',
-  label: 'LOG',
+  labelKey: 'format.log.label',
   extensions: ['log'],
   defaultExtension: 'log',
   validatesSyntax: false,
-  renderDescription: genericRenderDescription,
-  editDescription: genericEditDescription
+  renderDescriptionKey: 'format.render.generic',
+  editDescriptionKey: 'format.edit.generic'
 };
 
 const javascriptFormat: DocumentFormat = {
   id: 'javascript',
-  label: 'JavaScript',
+  labelKey: 'format.javascript.label',
   extensions: ['js'],
   defaultExtension: 'js',
   validatesSyntax: false,
-  renderDescription: genericRenderDescription,
-  editDescription: genericEditDescription,
+  renderDescriptionKey: 'format.render.generic',
+  editDescriptionKey: 'format.edit.generic',
   commentSyntax: cFamilyCommentSyntax
 };
 
 const typescriptFormat: DocumentFormat = {
   id: 'typescript',
-  label: 'TypeScript',
+  labelKey: 'format.typescript.label',
   extensions: ['ts'],
   defaultExtension: 'ts',
   validatesSyntax: false,
-  renderDescription: genericRenderDescription,
-  editDescription: genericEditDescription,
+  renderDescriptionKey: 'format.render.generic',
+  editDescriptionKey: 'format.edit.generic',
   commentSyntax: cFamilyCommentSyntax
 };
 
 const rustFormat: DocumentFormat = {
   id: 'rust',
-  label: 'Rust',
+  labelKey: 'format.rust.label',
   extensions: ['rs'],
   defaultExtension: 'rs',
   validatesSyntax: false,
-  renderDescription: genericRenderDescription,
-  editDescription: genericEditDescription,
+  renderDescriptionKey: 'format.render.generic',
+  editDescriptionKey: 'format.edit.generic',
   commentSyntax: cFamilyCommentSyntax
 };
 
 const htmlFormat: DocumentFormat = {
   id: 'html',
-  label: 'HTML',
+  labelKey: 'format.html.label',
   extensions: ['html'],
   defaultExtension: 'html',
   validatesSyntax: false,
-  renderDescription: genericRenderDescription,
-  editDescription: genericEditDescription,
+  renderDescriptionKey: 'format.render.generic',
+  editDescriptionKey: 'format.edit.generic',
   commentSyntax: { block: [htmlBlockComment] }
 };
 
 const cssFormat: DocumentFormat = {
   id: 'css',
-  label: 'CSS',
+  labelKey: 'format.css.label',
   extensions: ['css'],
   defaultExtension: 'css',
   validatesSyntax: false,
-  renderDescription: genericRenderDescription,
-  editDescription: genericEditDescription,
+  renderDescriptionKey: 'format.render.generic',
+  editDescriptionKey: 'format.edit.generic',
   commentSyntax: { block: [cBlockComment] }
 };
 
@@ -265,26 +263,26 @@ export const configurableDocumentFormats = [
 export const configurableDocumentFormatCategories: DocumentFormatCategory[] = [
   {
     id: 'document',
-    label: '문서',
-    description: '일반 문서와 기록용 텍스트 형식입니다.',
+    labelKey: 'category.document.label',
+    descriptionKey: 'category.document.description',
     formatIds: ['plain', 'markdown', 'log']
   },
   {
     id: 'structured',
-    label: '구조화 데이터',
-    description: '키와 값 또는 설정 구조를 표현하는 데이터 형식입니다.',
+    labelKey: 'category.structured.label',
+    descriptionKey: 'category.structured.description',
     formatIds: ['json', 'yaml', 'ini']
   },
   {
     id: 'table',
-    label: '표',
-    description: '행과 열로 구성된 표 및 스프레드시트 교환 형식입니다.',
+    labelKey: 'category.table.label',
+    descriptionKey: 'category.table.description',
     formatIds: ['csv', 'tsv']
   },
   {
     id: 'code',
-    label: '코드',
-    description: '프로그래밍 언어와 웹 문서 형식입니다.',
+    labelKey: 'category.code.label',
+    descriptionKey: 'category.code.description',
     formatIds: ['javascript', 'typescript', 'rust', 'html', 'css']
   }
 ];
@@ -345,6 +343,48 @@ export function isDocumentFormatEditEnabled(
   featureSettings?: DocumentFeatureSettings
 ): boolean {
   return featureSettings?.[format.id]?.edit ?? true;
+}
+
+export const supportedTextExtensions = [
+  ...new Set(productSupportedDocumentFormats.flatMap((format) => format.extensions))
+];
+
+export function getOpenFileDialogFilters(locale: AppLocale) {
+  return [
+    {
+      name: translate(locale, 'filter.textFiles'),
+      extensions: supportedTextExtensions
+    }
+  ];
+}
+
+export function getSaveFileDialogFilters(locale: AppLocale) {
+  return [
+    {
+      name: translate(locale, 'filter.textFiles'),
+      extensions: ['txt']
+    },
+    {
+      name: translate(locale, 'filter.jsonFiles'),
+      extensions: ['json']
+    },
+    {
+      name: translate(locale, 'filter.csvFiles'),
+      extensions: ['csv']
+    },
+    {
+      name: translate(locale, 'filter.tsvFiles'),
+      extensions: ['tsv']
+    },
+    {
+      name: translate(locale, 'filter.yamlFiles'),
+      extensions: ['yaml', 'yml']
+    },
+    {
+      name: translate(locale, 'filter.allSupportedTextFiles'),
+      extensions: supportedTextExtensions
+    }
+  ];
 }
 
 export function getFileExtension(pathOrName: string | null | undefined): string {
@@ -1112,11 +1152,11 @@ function getJsonErrorOffset(content: string, message: string): number {
   return invalidToken?.start ?? 0;
 }
 
-function getJsonDiagnostic(content: string): DocumentDiagnostic | null {
+function getJsonDiagnostic(content: string, locale: AppLocale): DocumentDiagnostic | null {
   if (content.trim().length === 0) {
     return {
       severity: 'error',
-      message: 'JSON 문서가 비어 있습니다.',
+      message: translate(locale, 'diagnostic.jsonEmpty'),
       line: 1,
       column: 1,
       offset: 0
@@ -1133,7 +1173,7 @@ function getJsonDiagnostic(content: string): DocumentDiagnostic | null {
 
     return {
       severity: 'error',
-      message: `JSON 문법 오류가 있습니다. ${position.line}행 ${position.column}열을 확인하세요.`,
+      message: translate(locale, 'diagnostic.jsonSyntax', { line: position.line, column: position.column }),
       line: position.line,
       column: position.column,
       offset
@@ -1163,7 +1203,7 @@ function getYamlDiagnosticPosition(
   };
 }
 
-function getYamlDiagnostic(content: string): DocumentDiagnostic | null {
+function getYamlDiagnostic(content: string, locale: AppLocale): DocumentDiagnostic | null {
   if (content.trim().length === 0) return null;
 
   try {
@@ -1174,7 +1214,7 @@ function getYamlDiagnostic(content: string): DocumentDiagnostic | null {
     const position = getYamlDiagnosticPosition(content, firstError);
     return {
       severity: 'error',
-      message: `YAML 문법 오류가 있습니다. ${position.line}행 ${position.column}열을 확인하세요.`,
+      message: translate(locale, 'diagnostic.yamlSyntax', { line: position.line, column: position.column }),
       line: position.line,
       column: position.column,
       offset: position.offset
@@ -1183,7 +1223,7 @@ function getYamlDiagnostic(content: string): DocumentDiagnostic | null {
     const position = offsetToLineColumn(content, 0);
     return {
       severity: 'error',
-      message: `YAML 문법 오류가 있습니다. ${position.line}행 ${position.column}열을 확인하세요.`,
+      message: translate(locale, 'diagnostic.yamlSyntax', { line: position.line, column: position.column }),
       line: position.line,
       column: position.column,
       offset: 0
@@ -1193,12 +1233,12 @@ function getYamlDiagnostic(content: string): DocumentDiagnostic | null {
 
 export function getDocumentDiagnostic(
   content: string,
-  options: Pick<ParseDocumentOptions, 'pathOrName' | 'featureSettings'>
+  options: Pick<ParseDocumentOptions, 'pathOrName' | 'featureSettings'> & { locale: AppLocale }
 ): DocumentDiagnostic | null {
   const format = getDocumentFormatForContent(content, options.pathOrName);
   if (!isDocumentFormatRenderEnabled(format, options.featureSettings)) return null;
-  if (format.id === 'json') return getJsonDiagnostic(content);
-  if (format.id === 'yaml') return getYamlDiagnostic(content);
+  if (format.id === 'json') return getJsonDiagnostic(content, options.locale);
+  if (format.id === 'yaml') return getYamlDiagnostic(content, options.locale);
   return null;
 }
 
