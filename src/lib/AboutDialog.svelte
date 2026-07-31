@@ -9,14 +9,20 @@
     APP_REPOSITORY_URL,
     THIRD_PARTY_COMPONENTS
   } from '$lib/app-metadata';
+  import { translate, type AppLocale, type TranslationKey, type TranslationValues } from '$lib/i18n';
 
   interface Props {
     open: boolean;
     version: string;
+    locale: AppLocale;
     onclose: () => void;
   }
 
-  let { open, version, onclose }: Props = $props();
+  let { open, version, locale, onclose }: Props = $props();
+  function t(key: TranslationKey, values: TranslationValues = {}) {
+    return translate(locale, key, values);
+  }
+
   let closeButton = $state<HTMLButtonElement | null>(null);
   let noticesExpanded = $state(false);
   let noticesLoading = $state(false);
@@ -49,7 +55,7 @@
       }
       noticesText = await response.text();
     } catch (error) {
-      noticesError = `오픈소스 고지를 불러오지 못했습니다: ${error instanceof Error ? error.message : String(error)}`;
+      noticesError = t('error.loadNotices', { detail: error instanceof Error ? error.message : String(error) });
     } finally {
       noticesLoading = false;
     }
@@ -94,10 +100,10 @@
     >
       <header class="about-header">
         <div>
-          <h2 id="about-title">{APP_NAME} 정보</h2>
-          <p>가볍고 읽기 편한 로컬 텍스트 편집기</p>
+          <h2 id="about-title">{t('about.title', { appName: APP_NAME })}</h2>
+          <p>{t('app.tagline')}</p>
         </div>
-        <button bind:this={closeButton} class="about-close" type="button" aria-label="정보 창 닫기" onclick={onclose}>
+        <button bind:this={closeButton} class="about-close" type="button" aria-label={t('about.close')} onclick={onclose}>
           ×
         </button>
       </header>
@@ -107,28 +113,28 @@
           <img src="/favicon.png" alt="" aria-hidden="true" />
           <div>
             <strong>{APP_NAME}</strong>
-            <span>버전 {version}</span>
-            <span>릴리스 날짜 {APP_RELEASE_DATE}</span>
+            <span>{t('common.version', { version })}</span>
+            <span>{t('common.releaseDate', { date: APP_RELEASE_DATE })}</span>
           </div>
         </div>
 
         <section class="about-section" aria-labelledby="about-license-title">
-          <h3 id="about-license-title">라이선스</h3>
+          <h3 id="about-license-title">{t('about.licenseTitle')}</h3>
           <p>{APP_COPYRIGHT}</p>
-          <p>이 프로그램은 {APP_LICENSE}로 배포됩니다.</p>
+          <p>{t('about.licenseText', { license: APP_LICENSE })}</p>
           <button class="about-link" type="button" onclick={() => void openExternalUrl(APP_REPOSITORY_URL)}>
-            소스 코드와 프로젝트 라이선스
+            {t('about.projectLicense')}
           </button>
         </section>
 
         <section class="about-section" aria-labelledby="third-party-title">
-          <h3 id="third-party-title">오픈소스 구성요소</h3>
+          <h3 id="third-party-title">{t('about.componentsTitle')}</h3>
           <ul class="component-list">
             {#each THIRD_PARTY_COMPONENTS as component}
               <li>
                 <span><strong>{component.name}</strong> · {component.license}</span>
                 <button class="about-link compact" type="button" onclick={() => void openExternalUrl(component.sourceUrl)}>
-                  출처
+                  {t('common.origin')}
                 </button>
               </li>
             {/each}
@@ -141,13 +147,13 @@
             aria-controls="third-party-notices"
             onclick={toggleNotices}
           >
-            {noticesExpanded ? '전체 오픈소스 고지 접기' : '전체 오픈소스 고지 보기'}
+            {noticesExpanded ? t('about.toggleNotices.hide') : t('about.toggleNotices.show')}
           </button>
 
           {#if noticesExpanded}
             <div id="third-party-notices" class="notices-panel" aria-live="polite">
               {#if noticesLoading}
-                <p>고지를 불러오는 중...</p>
+                <p>{t('about.loading')}</p>
               {:else if noticesError}
                 <p class="notice-error">{noticesError}</p>
               {:else}
@@ -159,7 +165,7 @@
       </div>
 
       <footer class="about-footer">
-        <button class="about-primary" type="button" onclick={onclose}>확인</button>
+        <button class="about-primary" type="button" onclick={onclose}>{t('common.ok')}</button>
       </footer>
     </div>
   </div>

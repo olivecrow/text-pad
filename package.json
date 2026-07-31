@@ -1,6 +1,6 @@
 {
   "name": "text-pad",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "",
   "type": "module",
   "scripts": {
@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "validate:i18n": "node scripts/validate-i18n.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "licenses": "node scripts/generate-runtime-notices.mjs",
     "tauri:build:signed": "pwsh -NoProfile -File scripts/build-signed-update.ps1",

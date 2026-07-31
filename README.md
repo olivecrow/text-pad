@@ -35,10 +35,10 @@ npm run tauri dev
 ## Build
 
 ```bash
-npm run tauri build
+npm run tauri:build:signed
 ```
 
-Build output is generated under `src-tauri/target/release/`. The application executable is named `text-pad.exe`.
+This is the repository's final Windows build command. It uses the local DPAPI-protected updater key and produces the executable, MSI/NSIS installers, and updater signatures under `src-tauri/target/release/`. Direct `npm run tauri build` and `--no-bundle` builds are diagnostic-only.
 
 ## Documentation
 

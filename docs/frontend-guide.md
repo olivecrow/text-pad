@@ -10,6 +10,7 @@
 - `src/lib/DelimitedTableEditor.svelte`: CSV/TSV 표 편집 화면과 행·열 조작.
 - `src/lib/app-updater.ts`: 설치 버전 조회, 업데이트 확인·설치·재시작 연결.
 - `src/lib/AboutDialog.svelte`: 버전, 릴리스 날짜, 라이선스와 오픈소스 출처를 표시하는 정보 창.
+- `src/lib/i18n/`: 영어 기준표, 언어별 번역표, 시스템 언어 해석과 영어 대체 처리.
 - `src/lib/app-metadata.ts`: 정보 창과 릴리스 빌드가 사용하는 제품 메타데이터.
 - `src/app.html`: 앱 HTML 껍데기. 시작 성능을 위해 원격 웹폰트는 여기서 로드하지 않는다.
 - `src/routes/+layout.ts`: 정적 빌드 설정.
@@ -25,11 +26,12 @@
 - `isRenderMode`: 원문 모드와 렌더 모드 전환 상태.
 - `sourceFontSize`, `renderFontSize`, `tabSize`: 편집기 표시 설정.
 - `themeMode`, `currentTheme`, `lightColors`, `darkColors`: 테마와 렌더 색상 설정.
+- `languagePreference`, `systemLocale`, `locale`: 저장된 언어 선택, 시스템 언어와 실제 표시 언어.
 - `isSettingsWindow`: 현재 창이 독립 설정창인지 구분한다.
 - `isCheckingForUpdate`, `isInstallingUpdate`, `transientStatusMessage`: 업데이트 작업과 하단 임시 상태 표시.
 
 설정값은 `localStorage`에 저장하고, 다른 창에는 브라우저 `storage` 이벤트로 반영한다.
-설정창 왼쪽 메뉴는 원본 모드와 렌더 모드의 하위 항목을 트리 구조로 나눈다. 렌더 모드에는 `모양`, `편집`과 함께 `JSON`, `Markdown`처럼 각 파일 형식 항목이 독립 메뉴로 들어간다.
+설정창 왼쪽 메뉴는 `일반`, 원본 모드와 렌더 모드의 하위 항목을 트리 구조로 나눈다. `일반`에서는 표시 언어를 선택한다. 렌더 모드에는 `모양`, `편집`과 함께 `JSON`, `Markdown`처럼 각 파일 형식 항목이 독립 메뉴로 들어간다.
 
 ## 실행 취소
 
@@ -100,6 +102,12 @@
 - 세부 표시 계약은 `docs/features/render-mode.md`를 기준으로 한다.
 - CSV/TSV 표 편집은 `docs/features/delimited-table.md`를 기준으로 한다.
 
+## 다국어 UI
+
+표시 언어는 `src/lib/i18n/en.ts`의 영어 기준표와 같은 키를 가진 언어별 번역표에서 가져온다. 시스템 언어는 `navigator.languages`의 순서대로 해석하며 지원 언어가 없으면 영어를 사용한다. 사용자가 설정에서 고른 언어는 시스템 언어보다 우선하고 `pref_language`에 저장한다.
+
+화면에 보이는 메뉴, 설정, 대화상자, 상태, 문법 검사와 오류 접두사는 번역 키를 사용한다. 파일 원문과 파일 이름은 번역하지 않는다. 아랍어 UI에서는 문서 방향을 오른쪽에서 왼쪽으로 바꾸되 사용자 원문 입력 요소는 `dir="auto"`로 유지한다. 세부 계약은 `docs/features/localization.md`를 기준으로 한다.
+
 ## 설정창
 
 설정창은 별도 Tauri 창이다. 앱 시작 때 만들지 않고, 설정 버튼을 처음 누르면 생성한다.
@@ -128,6 +136,7 @@
 
 ## 검증
 
+- 번역표 변경 후: `npm run validate:i18n`
 - 프론트엔드 변경 후: `npm run check`
-- 설정창, Tauri 권한, 패키징에 영향이 있으면: `npm run tauri build`
+- 설정창, Tauri 권한, 패키징에 영향이 있으면: `.agents/skills/text-pad-signed-build/SKILL.md`에 따라 `npm run tauri:build:signed`
 - 화면 구조 변경 후: 실제 앱에서 겹침, 잘림, 포커스 이동을 확인한다.

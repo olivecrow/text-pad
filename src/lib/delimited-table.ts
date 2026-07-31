@@ -30,11 +30,32 @@ export function parseDelimitedTable(
   content: string,
   separator: DelimitedTableSeparator
 ): DelimitedTableDocument {
+  const document = parseDelimitedTableWithinCellLimit(content, separator);
+  if (!document) {
+    throw new Error('셀 제한이 없는 표 파싱은 실패할 수 없습니다.');
+  }
+  return document;
+}
+
+export function parseDelimitedTableWithinCellLimit(
+  content: string,
+  separator: DelimitedTableSeparator,
+  maxCells: number = Number.POSITIVE_INFINITY
+): DelimitedTableDocument | null {
   const rows: string[][] = [];
   let row: string[] = [];
   let cell = '';
+  let cellCount = 0;
   let isQuoted = false;
   let endedWithLineEnding = false;
+
+  const appendCell = (): boolean => {
+    cellCount += 1;
+    if (cellCount > maxCells) return false;
+    row.push(cell);
+    cell = '';
+    return true;
+  };
 
   for (let index = 0; index < content.length;) {
     const char = content[index];
@@ -64,8 +85,7 @@ export function parseDelimitedTable(
     }
 
     if (char === separator) {
-      row.push(cell);
-      cell = '';
+      if (!appendCell()) return null;
       endedWithLineEnding = false;
       index += 1;
       continue;
@@ -73,10 +93,9 @@ export function parseDelimitedTable(
 
     const lineEnding = getLineEndingAt(content, index);
     if (lineEnding) {
-      row.push(cell);
+      if (!appendCell()) return null;
       rows.push(row);
       row = [];
-      cell = '';
       endedWithLineEnding = true;
       index += lineEnding.length;
       continue;
@@ -88,7 +107,7 @@ export function parseDelimitedTable(
   }
 
   if (!endedWithLineEnding || row.length > 0 || cell.length > 0 || content.length === 0) {
-    row.push(cell);
+    if (!appendCell()) return null;
     rows.push(row);
   }
 

@@ -18,8 +18,9 @@ graph TD
 ## 주요 경로
 
 - `src/routes/+page.svelte`: 메인 화면, 원문 모드, 렌더 모드, 설정창 UI.
+- `src/lib/i18n/`: 영어 기준표, 9개 추가 언어 번역표와 언어 선택·대체 처리.
 - `src-tauri/src/lib.rs`: 파일 읽기/쓰기 명령, Windows 가로 휠 처리, Tauri 플러그인 설정.
-- `src-tauri/capabilities/default.json`: 프론트엔드가 호출할 수 있는 Tauri 명령 권한.
+- `src-tauri/capabilities/default.json`, `src-tauri/capabilities/settings.json`: 창별로 분리한 Tauri 명령 권한.
 - `src-tauri/tauri.conf.json`: 메인 창과 빌드 설정. 설정창은 실행 중 동적으로 만든다.
 - `src-tauri/installer.nsi`: NSIS 설치 파일 템플릿. NSIS는 Windows용 실행 설치 파일을 만드는 스크립트 기반 설치 도구다.
 - `package.json`: SvelteKit, Tauri, Lucide 아이콘 의존성과 실행 명령.
@@ -32,6 +33,7 @@ graph TD
 - `docs/features/editor-undo.md`: 편집기 실행 취소 계약.
 - `docs/features/settings-window.md`: 독립 설정창 계약.
 - `docs/features/theme-preferences.md`: 테마와 사용자 설정 저장 계약.
+- `docs/features/localization.md`: 지원 언어, 선택 우선순위와 번역표 관리 계약.
 - `docs/features/app-updates.md`: 시작 확인, 도움말 메뉴, 서명된 GitHub Release 업데이트와 라이선스 고지 계약.
 - `docs/implementation-checklist.md`: 남은 기능과 완료 기준.
 
@@ -41,6 +43,7 @@ graph TD
 - 원문 모드 편집.
 - 렌더 모드 구문 강조, 들여쓰기 가이드, 줄 번호, 가상화된 화면 렌더링.
 - 라이트/다크 테마, 렌더 색상, 글꼴, 글자 크기, 탭 크기 설정.
+- 시스템 언어 우선 선택, 영어 대체와 설정창 언어 변경을 지원하는 10개 언어 UI.
 - 메인 창을 편집기 준비 뒤 표시해 첫 화면이 곧바로 입력 가능한 상태가 되게 하는 시작 흐름.
 - 설정 버튼을 처음 눌렀을 때 독립 설정창을 동적으로 생성하고 표시.
 - 설정창에서 파일 형식별 렌더 표시와 렌더 편집 모듈 켜기/끄기.
@@ -64,10 +67,12 @@ graph TD
 
 ## 주요 명령
 
+- `npm run validate:i18n`: 번역표 키와 치환 변수 검사.
 - `npm run check`: Svelte와 TypeScript 검사.
 - `npm run build`: 프론트엔드 정적 빌드.
 - `npm run tauri dev`: Tauri 개발 실행.
-- `npm run tauri build`: Windows 실행 파일과 설치 파일 생성.
+- `npm run tauri:build:signed`: Windows 실행 파일, MSI/NSIS 설치 파일, 업데이터 서명 생성. 최종 빌드는 이 명령만 사용한다.
+- `npm run tauri build -- --no-bundle`: 빠른 컴파일 진단 전용. 최종 빌드 완료로 간주하지 않는다.
 
 ## 공통 기준
 

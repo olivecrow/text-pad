@@ -24,7 +24,14 @@ interface EditorUndoRecordOptions {
   mergeWindowMs?: number;
 }
 
+export interface EditorUndoHistoryOptions {
+  maxTransactions?: number;
+  maxBytes?: number;
+}
+
 const defaultMergeWindowMs = 1000;
+const defaultMaxTransactions = 500;
+const defaultMaxBytes = 16 * 1024 * 1024;
 
 function cloneSelection(selection: EditorSelection): EditorSelection {
   return { start: selection.start, end: selection.end };
@@ -117,8 +124,43 @@ export class EditorUndoHistory {
   private transactions: EditorUndoTransaction[] = [];
   private cursor = 0;
   private savedCursor: number | null = 0;
+  private readonly maxTransactions: number;
+  private readonly maxBytes: number;
 
-  constructor(_initialSnapshot: EditorSnapshot) {}
+  constructor(
+    _initialSnapshot: EditorSnapshot,
+    options: EditorUndoHistoryOptions = {}
+  ) {
+    this.maxTransactions = Math.max(1, Math.floor(options.maxTransactions ?? defaultMaxTransactions));
+    this.maxBytes = Math.max(1, Math.floor(options.maxBytes ?? defaultMaxBytes));
+  }
+
+  private getHistoryBytes(): number {
+    return this.transactions.reduce(
+      (total, transaction) => total + ((transaction.beforeText.length + transaction.afterText.length) * 2) + 64,
+      0
+    );
+  }
+
+  private enforceHistoryBudget() {
+    while (
+      this.transactions.length > this.maxTransactions
+      || this.getHistoryBytes() > this.maxBytes
+    ) {
+      if (this.transactions.length === 1) {
+        this.transactions = [];
+        this.cursor = 0;
+        this.savedCursor = null;
+        return;
+      }
+
+      this.transactions.shift();
+      this.cursor = Math.max(0, this.cursor - 1);
+      if (this.savedCursor !== null) {
+        this.savedCursor = this.savedCursor === 0 ? null : this.savedCursor - 1;
+      }
+    }
+  }
 
   record(before: EditorSnapshot, after: EditorSnapshot, options: EditorUndoRecordOptions = {}): boolean {
     const timestamp = options.timestamp ?? Date.now();
@@ -141,12 +183,14 @@ export class EditorUndoHistory {
       const merged = createTransaction(mergedBefore, after, mergeKey, timestamp);
       if (merged) {
         this.transactions[this.cursor - 1] = merged;
+        this.enforceHistoryBudget();
         return true;
       }
     }
 
     this.transactions.push(transaction);
     this.cursor = this.transactions.length;
+    this.enforceHistoryBudget();
     return true;
   }
 

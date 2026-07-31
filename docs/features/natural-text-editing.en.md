@@ -204,6 +204,8 @@ An application with custom editing features should use one history system as the
 
 `text-pad` uses a separate in-memory history for each tab.
 
+- Each tab retains at most 500 transactions and an estimated 16 MiB of changed strings. If trimming old records makes the saved position unrecoverable, or one edit exceeds the byte budget, keep the current source text but leave the document marked as modified.
+
 - Each record stores the source range that actually changed, the before and after strings, and the before and after selections.
 - Consecutive character insertion, Backspace, and Delete operations merge when they continue at the same location within one second.
 - An IME composition, including Korean text composition, is recorded as one ordinary input group from composition start to composition end.

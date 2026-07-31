@@ -1,0 +1,4 @@
+interface:
+  display_name: "Text Pad Signed Build"
+  short_description: "Build and verify signed text-pad Windows releases"
+  default_prompt: "Use $text-pad-signed-build to create and verify a signed text-pad Windows release build."
