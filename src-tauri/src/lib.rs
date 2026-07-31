@@ -3,7 +3,9 @@ mod file_commands;
 #[cfg(target_os = "windows")]
 mod windows_wheel;
 
-use file_commands::{get_startup_file_paths, read_file_content, write_file_content};
+use file_commands::{
+    get_startup_files, open_file_dialog, save_file_dialog, write_file_content, ApprovedFilePaths,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,6 +16,7 @@ pub fn run() {
         | tauri_plugin_window_state::StateFlags::FULLSCREEN;
 
     tauri::Builder::default()
+        .manage(ApprovedFilePaths::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
@@ -37,9 +40,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_startup_file_paths,
-            read_file_content,
-            write_file_content
+            get_startup_files,
+            open_file_dialog,
+            save_file_dialog,
+            write_file_content,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -8,7 +8,7 @@
 - `src-tauri/src/lib.rs`: Tauri 빌더, 명령 등록, 플러그인 설정.
 - `src-tauri/src/file_commands.rs`: 파일 읽기/쓰기 명령과 파일 오류 응답.
 - `src-tauri/src/windows_wheel.rs`: Windows 가로 휠 처리.
-- `src-tauri/capabilities/default.json`: 프론트엔드 명령 권한.
+- `src-tauri/capabilities/default.json`, `src-tauri/capabilities/settings.json`: 창별 프론트엔드 명령 권한.
 - `src-tauri/tauri.conf.json`: 창 설정과 빌드 설정.
 - `.github/workflows/release.yml`: `main`의 버전 태그에서 서명된 Windows 릴리스와 업데이트 메타데이터를 만드는 작업.
 - `src-tauri/installer.nsi`: NSIS 실행 설치 파일 템플릿.
@@ -16,19 +16,22 @@
 
 ## Tauri 명령
 
-- `read_file_content(path: String) -> Result<String, FileCommandError>`
-  - 지정한 파일을 UTF-8 문자열로 읽는다.
-  - 실패하면 파일 명령 오류인 `FileCommandError`를 반환한다.
-- `get_startup_file_paths() -> Vec<String>`
-  - 운영체제가 앱 실행 인자로 넘긴 값 중 실제 파일인 경로만 반환한다.
-  - 파일 직접 열기나 기본 앱 연결로 실행된 경우 프론트엔드가 이 목록을 읽어 시작 탭으로 연다.
+- `open_file_dialog() -> Result<Option<OpenedFile>, FileCommandError>`
+  - Rust가 파일 선택창을 열고 사용자가 고른 실제 파일만 읽는다.
+  - 승인된 정규화 경로와 UTF-8 원문을 함께 반환한다.
+- `get_startup_files() -> Result<Vec<OpenedFile>, FileCommandError>`
+  - 운영체제가 앱 실행 인자로 넘긴 값 중 실제 파일만 제한 안에서 읽는다.
+  - 파일 직접 열기나 기본 앱 연결로 실행된 파일을 시작 탭 데이터로 반환한다.
 - `write_file_content(path: String, content: String) -> Result<(), FileCommandError>`
-  - 지정한 파일과 같은 폴더의 임시 파일에 문자열을 먼저 쓴 뒤 대상 파일로 교체한다.
-  - 실패하면 파일 명령 오류인 `FileCommandError`를 반환한다.
+  - 앞선 열기나 저장 대화상자에서 승인한 정규화 경로만 저장한다.
+  - 같은 폴더의 임시 파일에 문자열을 먼저 쓴 뒤 대상 파일로 교체한다.
+- `save_file_dialog(default_name: String, content: String) -> Result<Option<String>, FileCommandError>`
+  - Rust가 저장 경로를 직접 선택받아 저장하고, 성공한 경로만 승인 목록에 추가한다.
 
 새 파일 입출력 기능을 추가할 때는 사용자가 대화상자로 선택했거나 운영체제가 파일 열기 의도로 넘긴 경로만 다루고, 실패를 `Result`로 반환한다.
 `FileCommandError`는 `code`와 `message`를 가진다. `code`는 오류 종류를 분기하기 위한 짧은 코드이고, `message`는 사용자에게 보여줄 수 있는 설명이다.
-저장은 원본 파일 손상 가능성을 줄이기 위해 직접 덮어쓰지 않고 임시 파일 기록, 디스크 동기화, 파일 교체 순서로 처리한다.
+파일 원문은 UTF-8 기준 최대 16 MiB, 250,000줄까지만 열고 저장한다. 메타데이터 확인 뒤에도 제한보다 한 바이트만 더 읽어 파일 증가 경쟁에서 무제한 할당이 일어나지 않게 한다.
+저장은 원본 파일 손상 가능성을 줄이기 위해 직접 덮어쓰지 않고 임시 파일 기록, 디스크 동기화, 파일 교체 순서로 처리한다. Windows에서 기존 파일을 교체할 때는 `ReplaceFileW`를 사용해 원본의 DACL, 암호화 상태, 대체 데이터 스트림 같은 보안 메타데이터를 보존한다.
 
 ## 창과 권한
 
@@ -39,13 +42,10 @@
 - 메인 창은 빈 WebView가 먼저 보이지 않도록 `visible: false`로 시작하고, 편집기 `textarea`가 준비되면 프론트엔드가 `show()`와 `setFocus()`를 호출한다.
 - 설정 버튼은 기존 `settings` 창을 찾고, 없으면 동적으로 만든 뒤 `show()`와 `setFocus()`를 호출한다.
 - 설정창 닫기 요청은 창을 파괴하지 않고 `hide()`로 숨긴다.
-- 따라서 `src-tauri/capabilities/default.json`에는 최소한 다음 권한이 필요하다.
-  - `core:window:allow-show`
-  - `core:window:allow-set-focus`
-  - `core:window:allow-set-title`
-  - `core:window:allow-hide`
-  - `core:window:allow-destroy`
-  - `core:window:allow-close`
+- `src-tauri/capabilities/default.json`은 `main` 창만 대상으로 파일 명령, 업데이트, 재시작, URL 열기, 파일 메시지창, 창 생성과 제어 권한을 부여한다.
+- 앱 전용 파일 명령은 `build.rs`의 애플리케이션 명세가 생성한 개별 허용 권한을 메인 창에만 연결한다.
+- `src-tauri/capabilities/settings.json`은 `settings` 창에 이벤트 수신, 기본 창 조회, 숨기기 권한만 부여한다.
+- 프론트엔드에는 파일 열기·저장 대화상자 권한을 주지 않으며, 일반 메시지 대화상자와 웹 URL 열기만 허용한다.
 
 `tauri-plugin-window-state`는 메인 창만 복원해야 하므로 `settings` 창은 denylist에 둔다.
 
@@ -89,5 +89,5 @@ Windows WebView2는 일부 마우스 가로 휠 입력을 브라우저 `wheel` �
 
 ## 검증
 
-- 백엔드 또는 Tauri 설정 변경 후: `npm run tauri build`
-- 프론트엔드와 함께 바뀐 경우: `npm run check` 후 `npm run tauri build`
+- 백엔드 또는 Tauri 설정 변경 후: `.agents/skills/text-pad-signed-build/SKILL.md`에 따라 `npm run tauri:build:signed`
+- 프론트엔드와 함께 바뀐 경우: `npm run check` 후 `npm run tauri:build:signed`

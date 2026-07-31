@@ -42,6 +42,8 @@
 3. NSIS 설치 파일을 Windows 자동 업데이트 대상으로 우선한다.
 4. 릴리스 날짜는 빌드 시 UTC 날짜를 `PUBLIC_APP_RELEASE_DATE`로 넣는다.
 5. 릴리스와 업데이트 파일을 같은 GitHub Release에 공개한다.
+6. 외부 GitHub Actions는 검토한 커밋 SHA로 고정하고, 체크아웃 자격 증명을 작업 디렉터리에 남기지 않는다.
+7. 서명과 게시 전에 프로덕션 의존성 감사, Svelte 검사, 잠금 파일 기준 Rust 테스트를 모두 통과해야 한다.
 
 `v0.1.0`에는 자체 업데이트 코드와 서명된 업데이트 파일이 없다. 따라서 첫 업데이트 지원 버전인 `v0.2.0`은 사용자가 설치 파일을 한 번 직접 받아 설치해야 하며, 이후 버전부터 앱 안에서 업데이트할 수 있다.
 
@@ -54,5 +56,7 @@
 - `src-tauri/tauri.conf.json`
 
 로컬에서 서명된 릴리스 후보를 패키징할 때는 `npm run tauri:build:signed`를 실행한다. 이 명령은 현재 Windows 사용자에게 보호된 개인키 암호를 빌드 중에만 환경 변수로 전달한다.
+
+최종 빌드 전에는 `.agents/skills/text-pad-signed-build/SKILL.md`를 따른다. `npm run tauri build` 직접 실행과 `npm run tauri build -- --no-bundle`은 서명된 릴리스 후보의 완료 근거가 아니다.
 
 개인키, 암호, 환경 변수 값은 로그, 문서, 커밋에 남기지 않는다.

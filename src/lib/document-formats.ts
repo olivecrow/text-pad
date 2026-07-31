@@ -85,6 +85,7 @@ interface ParseDocumentOptions {
   tabSize: number;
   lineStartOffsets: number[];
   lineRange?: DocumentLineRange;
+  renderEnabled?: boolean;
   featureSettings?: DocumentFeatureSettings;
 }
 
@@ -345,44 +346,6 @@ export function isDocumentFormatEditEnabled(
 ): boolean {
   return featureSettings?.[format.id]?.edit ?? true;
 }
-
-export const supportedTextExtensions = [
-  ...new Set(productSupportedDocumentFormats.flatMap((format) => format.extensions))
-];
-
-export const openFileDialogFilters = [
-  {
-    name: 'Text Files',
-    extensions: supportedTextExtensions
-  }
-];
-
-export const saveFileDialogFilters = [
-  {
-    name: 'Text Files',
-    extensions: ['txt']
-  },
-  {
-    name: 'JSON Files',
-    extensions: ['json']
-  },
-  {
-    name: 'CSV Files',
-    extensions: ['csv']
-  },
-  {
-    name: 'TSV Files',
-    extensions: ['tsv']
-  },
-  {
-    name: 'YAML Files',
-    extensions: ['yaml', 'yml']
-  },
-  {
-    name: 'All Supported Text Files',
-    extensions: supportedTextExtensions
-  }
-];
 
 export function getFileExtension(pathOrName: string | null | undefined): string {
   if (!pathOrName) return '';
@@ -1243,7 +1206,8 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
   const format = getDocumentFormatForContent(content, options.pathOrName);
   const lineRange = normalizeLineRange(options.lineStartOffsets.length, options.lineRange);
   const lineRangeOffsets = getLineRangeOffsets(content, options.lineStartOffsets, lineRange);
-  const renderEnabled = isDocumentFormatRenderEnabled(format, options.featureSettings);
+  const renderEnabled = options.renderEnabled
+    ?? isDocumentFormatRenderEnabled(format, options.featureSettings);
 
   if (!renderEnabled) {
     return {

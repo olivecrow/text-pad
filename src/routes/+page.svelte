@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ask, message, open, save } from "@tauri-apps/plugin-dialog";
+  import { ask, message } from "@tauri-apps/plugin-dialog";
   import { invoke } from "@tauri-apps/api/core";
   import { PhysicalPosition } from "@tauri-apps/api/dpi";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -16,9 +16,7 @@
     isDocumentFormatEditEnabled,
     isDocumentFormatRenderEnabled,
     normalizeDocumentFeatureSettings,
-    openFileDialogFilters,
-    parseDocumentForRender,
-    saveFileDialogFilters
+    parseDocumentForRender
   } from "$lib/document-formats";
   import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatCategory, DocumentFormatCategoryId, DocumentFormatId } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
@@ -43,7 +41,7 @@
     type Update
   } from "$lib/app-updater";
   import {
-    parseDelimitedTable,
+    parseDelimitedTableWithinCellLimit,
     serializeDelimitedTable,
     type DelimitedTableDocument,
     type DelimitedTableSeparator
@@ -64,11 +62,19 @@
     caretOffset: number;
   }
 
+  interface OpenedFile {
+    path: string;
+    content: string;
+  }
+
   let nextTabId = 1;
   let nextUntitledNumber = 1;
   const untitledFileName = "제목 없음";
   const invalidFileNameCharsPattern = /[<>:"/\\|?*\x00-\x1F]/g;
   const isBrowser = typeof window !== 'undefined';
+  const maxEnhancedRenderChars = 2 * 1024 * 1024;
+  const maxEnhancedRenderLines = 100_000;
+  const maxDelimitedTableCells = 50_000;
 
   function hasTauriRuntime(): boolean {
     if (!isBrowser) return false;
@@ -364,7 +370,6 @@
 
   let canPersistPreferences = $state<boolean>(false);
   const documentFeaturePreferenceKey = 'pref_document_format_features';
-  const textSaveFilters = saveFileDialogFilters;
   const closeSaveButtons = {
     yes: "저장",
     no: "저장 안 함",
@@ -1051,20 +1056,18 @@
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab) return false;
 
-    let targetPath = tab.filePath;
-
-    if (!targetPath) {
-      const selected = await save({
-        defaultPath: getSuggestedSaveFileName(tab),
-        filters: textSaveFilters
-      });
-      if (!selected) {
-        return false;
-      }
-      targetPath = selected;
+    if (tab.filePath) {
+      await writeTabContent(tabId, tab.filePath);
+      return true;
     }
 
-    await writeTabContent(tabId, targetPath);
+    const targetPath = await invoke<string | null>("save_file_dialog", {
+      defaultName: getSuggestedSaveFileName(tab),
+      content: tab.fileContent
+    });
+    if (!targetPath) return false;
+
+    applySavedPath(tabId, targetPath);
     return true;
   }
 
@@ -1077,15 +1080,15 @@
     const tab = getActiveTab();
     if (!tab) return false;
 
-    const selected = await save({
-      defaultPath: getSuggestedSaveFileName(tab),
-      filters: textSaveFilters
+    const targetPath = await invoke<string | null>("save_file_dialog", {
+      defaultName: getSuggestedSaveFileName(tab),
+      content: tab.fileContent
     });
-    if (!selected) {
+    if (!targetPath) {
       return false;
     }
 
-    await writeTabContent(activeTabId, selected);
+    applySavedPath(activeTabId, targetPath);
     return true;
   }
 
@@ -1410,31 +1413,37 @@
     return segments.length > 0 ? segments : [{ start: 0, end: lineText.length }];
   }
 
-  function isFencedCodeLine(lineStart: number, fencedCodeRanges: FencedCodeBlockRange[]): boolean {
-    return fencedCodeRanges.some((range) => (
-      lineStart >= range.openingLineStart
-      && lineStart <= (range.closingLineStart ?? Number.POSITIVE_INFINITY)
-    ));
-  }
-
   function getEditorLineLayout(
     content: string,
     offsets: number[],
     contentWidth: number,
-    fencedCodeRanges: FencedCodeBlockRange[]
+    fencedCodeRanges: FencedCodeBlockRange[],
+    wrapEnabled: boolean
   ): EditorLineLayout {
     const lineTotal = offsets.length;
     const tops: number[] = new Array(lineTotal);
     const heights: number[] = new Array(lineTotal);
     let top = 0;
+    let fencedRangeIndex = 0;
 
     for (let lineIndex = 0; lineIndex < lineTotal; lineIndex += 1) {
       const lineStart = offsets[lineIndex] ?? 0;
-      const lineContentWidth = isFencedCodeLine(lineStart, fencedCodeRanges)
+      let fencedRange = fencedCodeRanges[fencedRangeIndex];
+      while (
+        fencedRange
+        && lineStart > (fencedRange.closingLineStart ?? Number.POSITIVE_INFINITY)
+      ) {
+        fencedRangeIndex += 1;
+        fencedRange = fencedCodeRanges[fencedRangeIndex];
+      }
+      const isFencedCode = !!fencedRange
+        && lineStart >= fencedRange.openingLineStart
+        && lineStart <= (fencedRange.closingLineStart ?? Number.POSITIVE_INFINITY);
+      const lineContentWidth = isFencedCode
         ? Math.max(1, contentWidth - (fencedCodeHorizontalPadding * 2))
         : contentWidth;
-      const lineText = getLineTextForLayout(content, offsets, lineIndex);
-      const visualLineCount = isRenderMode
+      const lineText = wrapEnabled ? getLineTextForLayout(content, offsets, lineIndex) : '';
+      const visualLineCount = wrapEnabled
         ? countWrappedVisualLines(lineText, lineContentWidth)
         : 1;
       const height = Math.max(measuredLineHeight, visualLineCount * measuredLineHeight);
@@ -1475,9 +1484,24 @@
     return renderLineLayout.heights[lineIndex] ?? measuredLineHeight;
   }
 
+  function parseDelimitedTableWithinBudget(
+    content: string,
+    separator: DelimitedTableSeparator
+  ): DelimitedTableDocument | null {
+    return parseDelimitedTableWithinCellLimit(content, separator, maxDelimitedTableCells);
+  }
+
   // 반응형 상태
   let lineStartOffsets = $derived(getLineStartOffsets(fileContent));
-  let fencedCodeBlocks = $derived(getFencedCodeBlockRanges(fileContent, lineStartOffsets));
+  let isEnhancedDocumentWithinBudget = $derived(
+    fileContent.length <= maxEnhancedRenderChars
+    && lineStartOffsets.length <= maxEnhancedRenderLines
+  );
+  let fencedCodeBlocks = $derived(
+    isEnhancedDocumentWithinBudget
+      ? getFencedCodeBlockRanges(fileContent, lineStartOffsets)
+      : []
+  );
   let lineCount = $derived(lineStartOffsets.length);
   let charCount = $derived(fileContent.length);
   let textareaDisplayContent = $derived(getTextareaValueFromContent(fileContent));
@@ -1510,10 +1534,11 @@
     fileContent,
     lineStartOffsets,
     renderWrapContentWidth,
-    fencedCodeBlocks
+    fencedCodeBlocks,
+    isRenderMode && isEnhancedDocumentWithinBudget
   ));
-  let shouldShowNativeRenderText = $derived(isRenderMode && isRenderWrapSettling);
-  let shouldRenderHighlightLayer = $derived(isRenderMode && !shouldShowNativeRenderText);
+  let shouldShowNativeRenderText = $derived(isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling);
+  let shouldRenderHighlightLayer = $derived(isRenderMode && isEnhancedDocumentWithinBudget && !shouldShowNativeRenderText);
 
   // 가상화 범위 계산
   let startLine = $derived(Math.max(
@@ -1527,13 +1552,18 @@
 
   // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
   let activeDocumentFormat = $derived(getDocumentFormatForContent(fileContent, filePath || fileName));
-  let isActiveDocumentRenderEnabled = $derived(isDocumentFormatRenderEnabled(activeDocumentFormat, documentFeatureSettings));
+  let isActiveDocumentRenderEnabled = $derived(
+    isEnhancedDocumentWithinBudget
+    && isDocumentFormatRenderEnabled(activeDocumentFormat, documentFeatureSettings)
+  );
   let isActiveDocumentEditEnabled = $derived(isDocumentFormatEditEnabled(activeDocumentFormat, documentFeatureSettings));
   let activeDelimitedTableSeparator = $derived<DelimitedTableSeparator | null>(
     activeDocumentFormat.id === 'csv' ? ',' : activeDocumentFormat.id === 'tsv' ? '\t' : null
   );
   let activeDelimitedTableDocument = $derived(
-    activeDelimitedTableSeparator ? parseDelimitedTable(fileContent, activeDelimitedTableSeparator) : null
+    activeDelimitedTableSeparator && isRenderMode && isActiveDocumentRenderEnabled
+      ? parseDelimitedTableWithinBudget(fileContent, activeDelimitedTableSeparator)
+      : null
   );
   let shouldShowDelimitedTableEditor = $derived(
     isRenderMode && isActiveDocumentRenderEnabled && activeDelimitedTableDocument !== null
@@ -1545,6 +1575,7 @@
     tabSize,
     lineStartOffsets,
     lineRange: { startLine, endLine },
+    renderEnabled: isActiveDocumentRenderEnabled,
     featureSettings: documentFeatureSettings
   }));
   let parsedLines = $derived(documentRender.lines);
@@ -1557,7 +1588,11 @@
     const format = activeDocumentFormat;
     const featureSettings = documentFeatureSettings;
 
-    if (!format.validatesSyntax || !isDocumentFormatRenderEnabled(format, featureSettings)) {
+    if (
+      !isEnhancedDocumentWithinBudget
+      || !format.validatesSyntax
+      || !isDocumentFormatRenderEnabled(format, featureSettings)
+    ) {
       documentDiagnostic = null;
       return;
     }
@@ -1795,12 +1830,11 @@
     };
   });
 
-  async function openFilePath(selected: string) {
-    const content = await invoke<string>("read_file_content", { path: selected });
+  function openFile(openedFile: OpenedFile) {
     const openedTab = createEditorTab({
-      filePath: selected,
-      fileName: getFileNameFromPath(selected),
-      fileContent: content,
+      filePath: openedFile.path,
+      fileName: getFileNameFromPath(openedFile.path),
+      fileContent: openedFile.content,
       isDirty: false
     });
     const activeTab = getActiveTab();
@@ -1817,14 +1851,14 @@
     hasLoadedStartupFiles = true;
 
     try {
-      const startupPaths = await invoke<string[]>("get_startup_file_paths");
-      if (!startupPaths.length) return;
+      const startupFiles = await invoke<OpenedFile[]>("get_startup_files");
+      if (!startupFiles.length) return;
 
       isLoading = true;
       errorMsg = null;
       syncActiveTabState();
-      for (const startupPath of startupPaths) {
-        await openFilePath(startupPath);
+      for (const startupFile of startupFiles) {
+        openFile(startupFile);
       }
     } catch (err: any) {
       errorMsg = typeof err === "string" ? err : err.message || String(err);
@@ -3038,14 +3072,10 @@
       errorMsg = null;
       syncActiveTabState();
       closeAllDropdown();
-      const selected = await open({
-        multiple: false,
-        directory: false,
-        filters: openFileDialogFilters
-      });
+      const openedFile = await invoke<OpenedFile | null>("open_file_dialog");
 
-      if (selected && typeof selected === "string") {
-        await openFilePath(selected);
+      if (openedFile) {
+        openFile(openedFile);
       }
     } catch (err: any) {
       errorMsg = typeof err === "string" ? err : err.message || String(err);
@@ -4964,10 +4994,10 @@
     <!-- 편집 공간 -->
     <main
       class="editor-area"
-      class:render-mode={isRenderMode}
-      class:render-selection-active={isRenderMode && hasEditorSelection}
+      class:render-mode={isRenderMode && isEnhancedDocumentWithinBudget}
+      class:render-selection-active={isRenderMode && isEnhancedDocumentWithinBudget && hasEditorSelection}
       class:render-custom-selection={isRenderMode && supportsRenderedSelectionHighlight && shouldRenderHighlightLayer}
-      class:render-wrap-settling={isRenderMode && isRenderWrapSettling}
+      class:render-wrap-settling={isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling}
       class:render-native-text-visible={shouldShowNativeRenderText}
     >
       <div class="editor-container">
@@ -4986,7 +5016,7 @@
           />
         {:else}
         <!-- 라인 번호 Gutter -->
-        {#if isRenderMode}
+        {#if isRenderMode && isEnhancedDocumentWithinBudget}
           <div class="editor-gutter" style="background-color: var(--color-render-bg); border-right: 1px solid var(--border-color);">
             {#if !isRenderWrapSettling}
               <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
@@ -5028,8 +5058,8 @@
           <textarea
             bind:this={textareaEl}
             class="editor-textarea"
-            style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled && !shouldShowNativeRenderText ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode ? editorCursorStyle : 'text'};"
-            wrap={isRenderMode ? 'soft' : 'off'}
+            style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled && !shouldShowNativeRenderText ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode && isEnhancedDocumentWithinBudget ? editorCursorStyle : 'text'};"
+            wrap={isRenderMode && isEnhancedDocumentWithinBudget ? 'soft' : 'off'}
             value={textareaDisplayContent}
             onkeydown={handleEditorKeyDown}
             onbeforeinput={handleEditorBeforeInput}
@@ -5084,6 +5114,11 @@
         {/if}
       </div>
       <div class="status-right">
+        {#if isRenderMode && !isEnhancedDocumentWithinBudget}
+          <span class="status-item" title="안전한 편집을 위해 고비용 렌더링을 생략했습니다">
+            큰 파일 · 원본 표시
+          </span>
+        {/if}
         {#if shouldShowDocumentSyntaxStatus}
           <span
             class="status-item"

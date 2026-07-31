@@ -129,5 +129,5 @@
 ## 검증
 
 - 프론트엔드 변경 후: `npm run check`
-- 설정창, Tauri 권한, 패키징에 영향이 있으면: `npm run tauri build`
+- 설정창, Tauri 권한, 패키징에 영향이 있으면: `.agents/skills/text-pad-signed-build/SKILL.md`에 따라 `npm run tauri:build:signed`
 - 화면 구조 변경 후: 실제 앱에서 겹침, 잘림, 포커스 이동을 확인한다.
