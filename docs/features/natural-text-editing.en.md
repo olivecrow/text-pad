@@ -101,12 +101,13 @@ The current recognized forms are:
 - Decimal: `1. `, `1) `, `(1) `
 - Single Latin letter: `A. `, `a) `, `(a) `
 - Valid Roman numeral: `I. `, `II. `, `iv. `
+- Unordered marker: `- `, `* `, `+ `, `• `
 
-Whitespace between the marker and body is treated as part of the marker and preserved when continuing the list. Identical text in the middle of a line is not treated as a list marker.
+`-`, `*`, and `+` are widely used lightweight-markup markers, while `•` is common in ordinary documents. Whitespace between the marker and body is treated as part of the marker and preserved when continuing the list. Identical text in the middle of a line is not treated as a list marker.
 
 ### Indentation depth and marker style
 
-When a list line is indented or outdented, choose its marker style again from the target depth.
+When a list line is indented or outdented, choose its marker style again from the target depth and marker family. Ordered markers use the following styles.
 
 | Depth | Style | Example |
 | ---: | --- | --- |
@@ -127,7 +128,9 @@ From depth 9 onward, repeat decimal and lowercase Latin markers as a pair while 
 3. Parentheses: `(1) `, `(a) `
 4. Return to the period
 
-When tabs and spaces are mixed, calculate visual indentation using four-column tab stops. The target depth after the move takes precedence over the marker's previous style.
+Unordered markers remain separate from ordered markers and cycle by depth in this order: `- `, `* `, `+ `, `• `. Return to `- ` at depth 4.
+
+When tabs and spaces are mixed, calculate visual indentation using four-column tab stops. In both families, the target depth after the move takes precedence over the marker's previous style.
 
 ### Create the next item with Enter
 
@@ -137,11 +140,12 @@ When tabs and spaces are mixed, calculate visual indentation using four-column t
 - The resulting empty ordinary line is an automatic-sequence boundary, so existing following markers keep their numbers. `Shift+Enter` still creates a marker-free continuation line instead.
 - Preserve the current indentation, delimiter, and whitespace following the marker.
 - Increment decimal numbers, Latin letters, and Roman numerals to their next value.
+- For an unordered list, reuse the current symbol for the next item at the same depth.
 - A single-letter marker can be ambiguous between a Roman numeral and a Latin letter. First use the sequence of the immediately preceding line with the same indentation and delimiter; when there is no preceding clue, treat `I` and `i` as the start of a Roman sequence and other single letters as alphabetic.
 - If the next marker cannot be calculated safely, do not guess or rewrite source text; fall back to the default Enter behavior.
 - If body text exists after the caret, split the line and move that text after the new marker.
-- When continuous following items use the same indentation depth and delimiter, increment each of their markers by one. Continue looking for the next item at the same depth across deeper child items and `Shift+Enter` continuation lines without changing those intervening lines.
-- End the automatic-sequence range at a blank line, an ordinary paragraph at the same or shallower depth, a different delimiter at the same depth, or an already broken sequence. Do not rewrite source text beyond that boundary.
+- When continuous following ordered items use the same indentation depth and delimiter, increment each of their markers by one. Continue looking for the next item at the same depth across deeper child items and `Shift+Enter` continuation lines without changing those intervening lines.
+- End the automatic-sequence range at a blank line, an ordinary paragraph at the same or shallower depth, a different delimiter or unordered symbol at the same depth, or an already broken sequence. Do not rewrite source text beyond that boundary.
 - Preserve the document's newline style: use Windows CRLF in a CRLF document and Unix LF in an LF document.
 
 Example:
@@ -172,6 +176,21 @@ Result after Enter:
 ```text
 1) before
 2) |after
+```
+
+An unordered list continues with the same symbol.
+
+```text
+- before|after
+- next
+```
+
+Result after Enter:
+
+```text
+- before
+- |after
+- next
 ```
 
 Ending a list from an empty item with Enter:

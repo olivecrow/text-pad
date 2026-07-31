@@ -2682,7 +2682,11 @@
       ? oldIndent.length + marker.marker.length
       : oldIndent.length;
     const nextMarker = marker
-      ? getListMarkerForIndentLevel(getEditorIndentLevel(nextIndent), marker.spacing)
+      ? getListMarkerForIndentLevel(
+          getEditorIndentLevel(nextIndent),
+          marker.spacing,
+          marker.separator === 'unordered' ? 'unordered' : 'ordered'
+        )
       : '';
     const nextBodyStart = nextIndent.length + nextMarker.length;
     const nextText = `${nextIndent}${nextMarker}${lineText.slice(oldBodyStart)}`;

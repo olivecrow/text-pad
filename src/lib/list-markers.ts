@@ -6,8 +6,9 @@ export interface ListMarker {
   marker: string;
 }
 
-export type ListMarkerSeparator = 'dot' | 'right-parenthesis' | 'parentheses';
+export type ListMarkerSeparator = 'dot' | 'right-parenthesis' | 'parentheses' | 'unordered';
 export type ListMarkerKind = 'upper-roman' | 'upper-alpha' | 'decimal' | 'lower-roman' | 'lower-alpha';
+export type ListMarkerFamily = 'ordered' | 'unordered';
 
 interface ListMarkerStyle {
   kind: ListMarkerKind;
@@ -15,6 +16,8 @@ interface ListMarkerStyle {
 }
 
 const listMarkerAtStartRegex = /^([ \t]*)(?:\(([A-Za-z]+|\d+)\)|([A-Za-z]+|\d+)([.)]))([ \t]+)/;
+const unorderedListMarkerAtStartRegex = /^([ \t]*)([-*+•])([ \t]+)/;
+const unorderedListMarkerLabels = ['-', '*', '+', '•'] as const;
 const romanNumeralRegex = /^(?=[mdclxvi]+$)m{0,3}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})$/i;
 const romanDigitValues: ReadonlyArray<readonly [number, string]> = [
   [1000, 'M'],
@@ -58,6 +61,19 @@ export function isListMarkerLabel(label: string): boolean {
 }
 
 export function getListMarkerAtStart(text: string): ListMarker | null {
+  const unorderedMatch = text.match(unorderedListMarkerAtStartRegex);
+  if (unorderedMatch) {
+    const label = unorderedMatch[2] || '';
+    const spacing = unorderedMatch[3] || '';
+    return {
+      indent: unorderedMatch[1] || '',
+      label,
+      separator: 'unordered',
+      spacing,
+      marker: formatListMarker(label, 'unordered', spacing)
+    };
+  }
+
   const match = text.match(listMarkerAtStartRegex);
   if (!match) return null;
 
@@ -86,6 +102,7 @@ export function formatListMarker(
   separator: ListMarkerSeparator,
   spacing = ' '
 ): string {
+  if (separator === 'unordered') return `${label}${spacing}`;
   if (separator === 'parentheses') return `(${label})${spacing}`;
   if (separator === 'right-parenthesis') return `${label})${spacing}`;
   return `${label}.${spacing}`;
@@ -110,7 +127,20 @@ function getListMarkerStyleForIndentLevel(indentLevel: number): ListMarkerStyle 
   ];
 }
 
-export function getListMarkerForIndentLevel(indentLevel: number, spacing = ' '): string {
+export function getListMarkerForIndentLevel(
+  indentLevel: number,
+  spacing = ' ',
+  family: ListMarkerFamily = 'ordered'
+): string {
+  if (family === 'unordered') {
+    const safeIndentLevel = Math.max(0, Math.floor(indentLevel));
+    return formatListMarker(
+      unorderedListMarkerLabels[safeIndentLevel % unorderedListMarkerLabels.length],
+      'unordered',
+      spacing
+    );
+  }
+
   const style = getListMarkerStyleForIndentLevel(indentLevel);
   return formatListMarker(getInitialLabel(style.kind), style.separator, spacing);
 }
@@ -205,6 +235,7 @@ function isRomanSequenceStep(previousLabel: string, currentLabel: string): boole
 }
 
 export function getNextListMarkerLabel(label: string, previousLabel: string | null = null): string | null {
+  if (unorderedListMarkerLabels.some((candidate) => candidate === label)) return label;
   if (/^\d+$/.test(label)) return incrementDecimalLabel(label);
 
   if (label.length > 1) {
