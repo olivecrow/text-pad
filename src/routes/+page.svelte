@@ -5,7 +5,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { Braces, ChevronDown, Code2, Copy, FileCode2, FileText, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, Table2, X } from "@lucide/svelte";
+  import { Braces, ChevronDown, Code2, Copy, Download, FileCode2, FileText, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, Table2, X } from "@lucide/svelte";
   import {
     configurableDocumentFormatCategories,
     configurableDocumentFormats,
@@ -226,6 +226,7 @@
   let transientStatusMessage = $state<string | null>(null);
   let isCheckingForUpdate = $state<boolean>(false);
   let isInstallingUpdate = $state<boolean>(false);
+  let availableAppUpdate = $state.raw<Update | null>(null);
   let isAboutDialogOpen = $state<boolean>(false);
   let installedAppVersion = $state<string>(APP_VERSION_FALLBACK);
 
@@ -2011,52 +2012,20 @@
     });
   }
 
-  async function checkForUpdates(showNoUpdateStatus: boolean) {
-    if (isCheckingForUpdate || isInstallingUpdate) {
-      if (showNoUpdateStatus) {
-        showTransientStatus(isInstallingUpdate ? t('update.installing') : t('update.checking'));
-      }
+  async function installAvailableAppUpdate(update: Update) {
+    if (isInstallingUpdate) {
+      showTransientStatus(t('update.installing'));
       return;
     }
 
-    isCheckingForUpdate = true;
-    if (showNoUpdateStatus) {
-      showTransientStatus(t('update.checking'), 20_000);
-    }
-
-    let update: Update | null = null;
+    isInstallingUpdate = true;
     try {
-      update = await checkForAppUpdate();
-      if (!update) {
-        if (showNoUpdateStatus) {
-          showTransientStatus(t('update.latest', { version: installedAppVersion }));
-        }
-        return;
-      }
-
-      const shouldInstall = await ask(getUpdatePromptText(update), {
-        title: t('update.title'),
-        kind: 'info',
-        okLabel: t('update.install'),
-        cancelLabel: t('update.later')
-      });
-
-      if (!shouldInstall) {
-        await closeAppUpdate(update);
-        update = null;
-        showTransientStatus(t('update.postponed'));
-        return;
-      }
-
       const canRestart = await shouldCloseMainWindow();
       if (!canRestart) {
-        await closeAppUpdate(update);
-        update = null;
         showTransientStatus(t('update.cancelled'));
         return;
       }
 
-      isInstallingUpdate = true;
       let downloadedBytes = 0;
       let contentLength: number | undefined;
       const handleDownloadEvent = (event: DownloadEvent) => {
@@ -2076,17 +2045,69 @@
 
       await installAppUpdate(update, handleDownloadEvent);
     } catch (err) {
-      if (update) {
-        await closeAppUpdate(update);
+      if (availableAppUpdate === update) {
+        availableAppUpdate = null;
       }
+      await closeAppUpdate(update);
       const detail = err instanceof Error ? err.message : String(err);
       console.error('Failed to update application:', err);
-      if (showNoUpdateStatus || update || isInstallingUpdate) {
+      showTransientStatus(t('update.failed', { detail }), 7_000);
+    } finally {
+      isInstallingUpdate = false;
+    }
+  }
+
+  async function promptToInstallAppUpdate(update: Update) {
+    const shouldInstall = await ask(getUpdatePromptText(update), {
+      title: t('update.title'),
+      kind: 'info',
+      okLabel: t('update.install'),
+      cancelLabel: t('update.later')
+    });
+
+    if (!shouldInstall) {
+      showTransientStatus(t('update.postponed'));
+      return;
+    }
+
+    await installAvailableAppUpdate(update);
+  }
+
+  async function checkForUpdates(source: 'startup' | 'manual') {
+    const isManualCheck = source === 'manual';
+    if (isCheckingForUpdate || isInstallingUpdate) {
+      if (isManualCheck) {
+        showTransientStatus(isInstallingUpdate ? t('update.installing') : t('update.checking'));
+      }
+      return;
+    }
+
+    isCheckingForUpdate = true;
+    if (isManualCheck) {
+      showTransientStatus(t('update.checking'), 20_000);
+    }
+
+    try {
+      const update = availableAppUpdate ?? await checkForAppUpdate();
+      if (!update) {
+        if (isManualCheck) {
+          showTransientStatus(t('update.latest', { version: installedAppVersion }));
+        }
+        return;
+      }
+
+      availableAppUpdate = update;
+      if (isManualCheck) {
+        await promptToInstallAppUpdate(update);
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error('Failed to check for application update:', err);
+      if (isManualCheck) {
         showTransientStatus(t('update.failed', { detail }), 7_000);
       }
     } finally {
       isCheckingForUpdate = false;
-      isInstallingUpdate = false;
     }
   }
 
@@ -2095,13 +2116,19 @@
     hasCheckedForUpdateOnStartup = true;
     startupUpdateTimer = setTimeout(() => {
       startupUpdateTimer = null;
-      void checkForUpdates(false);
+      void checkForUpdates('startup');
     }, 1_000);
   }
 
   function handleManualUpdateCheck() {
     closeAllDropdown();
-    void checkForUpdates(true);
+    void checkForUpdates('manual');
+  }
+
+  function handleAvailableUpdateInstall() {
+    closeAllDropdown();
+    if (!availableAppUpdate) return;
+    void installAvailableAppUpdate(availableAppUpdate);
   }
 
   function handleAboutDialogOpen() {
@@ -2599,6 +2626,10 @@
     if (transientStatusTimer) {
       clearTimeout(transientStatusTimer);
       transientStatusTimer = null;
+    }
+    if (availableAppUpdate && !isInstallingUpdate) {
+      void closeAppUpdate(availableAppUpdate);
+      availableAppUpdate = null;
     }
     clearRenderedSelectionHighlight();
   });
@@ -5229,8 +5260,23 @@
         {/if}
       </div>
 
-      <!-- 우측 설정 톱니바퀴 및 렌더 모드 토글 버튼 -->
+      <!-- 우측 업데이트, 테마, 렌더 모드 및 설정 버튼 -->
       <div class="menu-right">
+        {#if availableAppUpdate}
+          <button
+            type="button"
+            class="available-update-button"
+            onclick={handleAvailableUpdateInstall}
+            disabled={isCheckingForUpdate || isInstallingUpdate}
+            aria-label={`${t('update.install')} ${availableAppUpdate.version}`}
+            title={`${t('update.install')} ${availableAppUpdate.version}`}
+          >
+            <Download size={14} aria-hidden="true" />
+            <span>{t('update.install')}</span>
+            <span class="available-update-version">{availableAppUpdate.version}</span>
+          </button>
+        {/if}
+
         <button
           class="theme-mode-toggle"
           onclick={() => {
@@ -5914,6 +5960,48 @@
   .menu-right {
     display: flex;
     align-items: center;
+    gap: 0.1rem;
+  }
+
+  .available-update-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3rem;
+    height: 24px;
+    padding: 0 0.5rem;
+    margin-right: 0.25rem;
+    border: 1px solid var(--accent-color);
+    border-radius: 5px;
+    background-color: transparent;
+    color: var(--accent-color);
+    font-family: var(--font-ui);
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    transition: background-color 0.1s, color 0.1s;
+  }
+
+  .available-update-button:hover:not(:disabled) {
+    background-color: var(--accent-color);
+    color: white;
+  }
+
+  .available-update-button:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 1px;
+  }
+
+  .available-update-button:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .available-update-version {
+    font-size: 0.68rem;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.78;
   }
 
   .menu-item-container {

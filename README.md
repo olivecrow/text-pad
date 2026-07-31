@@ -11,7 +11,7 @@
 - Use natural editing helpers for paired characters, lists, indentation, and code blocks.
 - Customize font size, tab width, render colors, and render fonts.
 - Save separate render color preferences for light, dark, and system themes.
-- Check for signed app updates at startup or from the Help menu, and view version and license details in About.
+- Discover signed app updates quietly at startup, install them from the toolbar, or check manually from the Help menu.
 - Handle horizontal wheel input correctly on Windows WebView2.
 
 ## Installation
