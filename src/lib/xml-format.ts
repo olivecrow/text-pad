@@ -1,6 +1,8 @@
 import { XMLValidator } from 'fast-xml-parser';
 import type { Token } from './render-tokenizer';
 import {
+  getFlatTokensInRange,
+  getLineRangeOffsets,
   splitFlatTokensIntoLines,
   type DocumentLineRange,
   type FlatToken,
@@ -25,14 +27,15 @@ function pushToken(tokens: FlatToken[], type: Token['type'], content: string, st
 }
 
 function tokenizeCharacterData(tokens: FlatToken[], content: string, start: number, end: number) {
+  const segment = content.slice(start, end);
   const entityPattern = /&(?:#[0-9]+|#x[0-9a-fA-F]+|[A-Za-z_][A-Za-z0-9_.:-]*);/gu;
-  entityPattern.lastIndex = start;
   let cursor = start;
   let match: RegExpExecArray | null;
-  while ((match = entityPattern.exec(content)) !== null && match.index < end) {
-    if (match.index > cursor) pushToken(tokens, 'text', content, cursor, match.index);
-    const matchEnd = Math.min(end, match.index + match[0].length);
-    pushToken(tokens, 'keyword', content, match.index, matchEnd);
+  while ((match = entityPattern.exec(segment)) !== null) {
+    const matchStart = start + match.index;
+    if (matchStart > cursor) pushToken(tokens, 'text', content, cursor, matchStart);
+    const matchEnd = matchStart + match[0].length;
+    pushToken(tokens, 'keyword', content, matchStart, matchEnd);
     cursor = matchEnd;
   }
   if (cursor < end) pushToken(tokens, 'text', content, cursor, end);
@@ -175,10 +178,35 @@ function scanXmlTokens(content: string): FlatToken[] {
   return tokens;
 }
 
-export function parseXmlFormat(content: string, options: ParseXmlOptions): ParsedLine[] {
+export interface XmlRenderCache {
+  content: string | null;
+  tokens: FlatToken[];
+}
+
+export function createXmlRenderCache(): XmlRenderCache {
+  return { content: null, tokens: [] };
+}
+
+export function parseXmlFormat(
+  content: string,
+  options: ParseXmlOptions,
+  cache?: XmlRenderCache
+): ParsedLine[] {
+  let tokens: FlatToken[];
+  if (cache?.content === content) {
+    tokens = cache.tokens;
+  } else {
+    tokens = scanXmlTokens(content);
+    if (cache) {
+      cache.content = content;
+      cache.tokens = tokens;
+    }
+  }
+
+  const lineOffsets = getLineRangeOffsets(content, options.lineStartOffsets, options.lineRange);
   const lines = splitFlatTokensIntoLines(
     content,
-    scanXmlTokens(content),
+    getFlatTokensInRange(tokens, lineOffsets),
     options.tabSize,
     options.lineStartOffsets,
     options.lineRange

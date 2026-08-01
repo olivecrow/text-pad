@@ -11,6 +11,10 @@
 - `src/lib/line-oriented-formats.ts`: Markdown, 설정, 로그, 자막·가사 형식의 토큰화와 오류 위치 계산.
 - `src/lib/xml-format.ts`: XML 태그·속성·엔터티·CDATA 토큰화와 well-formedness 오류 위치 계산.
 - `src/lib/specialized-text-formats.ts`: Gettext, REG, OpenSSH, systemd, hosts와 Git 메시지·신원·리비전 목록의 형식별 표시와 진단.
+- `src/lib/structured-rendering.ts`: 절대 위치 토큰의 화면 범위 선택, 줄 분할, 들여쓰기 깊이 계산.
+- `src/lib/text-offset-index.ts`: 원문 줄 시작과 CRLF 위치 인덱스, 원문과 `textarea` 선택 위치의 이진 탐색 변환.
+- `src/lib/rendered-text-geometry.ts`: 렌더 DOM의 클릭 좌표와 원문 오프셋을 연결하는 기본 좌표 변환과 로그 시간 대체 경로.
+- `src/lib/render-budgets.ts`: 향상 렌더와 대화형 표가 허용하는 공통 문서 크기 예산.
 - `src/lib/markdown-settings.ts`: Markdown 제목 1~6단계의 공통 표시 설정.
 - `src/lib/delimited-table.ts`: CSV/TSV 파싱, 직렬화, 셀·행·열 변경 계산.
 - `src/lib/DelimitedTableEditor.svelte`: CSV/TSV 표 편집 화면과 행·열 조작.
@@ -104,7 +108,7 @@
 
 - 배경 레이어와 `textarea`의 글꼴, 글자 크기, 줄 높이, 탭 크기를 항상 맞춘다.
 - 자동 줄바꿈은 렌더 배경 레이어와 실제 입력용 `textarea`에 같은 규칙으로 적용해 커서와 선택 영역이 보이는 글자 위치와 어긋나지 않게 한다.
-- 선택 범위가 생긴 동안에도 렌더 배경 레이어를 유지하고, 실제 입력용 `textarea`는 반투명 선택 배경만 표시해 키, 값, 주석 같은 렌더 서식이 사라지지 않게 한다.
+- 선택 범위가 생긴 동안에도 렌더 배경 레이어를 유지한다. 렌더 글자 범위가 있는 선택은 커스텀 강조를 사용하고, 줄바꿈이나 빈 줄만 선택해 커스텀 범위가 없으면 실제 입력용 `textarea`의 기본 선택 배경을 유지한다.
 - 앱 창 폭이 바뀌는 동안에는 렌더 배경과 줄번호를 잠시 그리지 않고, 폭이 안정화된 뒤 보이는 줄 범위만 다시 렌더링한다.
 - Svelte 템플릿의 불필요한 공백이 화면 글자 폭을 바꾸지 않게 한다.
 - 렌더 색상은 CSS 변수로만 주입한다.

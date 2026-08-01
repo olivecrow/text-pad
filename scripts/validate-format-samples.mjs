@@ -93,13 +93,15 @@ try {
     const samplePath = path.join(root, ...entry.sample.split('/'));
     const content = fs.readFileSync(samplePath, 'utf8');
     const lineStartOffsets = getLineStarts(content);
+    const renderCache = module.createDocumentRenderCache();
     const originalContent = content;
     const result = module.parseDocumentForRender(content, {
       pathOrName: entry.sample,
       tabSize: 4,
       lineStartOffsets,
       lineRange: { startLine: 0, endLine: lineStartOffsets.length - 1 },
-      markdownSettings
+      markdownSettings,
+      renderCache
     });
 
     if (result.format.id !== entry.id) {
@@ -120,6 +122,23 @@ try {
       const reconstructed = flattenTokens(result.lines[index]?.tokens || []);
       if (reconstructed !== sourceLines[index]) {
         throw new Error(`${entry.sample}:${index + 1}: token text does not reconstruct the source line.`);
+      }
+    }
+
+    if (lineStartOffsets.length > 1) {
+      const rangeStart = Math.max(1, Math.floor(lineStartOffsets.length / 2));
+      const rangeEnd = Math.min(lineStartOffsets.length - 1, rangeStart + 2);
+      const rangeResult = module.parseDocumentForRender(content, {
+        pathOrName: entry.sample,
+        tabSize: 4,
+        lineStartOffsets,
+        lineRange: { startLine: rangeStart, endLine: rangeEnd },
+        markdownSettings,
+        renderCache
+      });
+      const expectedLines = result.lines.slice(rangeStart, rangeEnd + 1);
+      if (JSON.stringify(rangeResult.lines) !== JSON.stringify(expectedLines)) {
+        throw new Error(`${entry.sample}: visible range ${rangeStart + 1}-${rangeEnd + 1} differs from the full render.`);
       }
     }
 

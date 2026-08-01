@@ -34,7 +34,12 @@ import {
   parseTextConfigurationFormat,
   type TextConfigurationFormatId
 } from './text-configuration-formats';
-import { getXmlDiagnostic, parseXmlFormat } from './xml-format';
+import {
+  createXmlRenderCache,
+  getXmlDiagnostic,
+  parseXmlFormat,
+  type XmlRenderCache
+} from './xml-format';
 import {
   getSpecializedTextDiagnostic,
   parseSpecializedTextFormat,
@@ -122,6 +127,14 @@ export interface DocumentRenderResult {
 
 export type DocumentLineRange = StructuredDocumentLineRange;
 
+export interface DocumentRenderCache {
+  xml: XmlRenderCache;
+}
+
+export function createDocumentRenderCache(): DocumentRenderCache {
+  return { xml: createXmlRenderCache() };
+}
+
 interface ParseDocumentOptions {
   pathOrName: string | null | undefined;
   tabSize: number;
@@ -130,6 +143,7 @@ interface ParseDocumentOptions {
   renderEnabled?: boolean;
   featureSettings?: DocumentFeatureSettings;
   markdownSettings?: MarkdownRenderSettings;
+  renderCache?: DocumentRenderCache;
 }
 
 const cBlockComment: BlockCommentRule = { start: '/*', end: '*/' };
@@ -1815,7 +1829,7 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
         tabSize: options.tabSize,
         lineStartOffsets: options.lineStartOffsets,
         lineRange
-      }),
+      }, options.renderCache?.xml),
       diagnostic: null
     };
   }

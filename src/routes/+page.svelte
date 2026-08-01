@@ -10,6 +10,7 @@
     configurableDocumentFormatCategories,
     configurableDocumentFormats,
     createDefaultDocumentFeatureSettings,
+    createDocumentRenderCache,
     getDocumentDiagnostic,
     getDocumentFormatForContent,
     getSuggestedFileExtensionForContent,
@@ -70,6 +71,23 @@
     type DelimitedTableDocument,
     type DelimitedTableSeparator
   } from "$lib/delimited-table";
+  import {
+    MAX_ENHANCED_RENDER_CHARS,
+    MAX_ENHANCED_RENDER_LINES,
+    MAX_INTERACTIVE_TABLE_CELLS
+  } from "$lib/render-budgets";
+  import {
+    contentOffsetToTextareaOffset,
+    createTextOffsetIndex,
+    textareaOffsetToContentOffset,
+    type TextOffsetIndex
+  } from "$lib/text-offset-index";
+  import {
+    createRenderedTextBoundaryIndex,
+    findClosestRenderedTextOffset,
+    getNativeCaretTextOffsetAtPoint,
+    type RenderedTextBoundary
+  } from "$lib/rendered-text-geometry";
 
   type TextEncoding = 'utf8' | 'utf8Bom' | 'utf16Le' | 'utf16Be';
 
@@ -104,10 +122,8 @@
   let nextUntitledNumber = 1;
   const invalidFileNameCharsPattern = /[<>:"/\\|?*\x00-\x1F]/g;
   const isBrowser = typeof window !== 'undefined';
-  const maxEnhancedRenderChars = 2 * 1024 * 1024;
-  const maxEnhancedRenderLines = 100_000;
-  const maxDelimitedTableCells = 50_000;
   const languagePreferenceKey = 'pref_language';
+  const documentRenderCache = createDocumentRenderCache();
 
   function getInitialLanguagePreference(): LanguagePreference {
     if (!isBrowser) return 'system';
@@ -230,6 +246,7 @@
   let filePath = $state<string | null>(initialTab.filePath);
   let fileName = $state<string>(initialTab.fileName);
   let fileContent = $state<string>(initialTab.fileContent);
+  let textOffsetIndex = $derived(createTextOffsetIndex(fileContent));
   let fileEncoding = $state<TextEncoding>(initialTab.encoding);
   let isDirty = $state<boolean>(initialTab.isDirty);
   let isLoading = $state<boolean>(false);
@@ -256,6 +273,7 @@
   let editorCaretColor = $state<string>('var(--color-render-text, var(--text-color))');
   let editorCursorStyle = $state<string>('text');
   let hasEditorSelection = $state<boolean>(false);
+  let hasRenderedSelectionHighlight = $state<boolean>(false);
   let steadyEditorCaretVisible = $state<boolean>(false);
   let steadyEditorCaretCollapsed = $state<boolean>(true);
   let steadyEditorCaretLeft = $state<number>(12);
@@ -659,49 +677,25 @@
     });
   }
 
-  function getTextareaValueFromContent(content: string): string {
-    return content.replace(/\r\n/g, '\n');
-  }
-
-  function contentOffsetToTextareaOffset(content: string, offset: number): number {
-    const targetOffset = clamp(offset, 0, content.length);
-    let textareaOffset = 0;
-
-    for (let contentOffset = 0; contentOffset < targetOffset; contentOffset += 1) {
-      if (content[contentOffset] === '\r' && content[contentOffset + 1] === '\n') continue;
-      textareaOffset += 1;
-    }
-
-    return textareaOffset;
-  }
-
-  function textareaOffsetToContentOffset(content: string, offset: number): number {
-    const targetOffset = Math.max(0, offset);
-    let textareaOffset = 0;
-
-    for (let contentOffset = 0; contentOffset < content.length; contentOffset += 1) {
-      if (textareaOffset >= targetOffset) return contentOffset;
-      if (content[contentOffset] === '\r' && content[contentOffset + 1] === '\n') continue;
-      textareaOffset += 1;
-    }
-
-    return content.length;
+  function getTextOffsetIndex(content: string): TextOffsetIndex {
+    return textOffsetIndex.content === content ? textOffsetIndex : createTextOffsetIndex(content);
   }
 
   function getTextareaSelectionInContent(content = fileContent): EditorSelection {
     if (!textareaEl) return { start: caretOffset, end: caretOffset };
 
     return {
-      start: textareaOffsetToContentOffset(content, textareaEl.selectionStart),
-      end: textareaOffsetToContentOffset(content, textareaEl.selectionEnd)
+      start: textareaOffsetToContentOffset(getTextOffsetIndex(content), textareaEl.selectionStart),
+      end: textareaOffsetToContentOffset(getTextOffsetIndex(content), textareaEl.selectionEnd)
     };
   }
 
   function setTextareaSelectionFromContent(start: number, end: number, content = fileContent) {
     if (!textareaEl) return;
 
-    textareaEl.selectionStart = contentOffsetToTextareaOffset(content, start);
-    textareaEl.selectionEnd = contentOffsetToTextareaOffset(content, end);
+    const index = getTextOffsetIndex(content);
+    textareaEl.selectionStart = contentOffsetToTextareaOffset(index, start);
+    textareaEl.selectionEnd = contentOffsetToTextareaOffset(index, end);
   }
 
   function getSnapshotFromTextareaInput(
@@ -710,7 +704,8 @@
     textareaSelectionStart: number,
     textareaSelectionEnd: number
   ): EditorSnapshot {
-    const beforeTextareaValue = getTextareaValueFromContent(before.content);
+    const beforeOffsetIndex = createTextOffsetIndex(before.content);
+    const beforeTextareaValue = beforeOffsetIndex.textareaValue;
     let prefixLength = 0;
     const prefixLimit = Math.min(beforeTextareaValue.length, textareaValue.length);
 
@@ -733,17 +728,18 @@
 
     const beforeTextareaEnd = beforeTextareaValue.length - suffixLength;
     const afterTextareaEnd = textareaValue.length - suffixLength;
-    const contentStart = textareaOffsetToContentOffset(before.content, prefixLength);
-    const contentEnd = textareaOffsetToContentOffset(before.content, beforeTextareaEnd);
+    const contentStart = textareaOffsetToContentOffset(beforeOffsetIndex, prefixLength);
+    const contentEnd = textareaOffsetToContentOffset(beforeOffsetIndex, beforeTextareaEnd);
     const newline = getPreferredNewline(before.content, contentStart);
     const replacement = textareaValue.slice(prefixLength, afterTextareaEnd).replace(/\n/g, newline);
     const content = `${before.content.slice(0, contentStart)}${replacement}${before.content.slice(contentEnd)}`;
 
+    const contentOffsetIndex = createTextOffsetIndex(content);
     return {
       content,
       selection: {
-        start: textareaOffsetToContentOffset(content, textareaSelectionStart),
-        end: textareaOffsetToContentOffset(content, textareaSelectionEnd)
+        start: textareaOffsetToContentOffset(contentOffsetIndex, textareaSelectionStart),
+        end: textareaOffsetToContentOffset(contentOffsetIndex, textareaSelectionEnd)
       }
     };
   }
@@ -1366,17 +1362,7 @@
     event.preventDefault();
     openColorPicker(inputId);
   }
-  function getLineStartOffsets(content: string): number[] {
-    const lineStartOffsets = [0];
-    const newlineRegex = /\r?\n/g;
-    let match: RegExpExecArray | null;
 
-    while ((match = newlineRegex.exec(content)) !== null) {
-      lineStartOffsets.push(match.index + match[0].length);
-    }
-
-    return lineStartOffsets;
-  }
 
   function getLineTextForLayout(content: string, offsets: number[], lineIndex: number): string {
     const lineStart = offsets[lineIndex] ?? 0;
@@ -1591,14 +1577,14 @@
     content: string,
     separator: DelimitedTableSeparator
   ): DelimitedTableDocument | null {
-    return parseDelimitedTableWithinCellLimit(content, separator, maxDelimitedTableCells);
+    return parseDelimitedTableWithinCellLimit(content, separator, MAX_INTERACTIVE_TABLE_CELLS);
   }
 
   // 반응형 상태
-  let lineStartOffsets = $derived(getLineStartOffsets(fileContent));
+  let lineStartOffsets = $derived(textOffsetIndex.lineStartOffsets);
   let isEnhancedDocumentWithinBudget = $derived(
-    fileContent.length <= maxEnhancedRenderChars
-    && lineStartOffsets.length <= maxEnhancedRenderLines
+    fileContent.length <= MAX_ENHANCED_RENDER_CHARS
+    && lineStartOffsets.length <= MAX_ENHANCED_RENDER_LINES
   );
   let fencedCodeBlocks = $derived(
     isEnhancedDocumentWithinBudget
@@ -1607,7 +1593,7 @@
   );
   let lineCount = $derived(lineStartOffsets.length);
   let charCount = $derived(fileContent.length);
-  let textareaDisplayContent = $derived(getTextareaValueFromContent(fileContent));
+  let textareaDisplayContent = $derived(textOffsetIndex.textareaValue);
   let editorViewportWidth = $state<number>(500);
   function getEditorTextBoxWidth(): number {
     const fallbackWidth = Math.max(1, editorViewportWidth);
@@ -1744,7 +1730,8 @@
     lineRange: { startLine, endLine },
     renderEnabled: isActiveDocumentRenderEnabled,
     featureSettings: documentFeatureSettings,
-    markdownSettings: markdownRenderSettings
+    markdownSettings: markdownRenderSettings,
+    renderCache: documentRenderCache
   }));
   let parsedLines = $derived(documentRender.lines);
 
@@ -2308,6 +2295,7 @@
   }
 
   function clearRenderedSelectionHighlight() {
+    hasRenderedSelectionHighlight = false;
     if (!supportsRenderedSelectionHighlight) return;
     CSS.highlights.delete(renderedSelectionHighlightName);
   }
@@ -2391,6 +2379,7 @@
     }
 
     CSS.highlights.set(renderedSelectionHighlightName, new Highlight(...ranges));
+    hasRenderedSelectionHighlight = true;
   }
 
   function scheduleRenderedSelectionHighlight() {
@@ -4127,10 +4116,7 @@
     return nearestLine;
   }
 
-  interface RenderedTextBoundary {
-    node: Text;
-    offset: number;
-  }
+
 
   function getRenderedCaretRectAtBoundary(
     lineElement: HTMLElement,
@@ -4168,32 +4154,7 @@
     );
   }
 
-  function getRenderedTextBoundaries(
-    lineContent: HTMLElement,
-    lineTextLength: number
-  ): Array<RenderedTextBoundary | undefined> {
-    const boundaries = new Array<RenderedTextBoundary | undefined>(lineTextLength + 1);
-    const walker = document.createTreeWalker(lineContent, NodeFilter.SHOW_TEXT);
-    let consumedOffset = 0;
-    let textNode = walker.nextNode() as Text | null;
 
-    while (textNode && consumedOffset <= lineTextLength) {
-      const textLength = textNode.data.length;
-      if (textLength === 0) {
-        textNode = walker.nextNode() as Text | null;
-        continue;
-      }
-      for (let nodeOffset = 0; nodeOffset <= textLength; nodeOffset += 1) {
-        const sourceOffset = consumedOffset + nodeOffset;
-        if (sourceOffset > lineTextLength) break;
-        boundaries[sourceOffset] = { node: textNode, offset: nodeOffset };
-      }
-      consumedOffset += textLength;
-      textNode = walker.nextNode() as Text | null;
-    }
-
-    return boundaries;
-  }
 
   function getRenderedCaretRectFromLineText(
     lineElement: HTMLElement,
@@ -4231,25 +4192,25 @@
     const lineContent = lineElement.querySelector<HTMLElement>('.line-content');
     if (!lineContent) return 0;
 
-    const boundaries = getRenderedTextBoundaries(lineContent, lineText.length);
-    let bestOffset = 0;
-    let bestDistance = Number.POSITIVE_INFINITY;
-    const verticalWeight = Math.max(editorViewportWidth, 1);
+    const nativeOffset = getNativeCaretTextOffsetAtPoint(
+      lineContent,
+      lineText.length,
+      clientX,
+      clientY
+    );
+    if (nativeOffset !== null) return nativeOffset;
 
-    for (let offset = 0; offset <= lineText.length; offset += 1) {
-      const boundary = boundaries[offset];
-      if (!boundary) continue;
-      const rect = getRenderedCaretRectAtBoundary(lineElement, boundary);
-      if (!rect) continue;
-      const distance = Math.abs(clientY - (rect.top + rect.height / 2)) * verticalWeight
-        + Math.abs(clientX - rect.left);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        bestOffset = offset;
+    const boundaries = createRenderedTextBoundaryIndex(lineContent, lineText.length);
+    return findClosestRenderedTextOffset(
+      lineText.length,
+      clientX,
+      clientY,
+      Math.max(editorViewportWidth, 1),
+      (offset) => {
+        const boundary = boundaries.getBoundary(offset);
+        return boundary ? getRenderedCaretRectAtBoundary(lineElement, boundary) : null;
       }
-    }
-
-    return bestOffset;
+    );
   }
 
   function getRenderedCaretRectForOffset(offset: number): DOMRect | null {
@@ -5563,7 +5524,7 @@
       class="editor-area"
       class:render-mode={isRenderMode && isEnhancedDocumentWithinBudget}
       class:render-selection-active={isRenderMode && isEnhancedDocumentWithinBudget && hasEditorSelection}
-      class:render-custom-selection={isRenderMode && supportsRenderedSelectionHighlight && shouldRenderHighlightLayer}
+      class:render-custom-selection={isRenderMode && supportsRenderedSelectionHighlight && shouldRenderHighlightLayer && hasRenderedSelectionHighlight}
       class:render-wrap-settling={isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling}
       class:render-native-text-visible={shouldShowNativeRenderText}
     >
