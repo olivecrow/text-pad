@@ -5,7 +5,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { Braces, ChevronDown, Code2, Copy, FileCode2, FileText, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, Table2, X } from "@lucide/svelte";
+  import { Braces, ChevronDown, Code2, Copy, Download, FileCode2, FileText, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, Table2, X } from "@lucide/svelte";
   import {
     configurableDocumentFormatCategories,
     configurableDocumentFormats,
@@ -24,12 +24,22 @@
   import type { Token } from "$lib/render-tokenizer";
   import {
     formatListMarker,
+    getListContinuationIndent,
     getListMarkerAtStart,
     getListMarkerForIndentLevel,
     getNextListMarkerLabel,
+    renumberFollowingListMarkerSequence,
     type ListMarker
   } from "$lib/list-markers";
   import { EditorUndoHistory, type EditorSelection, type EditorSnapshot } from "$lib/editor-undo";
+  import {
+    createDefaultMarkdownRenderSettings,
+    markdownHeadingLevels,
+    normalizeMarkdownRenderSettings,
+    type MarkdownHeadingLevel,
+    type MarkdownHeadingStyle,
+    type MarkdownRenderSettings
+  } from "$lib/markdown-settings";
   import { onDestroy, tick, untrack } from "svelte";
   import AboutDialog from "$lib/AboutDialog.svelte";
   import {
@@ -224,6 +234,7 @@
   let transientStatusMessage = $state<string | null>(null);
   let isCheckingForUpdate = $state<boolean>(false);
   let isInstallingUpdate = $state<boolean>(false);
+  let availableAppUpdate = $state.raw<Update | null>(null);
   let isAboutDialogOpen = $state<boolean>(false);
   let installedAppVersion = $state<string>(APP_VERSION_FALLBACK);
 
@@ -264,6 +275,7 @@
     document: true,
     structured: true,
     table: true,
+    subtitle: true,
     code: true
   });
   let hasCenteredSettingsWindowThisSession = false;
@@ -282,6 +294,7 @@
   let delimitedTableAnimateReorder = $state<boolean>(true);
   let delimitedTableReorderDurationMs = $state<number>(150);
   let documentFeatureSettings = $state<DocumentFeatureSettings>(createDefaultDocumentFeatureSettings());
+  let markdownRenderSettings = $state<MarkdownRenderSettings>(createDefaultMarkdownRenderSettings());
   let activeSettingsCategory = $derived(
     configurableDocumentFormatCategories.find(
       (category) => activeSettingsView === getDocumentFormatCategorySettingsView(category.id)
@@ -305,6 +318,12 @@
 
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
   let editorViewportEl = $state<HTMLDivElement | null>(null);
+  let renderedLineHeightMeasurements = $state<RenderedLineHeightMeasurements>({
+    content: '',
+    context: '',
+    heights: {}
+  });
+  let renderedLineResizeObserver: ResizeObserver | null = null;
 
   // 테마 모드: 'system' | 'light' | 'dark'
   let themeMode = $state<'system' | 'light' | 'dark'>('system');
@@ -405,6 +424,7 @@
 
   let canPersistPreferences = $state<boolean>(false);
   const documentFeaturePreferenceKey = 'pref_document_format_features';
+  const markdownRenderPreferenceKey = 'pref_markdown_render_settings';
   function getCloseSaveButtons() {
     return {
       yes: t('dialog.saveChanges.save'),
@@ -489,6 +509,15 @@
     }
   }
 
+  function parseMarkdownRenderSettingsValue(value: string | null): MarkdownRenderSettings {
+    if (!value) return createDefaultMarkdownRenderSettings();
+    try {
+      return normalizeMarkdownRenderSettings(JSON.parse(value));
+    } catch {
+      return createDefaultMarkdownRenderSettings();
+    }
+  }
+
   function getDocumentFormatSettingsView(formatId: DocumentFormatId): FormatSettingsView {
     return `format:${formatId}`;
   }
@@ -527,10 +556,33 @@
     };
   }
 
+  function setMarkdownHeadingStyle(
+    level: MarkdownHeadingLevel,
+    field: keyof MarkdownHeadingStyle,
+    value: number | MarkdownHeadingStyle['fontWeight']
+  ) {
+    markdownRenderSettings = {
+      ...markdownRenderSettings,
+      headings: {
+        ...markdownRenderSettings.headings,
+        [level]: {
+          ...markdownRenderSettings.headings[level],
+          [field]: value
+        }
+      }
+    };
+  }
+
   interface EditorLineLayout {
     tops: number[];
     heights: number[];
     totalHeight: number;
+  }
+
+  interface RenderedLineHeightMeasurements {
+    content: string;
+    context: string;
+    heights: Record<number, number>;
   }
 
   function getActiveTabIndex(): number {
@@ -913,6 +965,7 @@
       localStorage.getItem('pref_delimited_table_reorder_duration_ms')
     );
     documentFeatureSettings = parseDocumentFeatureSettingsValue(localStorage.getItem(documentFeaturePreferenceKey));
+    markdownRenderSettings = parseMarkdownRenderSettingsValue(localStorage.getItem(markdownRenderPreferenceKey));
 
     renderFontFamily = localStorage.getItem('pref_render_font_family') || 'nanum-gothic';
 
@@ -976,6 +1029,7 @@
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_animate_reorder', delimitedTableAnimateReorder ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_reorder_duration_ms', delimitedTableReorderDurationMs.toString()); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(documentFeaturePreferenceKey, JSON.stringify(documentFeatureSettings)); });
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(markdownRenderPreferenceKey, JSON.stringify(markdownRenderSettings)); });
   $effect(() => { if (isBrowser && canPersistPreferences && renderFontFamily) localStorage.setItem('pref_render_font_family', renderFontFamily); });
 
   $effect(() => {
@@ -1153,7 +1207,7 @@
     const targetPath = await invoke<string | null>("save_file_dialog", {
       defaultName: getSuggestedSaveFileName(tab),
       content: tab.fileContent,
-      filterNames: getSaveFileDialogFilters(locale).map((filter) => filter.name)
+      filters: getSaveFileDialogFilters(locale)
     });
     if (!targetPath) return false;
 
@@ -1173,7 +1227,7 @@
     const targetPath = await invoke<string | null>("save_file_dialog", {
       defaultName: getSuggestedSaveFileName(tab),
       content: tab.fileContent,
-      filterNames: getSaveFileDialogFilters(locale).map((filter) => filter.name)
+      filters: getSaveFileDialogFilters(locale)
     });
     if (!targetPath) {
       return false;
@@ -1201,6 +1255,7 @@
       delimitedTableReorderDurationMs = normalizeDelimitedTableReorderDuration(e.newValue);
     }
     if (e.key === documentFeaturePreferenceKey) documentFeatureSettings = parseDocumentFeatureSettingsValue(e.newValue);
+    if (e.key === markdownRenderPreferenceKey) markdownRenderSettings = parseMarkdownRenderSettingsValue(e.newValue);
     if (e.key === 'pref_render_font_family' && e.newValue) renderFontFamily = e.newValue;
 
     if (e.key.startsWith('pref_light_') && e.newValue) {
@@ -1435,82 +1490,14 @@
     return visualLineCount;
   }
 
-  interface WrappedLineSegment {
-    start: number;
-    end: number;
-  }
-
-  function appendWrappedLineSegment(
-    segments: WrappedLineSegment[],
-    start: number,
-    end: number
-  ) {
-    if (end <= start && segments.length > 0) return;
-    segments.push({ start, end });
-  }
-
-  function getWrappedLineSegments(lineText: string, contentWidth: number): WrappedLineSegment[] {
-    if (!isBrowser || contentWidth <= 0 || lineText.length === 0) {
-      return [{ start: 0, end: lineText.length }];
-    }
-
-    const segments: WrappedLineSegment[] = [];
-    const pieces = lineText.match(/\S+\s*|\s+/g) || [lineText];
-    let pieceStart = 0;
-    let currentStart = 0;
-    let currentEnd = 0;
-    let currentWidth = 0;
-
-    const commitCurrentSegment = () => {
-      appendWrappedLineSegment(segments, currentStart, currentEnd);
-      currentStart = currentEnd;
-      currentWidth = 0;
-    };
-
-    const appendRange = (start: number, end: number) => {
-      if (end <= start) return;
-
-      const piece = lineText.slice(start, end);
-      const nextWidth = measureEditorTextEndWidth(piece, currentWidth);
-      if (currentEnd > currentStart && nextWidth > contentWidth) {
-        commitCurrentSegment();
-        currentStart = start;
-        currentEnd = start;
-        currentWidth = 0;
-      }
-
-      currentEnd = end;
-      currentWidth = measureEditorTextEndWidth(lineText.slice(currentStart, currentEnd), 0);
-    };
-
-    for (const piece of pieces) {
-      const pieceEnd = pieceStart + piece.length;
-      const pieceWidth = measureEditorTextEndWidth(piece, 0);
-
-      if (pieceWidth <= contentWidth) {
-        appendRange(pieceStart, pieceEnd);
-      } else {
-        for (let charStart = pieceStart; charStart < pieceEnd;) {
-          const codePoint = lineText.codePointAt(charStart);
-          const charEnd = charStart + (codePoint && codePoint > 0xffff ? 2 : 1);
-          appendRange(charStart, Math.min(charEnd, pieceEnd));
-          charStart = charEnd;
-        }
-      }
-
-      pieceStart = pieceEnd;
-    }
-
-    appendWrappedLineSegment(segments, currentStart, currentEnd);
-    return segments.length > 0 ? segments : [{ start: 0, end: lineText.length }];
-  }
-
   function getEditorLineLayout(
     content: string,
     offsets: number[],
     contentWidth: number,
     fencedCodeRanges: FencedCodeBlockRange[],
-    wrapEnabled: boolean
+    wrapEnabled: boolean,
+    measurements: RenderedLineHeightMeasurements,
+    measurementContext: string
   ): EditorLineLayout {
     const lineTotal = offsets.length;
     const tops: number[] = new Array(lineTotal);
@@ -1538,7 +1525,10 @@
       const visualLineCount = wrapEnabled
         ? countWrappedVisualLines(lineText, lineContentWidth)
         : 1;
-      const height = Math.max(measuredLineHeight, visualLineCount * measuredLineHeight);
+      const measuredHeight = measurements.content === content && measurements.context === measurementContext
+        ? measurements.heights[lineIndex]
+        : null;
+      const height = measuredHeight ?? Math.max(measuredLineHeight, visualLineCount * measuredLineHeight);
 
       tops[lineIndex] = top;
       heights[lineIndex] = height;
@@ -1622,15 +1612,79 @@
   }
 
   let renderWrapContentWidth = $derived(getEditorWrapContentWidth());
+  let renderedLineMeasurementContext = $derived([
+    renderWrapContentWidth.toFixed(3),
+    measuredLineHeight.toFixed(3),
+    currentFontSize,
+    currentRenderFontFamilyCSS,
+    activeColors.renderFontWeight,
+    tabSize,
+    filePath || fileName,
+    JSON.stringify(documentFeatureSettings),
+    JSON.stringify(markdownRenderSettings)
+  ].join('|'));
   let renderLineLayout = $derived(getEditorLineLayout(
     fileContent,
     lineStartOffsets,
     renderWrapContentWidth,
     fencedCodeBlocks,
-    isRenderMode && isEnhancedDocumentWithinBudget
+    isRenderMode && isEnhancedDocumentWithinBudget,
+    renderedLineHeightMeasurements,
+    renderedLineMeasurementContext
   ));
   let shouldShowNativeRenderText = $derived(isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling);
   let shouldRenderHighlightLayer = $derived(isRenderMode && isEnhancedDocumentWithinBudget && !shouldShowNativeRenderText);
+
+  function syncRenderedLineHeightMeasurements(entries: ResizeObserverEntry[]) {
+    const hasCurrentMeasurements = renderedLineHeightMeasurements.content === fileContent
+      && renderedLineHeightMeasurements.context === renderedLineMeasurementContext;
+    let nextHeights = hasCurrentMeasurements ? renderedLineHeightMeasurements.heights : {};
+    let hasChanged = false;
+
+    for (const entry of entries) {
+      const lineElement = entry.target as HTMLElement;
+      const lineIndex = Number(lineElement.dataset.lineIndex);
+      if (!Number.isFinite(lineIndex)) continue;
+
+      const observedHeight = entry.borderBoxSize[0]?.blockSize
+        ?? lineElement.getBoundingClientRect().height;
+      const height = Math.max(measuredLineHeight, observedHeight);
+      const previousHeight = nextHeights[lineIndex];
+      if (previousHeight !== undefined && Math.abs(previousHeight - height) <= 0.25) {
+        continue;
+      }
+
+      if (!hasChanged) {
+        nextHeights = { ...nextHeights };
+        hasChanged = true;
+      }
+      nextHeights[lineIndex] = height;
+    }
+
+    if (!hasChanged) return;
+    renderedLineHeightMeasurements = {
+      content: fileContent,
+      context: renderedLineMeasurementContext,
+      heights: nextHeights
+    };
+    void tick().then(() => {
+      syncSteadyEditorCaretPosition();
+      scheduleRenderedSelectionHighlight();
+    });
+  }
+
+  function observeRenderedLine(node: HTMLElement) {
+    if (!isBrowser) return;
+
+    renderedLineResizeObserver ??= new ResizeObserver(syncRenderedLineHeightMeasurements);
+    renderedLineResizeObserver.observe(node);
+
+    return {
+      destroy() {
+        renderedLineResizeObserver?.unobserve(node);
+      }
+    };
+  }
 
   // 가상화 범위 계산
   let startLine = $derived(Math.max(
@@ -1668,7 +1722,8 @@
     lineStartOffsets,
     lineRange: { startLine, endLine },
     renderEnabled: isActiveDocumentRenderEnabled,
-    featureSettings: documentFeatureSettings
+    featureSettings: documentFeatureSettings,
+    markdownSettings: markdownRenderSettings
   }));
   let parsedLines = $derived(documentRender.lines);
 
@@ -1922,7 +1977,7 @@
     };
   });
 
-  function openFile(openedFile: OpenedFile) {
+  function openFile(openedFile: OpenedFile, replaceCleanUntitled = true) {
     const openedTab = createEditorTab({
       filePath: openedFile.path,
       fileName: getFileNameFromPath(openedFile.path),
@@ -1931,12 +1986,55 @@
     });
     const activeTab = getActiveTab();
 
-    if (activeTab && isCleanUntitledTab(activeTab)) {
+    if (replaceCleanUntitled && activeTab && isCleanUntitledTab(activeTab)) {
       replaceActiveTabWith(openedTab);
     } else {
       addTab(openedTab);
     }
   }
+
+  async function openDroppedFiles(paths: string[]) {
+    if (!paths.length || isSettingsWindow) return;
+
+    try {
+      isLoading = true;
+      errorMsg = null;
+      syncActiveTabState();
+      const openedFiles = await invoke<OpenedFile[]>("open_file_paths", { paths });
+      for (const openedFile of openedFiles) {
+        openFile(openedFile, false);
+      }
+    } catch (err: any) {
+      errorMsg = localizeError('error.readFile', err);
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (!isBrowser || !hasTauriRuntime() || isSettingsWindow) return;
+
+    let isDisposed = false;
+    let unlistenDragDrop: UnlistenFn | undefined;
+    getCurrentWindow().onDragDropEvent((event) => {
+      if (event.payload.type === 'drop') {
+        void openDroppedFiles(event.payload.paths);
+      }
+    }).then((unlisten) => {
+      if (isDisposed) {
+        unlisten();
+      } else {
+        unlistenDragDrop = unlisten;
+      }
+    }).catch((err) => {
+      console.error('Failed to listen for dropped files:', err);
+    });
+
+    return () => {
+      isDisposed = true;
+      if (unlistenDragDrop) unlistenDragDrop();
+    };
+  });
 
   async function loadStartupFiles() {
     if (hasLoadedStartupFiles || !hasTauriRuntime() || isSettingsWindow) return;
@@ -2009,52 +2107,20 @@
     });
   }
 
-  async function checkForUpdates(showNoUpdateStatus: boolean) {
-    if (isCheckingForUpdate || isInstallingUpdate) {
-      if (showNoUpdateStatus) {
-        showTransientStatus(isInstallingUpdate ? t('update.installing') : t('update.checking'));
-      }
+  async function installAvailableAppUpdate(update: Update) {
+    if (isInstallingUpdate) {
+      showTransientStatus(t('update.installing'));
       return;
     }
 
-    isCheckingForUpdate = true;
-    if (showNoUpdateStatus) {
-      showTransientStatus(t('update.checking'), 20_000);
-    }
-
-    let update: Update | null = null;
+    isInstallingUpdate = true;
     try {
-      update = await checkForAppUpdate();
-      if (!update) {
-        if (showNoUpdateStatus) {
-          showTransientStatus(t('update.latest', { version: installedAppVersion }));
-        }
-        return;
-      }
-
-      const shouldInstall = await ask(getUpdatePromptText(update), {
-        title: t('update.title'),
-        kind: 'info',
-        okLabel: t('update.install'),
-        cancelLabel: t('update.later')
-      });
-
-      if (!shouldInstall) {
-        await closeAppUpdate(update);
-        update = null;
-        showTransientStatus(t('update.postponed'));
-        return;
-      }
-
       const canRestart = await shouldCloseMainWindow();
       if (!canRestart) {
-        await closeAppUpdate(update);
-        update = null;
         showTransientStatus(t('update.cancelled'));
         return;
       }
 
-      isInstallingUpdate = true;
       let downloadedBytes = 0;
       let contentLength: number | undefined;
       const handleDownloadEvent = (event: DownloadEvent) => {
@@ -2074,17 +2140,69 @@
 
       await installAppUpdate(update, handleDownloadEvent);
     } catch (err) {
-      if (update) {
-        await closeAppUpdate(update);
+      if (availableAppUpdate === update) {
+        availableAppUpdate = null;
       }
+      await closeAppUpdate(update);
       const detail = err instanceof Error ? err.message : String(err);
       console.error('Failed to update application:', err);
-      if (showNoUpdateStatus || update || isInstallingUpdate) {
+      showTransientStatus(t('update.failed', { detail }), 7_000);
+    } finally {
+      isInstallingUpdate = false;
+    }
+  }
+
+  async function promptToInstallAppUpdate(update: Update) {
+    const shouldInstall = await ask(getUpdatePromptText(update), {
+      title: t('update.title'),
+      kind: 'info',
+      okLabel: t('update.install'),
+      cancelLabel: t('update.later')
+    });
+
+    if (!shouldInstall) {
+      showTransientStatus(t('update.postponed'));
+      return;
+    }
+
+    await installAvailableAppUpdate(update);
+  }
+
+  async function checkForUpdates(source: 'startup' | 'manual') {
+    const isManualCheck = source === 'manual';
+    if (isCheckingForUpdate || isInstallingUpdate) {
+      if (isManualCheck) {
+        showTransientStatus(isInstallingUpdate ? t('update.installing') : t('update.checking'));
+      }
+      return;
+    }
+
+    isCheckingForUpdate = true;
+    if (isManualCheck) {
+      showTransientStatus(t('update.checking'), 20_000);
+    }
+
+    try {
+      const update = availableAppUpdate ?? await checkForAppUpdate();
+      if (!update) {
+        if (isManualCheck) {
+          showTransientStatus(t('update.latest', { version: installedAppVersion }));
+        }
+        return;
+      }
+
+      availableAppUpdate = update;
+      if (isManualCheck) {
+        await promptToInstallAppUpdate(update);
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error('Failed to check for application update:', err);
+      if (isManualCheck) {
         showTransientStatus(t('update.failed', { detail }), 7_000);
       }
     } finally {
       isCheckingForUpdate = false;
-      isInstallingUpdate = false;
     }
   }
 
@@ -2093,13 +2211,19 @@
     hasCheckedForUpdateOnStartup = true;
     startupUpdateTimer = setTimeout(() => {
       startupUpdateTimer = null;
-      void checkForUpdates(false);
+      void checkForUpdates('startup');
     }, 1_000);
   }
 
   function handleManualUpdateCheck() {
     closeAllDropdown();
-    void checkForUpdates(true);
+    void checkForUpdates('manual');
+  }
+
+  function handleAvailableUpdateInstall() {
+    closeAllDropdown();
+    if (!availableAppUpdate) return;
+    void installAvailableAppUpdate(availableAppUpdate);
   }
 
   function handleAboutDialogOpen() {
@@ -2168,24 +2292,31 @@
 
   function getTextNodeBoundary(
     root: HTMLElement,
-    targetOffset: number
+    targetOffset: number,
+    preferNextTextNode = false
   ): { node: Text; offset: number } | null {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     let remainingOffset = Math.max(0, targetOffset);
-    let lastTextNode: Text | null = null;
+    let lastNonEmptyTextNode: Text | null = null;
     let textNode = walker.nextNode() as Text | null;
 
     while (textNode) {
-      lastTextNode = textNode;
-      if (remainingOffset <= textNode.data.length) {
+      const textLength = textNode.data.length;
+      if (textLength === 0) {
+        textNode = walker.nextNode() as Text | null;
+        continue;
+      }
+
+      lastNonEmptyTextNode = textNode;
+      if (remainingOffset < textLength || (!preferNextTextNode && remainingOffset === textLength)) {
         return { node: textNode, offset: remainingOffset };
       }
-      remainingOffset -= textNode.data.length;
+      remainingOffset -= textLength;
       textNode = walker.nextNode() as Text | null;
     }
 
-    return lastTextNode
-      ? { node: lastTextNode, offset: lastTextNode.data.length }
+    return lastNonEmptyTextNode
+      ? { node: lastNonEmptyTextNode, offset: lastNonEmptyTextNode.data.length }
       : null;
   }
 
@@ -2291,7 +2422,32 @@
     return getFencedCodeLineCaret(block.afterBlockStart);
   }
 
+  function getMarkdownHeadingMarkerRange(offset: number): { start: number; end: number } | null {
+    if (activeDocumentFormat.id !== 'markdown' || !markdownRenderSettings.hideHeadingMarkers) return null;
+
+    const lineIndex = findLineIndexForOffset(offset);
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const lineEnd = getLineEndOffset(fileContent, lineStart);
+    const insideFencedCode = fencedCodeBlocks.some((block) => (
+      lineStart >= block.openingLineStart
+      && lineStart <= (block.closingLineStart ?? Number.POSITIVE_INFINITY)
+    ));
+    if (insideFencedCode) return null;
+
+    const line = fileContent.slice(lineStart, lineEnd);
+    const match = line.match(/^([ \t]{0,3})(#{1,6})([ \t]+)/u);
+    if (!match) return null;
+    const start = lineStart + (match[1]?.length ?? 0);
+    const end = start + (match[2]?.length ?? 0) + (match[3]?.length ?? 0);
+    return offset >= start && offset <= end ? { start, end } : null;
+  }
+
   function getSafeRenderedCaretOffset(offset: number, direction: -1 | 0 | 1): number {
+    const headingMarker = getMarkdownHeadingMarkerRange(offset);
+    if (headingMarker && offset > headingMarker.start && offset < headingMarker.end) {
+      return direction < 0 ? headingMarker.start : headingMarker.end;
+    }
+
     for (const block of fencedCodeBlocks) {
       if (offset >= block.openingLineStart && offset <= block.openingLineEnd) {
         return direction < 0
@@ -2587,6 +2743,8 @@
   });
 
   onDestroy(() => {
+    renderedLineResizeObserver?.disconnect();
+    renderedLineResizeObserver = null;
     if (renderedSelectionHighlightFrame !== null) {
       cancelAnimationFrame(renderedSelectionHighlightFrame);
     }
@@ -2597,6 +2755,10 @@
     if (transientStatusTimer) {
       clearTimeout(transientStatusTimer);
       transientStatusTimer = null;
+    }
+    if (availableAppUpdate && !isInstallingUpdate) {
+      void closeAppUpdate(availableAppUpdate);
+      availableAppUpdate = null;
     }
     clearRenderedSelectionHighlight();
   });
@@ -2680,7 +2842,11 @@
       ? oldIndent.length + marker.marker.length
       : oldIndent.length;
     const nextMarker = marker
-      ? getListMarkerForIndentLevel(getEditorIndentLevel(nextIndent), marker.spacing)
+      ? getListMarkerForIndentLevel(
+          getEditorIndentLevel(nextIndent),
+          marker.spacing,
+          marker.separator === 'unordered' ? 'unordered' : 'ordered'
+        )
       : '';
     const nextBodyStart = nextIndent.length + nextMarker.length;
     const nextText = `${nextIndent}${nextMarker}${lineText.slice(oldBodyStart)}`;
@@ -2808,6 +2974,13 @@
     return text[nextLineBreak - 1] === '\r' ? nextLineBreak - 1 : nextLineBreak;
   }
 
+  function getNextLineStartOffset(text: string, lineEnd: number): number | null {
+    if (lineEnd >= text.length) return null;
+    if (text.startsWith('\r\n', lineEnd)) return lineEnd + 2;
+    if (text[lineEnd] === '\n' || text[lineEnd] === '\r') return lineEnd + 1;
+    return null;
+  }
+
   function getPreferredNewline(text: string, offset: number): string {
     const previousLineBreak = offset <= 0 ? -1 : text.lastIndexOf('\n', offset - 1);
     if (previousLineBreak > 0 && text[previousLineBreak - 1] === '\r') return '\r\n';
@@ -2928,9 +3101,153 @@
     return previousMarker;
   }
 
+  function getMeasuredListContinuationIndent(marker: ListMarker): string {
+    const fallbackIndent = getListContinuationIndent(marker, tabSize);
+    const indentWidth = measureEditorTextWidth(marker.indent);
+    const bodyStartWidth = measureEditorTextWidth(`${marker.indent}${marker.marker}`);
+    const spaceWidth = measureEditorPlainTextWidth(' ');
+    if (spaceWidth <= 0 || bodyStartWidth <= indentWidth) return fallbackIndent;
+
+    const additionalSpaceCount = Math.max(
+      1,
+      Math.round((bodyStartWidth - indentWidth) / spaceWidth)
+    );
+    return `${marker.indent}${' '.repeat(additionalSpaceCount)}`;
+  }
+
+  function getListContinuationOwner(
+    text: string,
+    lineStart: number,
+    lineText: string
+  ): { marker: ListMarker; lineStart: number } | null {
+    if (getListMarkerAtStart(lineText)) return null;
+
+    const continuationIndent = getLeadingWhitespace(lineText);
+    if (continuationIndent.length === 0) return null;
+
+    const continuationColumns = getEditorIndentColumns(continuationIndent);
+    let previousLineBounds = getPreviousLineBounds(text, lineStart);
+    while (previousLineBounds) {
+      const previousLine = text.slice(previousLineBounds.start, previousLineBounds.end);
+      if (/^[ \t]*$/.test(previousLine)) return null;
+
+      const previousMarker = getListMarkerAtStart(previousLine);
+      if (previousMarker) {
+        if (getMeasuredListContinuationIndent(previousMarker) === continuationIndent) {
+          return { marker: previousMarker, lineStart: previousLineBounds.start };
+        }
+        if (getEditorIndentColumns(previousMarker.indent) < continuationColumns) return null;
+      } else if (getEditorIndentColumns(getLeadingWhitespace(previousLine)) < continuationColumns) {
+        return null;
+      }
+
+      previousLineBounds = getPreviousLineBounds(text, previousLineBounds.start);
+    }
+
+    return null;
+  }
+
+  function commitRenderNextListItem(
+    event: KeyboardEvent,
+    start: number,
+    end: number,
+    currentLineEnd: number,
+    ownerLineStart: number,
+    currentMarker: ListMarker
+  ): boolean {
+    const previousMarker = getPreviousListMarker(fileContent, ownerLineStart, currentMarker);
+    const nextLabel = getNextListMarkerLabel(currentMarker.label, previousMarker?.label ?? null);
+    if (!nextLabel) return false;
+
+    const nextMarker = formatListMarker(nextLabel, currentMarker.separator, currentMarker.spacing);
+    const insertText = `${getPreferredNewline(fileContent, start)}${currentMarker.indent}${nextMarker}`;
+    const followingLineStart = getNextLineStartOffset(fileContent, currentLineEnd);
+    const renumberedContent = followingLineStart === null
+      ? fileContent
+      : renumberFollowingListMarkerSequence(
+          fileContent,
+          followingLineStart,
+          currentMarker,
+          previousMarker?.label ?? null,
+          nextLabel,
+          editorIndentUnit.length
+        );
+
+    event.preventDefault();
+    commitRenderEditorEdit(`${renumberedContent.slice(0, start)}${insertText}${renumberedContent.slice(end)}`, {
+      start: start + insertText.length,
+      end: start + insertText.length
+    });
+    return true;
+  }
+
+  function handleRenderExitEmptyListEnter(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing) return false;
+    if (event.key !== 'Enter') return false;
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineStart = getLineStartOffset(fileContent, start);
+    const lineEnd = getLineEndOffset(fileContent, start);
+    const currentMarker = getListMarkerAtStart(fileContent.slice(lineStart, lineEnd));
+    if (!currentMarker) return false;
+
+    const markerStart = lineStart + currentMarker.indent.length;
+    const markerEnd = markerStart + currentMarker.marker.length;
+    if (start !== lineEnd || markerEnd !== lineEnd) return false;
+
+    event.preventDefault();
+    commitRenderEditorEdit(`${fileContent.slice(0, markerStart)}${fileContent.slice(markerEnd)}`, {
+      start: markerStart,
+      end: markerStart
+    });
+    return true;
+  }
+
   function handleRenderContinueListEnter(event: KeyboardEvent): boolean {
     if (!textareaEl || event.isComposing) return false;
     if (event.key !== 'Enter') return false;
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineStart = getLineStartOffset(fileContent, start);
+    const lineEnd = getLineEndOffset(fileContent, start);
+    const currentMarker = getListMarkerAtStart(fileContent.slice(lineStart, lineEnd));
+    if (!currentMarker) return false;
+
+    const markerEnd = lineStart + currentMarker.indent.length + currentMarker.marker.length;
+    if (start < markerEnd) return false;
+
+    return commitRenderNextListItem(event, start, end, lineEnd, lineStart, currentMarker);
+  }
+
+  function handleRenderListContinuationEnter(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing) return false;
+    if (event.key !== 'Enter') return false;
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineStart = getLineStartOffset(fileContent, start);
+    const lineEnd = getLineEndOffset(fileContent, start);
+    const currentLine = fileContent.slice(lineStart, lineEnd);
+    const owner = getListContinuationOwner(fileContent, lineStart, currentLine);
+    if (!owner) return false;
+
+    const continuationIndent = getLeadingWhitespace(currentLine);
+    if (start < lineStart + continuationIndent.length) return false;
+
+    return commitRenderNextListItem(event, start, end, lineEnd, owner.lineStart, owner.marker);
+  }
+
+  function handleRenderListSoftBreakEnter(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing) return false;
+    if (event.key !== 'Enter' || !event.shiftKey) return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
     const { start, end } = getTextareaSelectionInContent();
@@ -2944,12 +3261,8 @@
     const markerEnd = lineStart + currentMarker.indent.length + currentMarker.marker.length;
     if (start < markerEnd) return false;
 
-    const previousMarker = getPreviousListMarker(fileContent, lineStart, currentMarker);
-    const nextLabel = getNextListMarkerLabel(currentMarker.label, previousMarker?.label ?? null);
-    if (!nextLabel) return false;
-
-    const nextMarker = formatListMarker(nextLabel, currentMarker.separator, currentMarker.spacing);
-    const insertText = `${getPreferredNewline(fileContent, start)}${currentMarker.indent}${nextMarker}`;
+    const continuationIndent = getMeasuredListContinuationIndent(currentMarker);
+    const insertText = `${getPreferredNewline(fileContent, start)}${continuationIndent}`;
 
     event.preventDefault();
     commitRenderEditorEdit(`${fileContent.slice(0, start)}${insertText}${fileContent.slice(end)}`, {
@@ -3130,7 +3443,10 @@
   }
 
   function handleRenderEditorKeyDown(event: KeyboardEvent) {
+    if (handleRenderListSoftBreakEnter(event)) return;
+    if (handleRenderExitEmptyListEnter(event)) return;
     if (handleRenderContinueListEnter(event)) return;
+    if (handleRenderListContinuationEnter(event)) return;
     if (handleRenderPreserveIndentEnter(event)) return;
     if (handleRenderEmptyIndentedLineBackspace(event)) return;
     if (handleRenderTabIndent(event)) return;
@@ -3201,16 +3517,22 @@
     getCurrentWindow().close().catch(() => {});
   }
 
-  async function handleTitlebarPointerDown(event: PointerEvent) {
-    if (!hasTauriRuntime() || event.button !== 0 || event.detail > 1) return;
-    await getCurrentWindow().startDragging().catch(() => {});
-  }
-
-  async function handleTitlebarDoubleClick(event: MouseEvent) {
-    if (!hasTauriRuntime() || event.button !== 0) return;
+  async function handleTitlebarMouseDown(event: MouseEvent) {
+    if (!hasTauriRuntime() || event.buttons !== 1 || event.detail > 2) return;
     event.preventDefault();
-    await getCurrentWindow().toggleMaximize().catch(() => {});
-    await refreshWindowMaximizedState();
+    const appWindow = getCurrentWindow();
+
+    if (event.detail === 2) {
+      await appWindow.toggleMaximize().catch((err) => {
+        console.error('Failed to toggle the window maximized state:', err);
+      });
+      await refreshWindowMaximizedState();
+      return;
+    }
+
+    await appWindow.startDragging().catch((err) => {
+      console.error('Failed to start dragging the window:', err);
+    });
   }
 
   async function handleWindowMinimize(event: MouseEvent) {
@@ -3598,6 +3920,12 @@
   const depthColorCount = 5;
   const keyDepthColorCount = 3;
 
+  function getMarkdownHeadingLineStyle(level: MarkdownHeadingLevel | undefined): string {
+    if (!level) return '';
+    const style = markdownRenderSettings.headings[level];
+    return `--markdown-heading-size: ${style.sizePercent}%; --markdown-heading-weight: ${style.fontWeight};`;
+  }
+
   function getTokenClass(token: Token): string {
     const classes = [`hl-${token.type}`];
     if (token.hiddenSyntax) {
@@ -3609,6 +3937,10 @@
       } else if (token.text === 'false') {
         classes.push('hl-boolean-false');
       }
+    }
+    if (token.type === 'keyword') {
+      const normalized = (token.text || '').trim().toLowerCase();
+      if (normalized) classes.push(`hl-keyword-${normalized}`);
     }
     if (token.type === 'key') {
       classes.push(`hl-key-depth-${(token.depth ?? 0) % keyDepthColorCount}`);
@@ -3721,115 +4053,137 @@
   function getRenderedLineElementAtPoint(clientY: number): HTMLElement | null {
     if (!shouldRenderHighlightLayer || !isBrowser || !editorViewportEl || measuredLineHeight <= 0) return null;
 
-    const viewportRect = editorViewportEl.getBoundingClientRect();
-    const layoutOffset = clientY - viewportRect.top + scrollTop - editorTopPadding;
-    const lineIndex = findLineIndexForLayoutOffset(renderLineLayout, layoutOffset);
-    if (lineIndex < startLine || lineIndex > endLine) return null;
+    const lineElements = editorViewportEl.querySelectorAll<HTMLElement>('.backdrop-line');
+    let nearestLine: HTMLElement | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
 
-    return document.querySelector(`.backdrop-line[data-line-index="${lineIndex}"]`) as HTMLElement | null;
-  }
+    for (const lineElement of lineElements) {
+      const rect = lineElement.getBoundingClientRect();
+      if (clientY >= rect.top && clientY < rect.bottom) return lineElement;
 
-  function getMeasuredTextOffsetAtX(text: string, clientX: number): number {
-    if (text.length === 0) return 0;
-
-    let bestOffset = 0;
-    let bestDistance = Number.POSITIVE_INFINITY;
-
-    for (let offset = 0; offset <= text.length; offset += 1) {
-      const caretX = measureEditorTextEndWidth(text.slice(0, offset), 0);
-      const distance = Math.abs(caretX - clientX);
-
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        bestOffset = offset;
+      const distance = clientY < rect.top ? rect.top - clientY : clientY - rect.bottom;
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestLine = lineElement;
       }
     }
 
-    return bestOffset;
+    return nearestLine;
   }
 
-  function getRenderedLineSegmentAtPoint(
-    lineText: string,
+  interface RenderedTextBoundary {
+    node: Text;
+    offset: number;
+  }
+
+  function getRenderedCaretRectAtBoundary(
     lineElement: HTMLElement,
-    clientY: number
-  ): { segment: WrappedLineSegment; rowIndex: number } {
-    const segments = getWrappedLineSegments(lineText, renderWrapContentWidth);
-    const lineRect = lineElement.getBoundingClientRect();
-    const rowIndex = clamp(Math.floor((clientY - lineRect.top) / measuredLineHeight), 0, segments.length - 1);
+    boundary: RenderedTextBoundary
+  ): DOMRect | null {
+    const range = document.createRange();
+    range.setStart(boundary.node, boundary.offset);
+    range.collapse(true);
+    let rect: DOMRect | null = range.getClientRects()[0] ?? null;
+    if (rect && rect.height <= 0) rect = null;
 
-    return {
-      segment: segments[rowIndex] ?? segments[segments.length - 1] ?? { start: 0, end: lineText.length },
-      rowIndex
-    };
+    if (!rect && boundary.offset < boundary.node.data.length) {
+      range.setEnd(boundary.node, boundary.offset + 1);
+      rect = range.getClientRects()[0] ?? null;
+      if (rect && rect.height <= 0) rect = null;
+    } else if (!rect && boundary.offset > 0) {
+      range.setStart(boundary.node, boundary.offset - 1);
+      range.setEnd(boundary.node, boundary.offset);
+      const rects = range.getClientRects();
+      const previousRect = rects[rects.length - 1];
+      if (previousRect && previousRect.height > 0) {
+        rect = new DOMRect(previousRect.right, previousRect.top, 0, previousRect.height);
+      }
+    }
+
+    if (!rect) return null;
+
+    const lineRect = lineElement.getBoundingClientRect();
+    const rowIndex = Math.max(0, Math.round((rect.top - lineRect.top) / measuredLineHeight));
+    return new DOMRect(
+      rect.left,
+      lineRect.top + rowIndex * measuredLineHeight,
+      1,
+      measuredLineHeight
+    );
   }
 
-  function getRenderedCodeCaretRect(
+  function getRenderedTextBoundaries(
+    lineContent: HTMLElement,
+    lineTextLength: number
+  ): Array<RenderedTextBoundary | undefined> {
+    const boundaries = new Array<RenderedTextBoundary | undefined>(lineTextLength + 1);
+    const walker = document.createTreeWalker(lineContent, NodeFilter.SHOW_TEXT);
+    let consumedOffset = 0;
+    let textNode = walker.nextNode() as Text | null;
+
+    while (textNode && consumedOffset <= lineTextLength) {
+      const textLength = textNode.data.length;
+      if (textLength === 0) {
+        textNode = walker.nextNode() as Text | null;
+        continue;
+      }
+      for (let nodeOffset = 0; nodeOffset <= textLength; nodeOffset += 1) {
+        const sourceOffset = consumedOffset + nodeOffset;
+        if (sourceOffset > lineTextLength) break;
+        boundaries[sourceOffset] = { node: textNode, offset: nodeOffset };
+      }
+      consumedOffset += textLength;
+      textNode = walker.nextNode() as Text | null;
+    }
+
+    return boundaries;
+  }
+
+  function getRenderedCaretRectFromLineText(
     lineElement: HTMLElement,
     lineText: string,
     offsetInLine: number
   ): DOMRect | null {
     const lineContent = lineElement.querySelector<HTMLElement>('.line-content');
     if (!lineContent) return null;
-    if (!lineElement.classList.contains('fenced-code-line') && !lineContent.querySelector('.hl-code')) return null;
 
     const targetOffset = clamp(offsetInLine, 0, lineText.length);
-    const walker = document.createTreeWalker(lineContent, NodeFilter.SHOW_TEXT);
-    let consumedOffset = 0;
-    let textNode = walker.nextNode() as Text | null;
-
     if (lineText.length === 0) {
       const lineRect = lineElement.getBoundingClientRect();
       const lineContentRect = lineContent.getBoundingClientRect();
       const lineContentStyle = getComputedStyle(lineContent);
       const paddingLeft = Number.parseFloat(lineContentStyle.paddingLeft) || 0;
       return new DOMRect(
-        lineContentRect.left + paddingLeft,
+        lineContentRect.width > 0 ? lineContentRect.left + paddingLeft : lineRect.left + getEditorTextPaddingLeft(),
         lineRect.top,
         1,
         measuredLineHeight
       );
     }
 
-    while (textNode) {
-      const textLength = textNode.data.length;
-      if (targetOffset <= consumedOffset + textLength) {
-        const range = document.createRange();
-        range.setStart(textNode, targetOffset - consumedOffset);
-        range.collapse(true);
-        const rect = range.getClientRects()[0];
-        if (!rect) return null;
-
-        const lineRect = lineElement.getBoundingClientRect();
-        const rowIndex = Math.max(0, Math.round((rect.top - lineRect.top) / measuredLineHeight));
-        return new DOMRect(
-          rect.left,
-          lineRect.top + rowIndex * measuredLineHeight,
-          1,
-          measuredLineHeight
-        );
-      }
-
-      consumedOffset += textLength;
-      textNode = walker.nextNode() as Text | null;
-    }
-
-    return null;
+    const boundary = getTextNodeBoundary(lineContent, targetOffset, true);
+    return boundary ? getRenderedCaretRectAtBoundary(lineElement, boundary) : null;
   }
 
-  function getRenderedCodeTextOffsetAtPoint(
+  function getRenderedLineTextOffsetAtPoint(
     lineElement: HTMLElement,
     lineText: string,
     clientX: number,
     clientY: number
-  ): number | null {
-    if (!lineElement.querySelector('.hl-code')) return null;
+  ): number {
+    if (lineText.length === 0) return 0;
+    const lineContent = lineElement.querySelector<HTMLElement>('.line-content');
+    if (!lineContent) return 0;
 
-    let bestOffset: number | null = null;
+    const boundaries = getRenderedTextBoundaries(lineContent, lineText.length);
+    let bestOffset = 0;
     let bestDistance = Number.POSITIVE_INFINITY;
     const verticalWeight = Math.max(editorViewportWidth, 1);
 
     for (let offset = 0; offset <= lineText.length; offset += 1) {
-      const rect = getRenderedCodeCaretRect(lineElement, lineText, offset);
+      const boundary = boundaries[offset];
+      if (!boundary) continue;
+      const rect = getRenderedCaretRectAtBoundary(lineElement, boundary);
       if (!rect) continue;
       const distance = Math.abs(clientY - (rect.top + rect.height / 2)) * verticalWeight
         + Math.abs(clientX - rect.left);
@@ -3840,66 +4194,6 @@
     }
 
     return bestOffset;
-  }
-
-  function getRenderedLineTextOffsetAtPoint(
-    lineElement: HTMLElement,
-    lineText: string,
-    clientX: number,
-    clientY: number
-  ): number {
-    const codeOffset = getRenderedCodeTextOffsetAtPoint(lineElement, lineText, clientX, clientY);
-    if (codeOffset !== null) return codeOffset;
-
-    const lineRect = lineElement.getBoundingClientRect();
-    const { segment } = getRenderedLineSegmentAtPoint(lineText, lineElement, clientY);
-    const contentLeft = lineRect.left + getEditorTextPaddingLeft();
-    const segmentText = lineText.slice(segment.start, segment.end);
-    const localX = Math.max(0, clientX - contentLeft);
-
-    return clamp(
-      segment.start + getMeasuredTextOffsetAtX(segmentText, localX),
-      0,
-      lineText.length
-    );
-  }
-
-  function getRenderedCaretRectFromLineText(
-    lineElement: HTMLElement,
-    lineText: string,
-    offsetInLine: number
-  ): DOMRect {
-    const segments = getWrappedLineSegments(lineText, renderWrapContentWidth);
-    const codeCaretRect = getRenderedCodeCaretRect(lineElement, lineText, offsetInLine);
-    if (codeCaretRect) return codeCaretRect;
-
-    let rowIndex = 0;
-    let segment = segments[0] ?? { start: 0, end: lineText.length };
-
-    for (let i = 0; i < segments.length; i += 1) {
-      const candidate = segments[i];
-      if (!candidate) continue;
-
-      if (offsetInLine < candidate.end || i === segments.length - 1) {
-        rowIndex = i;
-        segment = candidate;
-        break;
-      }
-    }
-
-    const lineRect = lineElement.getBoundingClientRect();
-    const offsetWithinSegment = clamp(offsetInLine - segment.start, 0, segment.end - segment.start);
-    const caretX = measureEditorTextEndWidth(
-      lineText.slice(segment.start, segment.start + offsetWithinSegment),
-      0
-    );
-
-    return new DOMRect(
-      lineRect.left + getEditorTextPaddingLeft() + caretX,
-      lineRect.top + rowIndex * measuredLineHeight,
-      1,
-      measuredLineHeight
-    );
   }
 
   function getRenderedCaretRectForOffset(offset: number): DOMRect | null {
@@ -3954,6 +4248,21 @@
     return null;
   }
 
+  function getHiddenHeadingMarkerCaretOffsetAtPoint(
+    lineElement: HTMLElement,
+    clientX: number,
+    clientY: number
+  ): number | null {
+    const marker = lineElement.querySelector<HTMLElement>('.hl-heading-marker.hl-syntax-hidden');
+    if (!marker) return null;
+    const rect = marker.getBoundingClientRect();
+    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+      return null;
+    }
+    const end = Number(marker.dataset.tokenEnd);
+    return Number.isFinite(end) ? end : null;
+  }
+
   function getRenderedCaretOffsetAtPoint(clientX: number, clientY: number): number | null {
     const lineElement = getRenderedLineElementAtPoint(clientY);
     if (!lineElement) return null;
@@ -3963,6 +4272,8 @@
 
     const lineStart = lineStartOffsets[lineIndex] ?? 0;
     const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
+    const headingMarkerOffset = getHiddenHeadingMarkerCaretOffsetAtPoint(lineElement, clientX, clientY);
+    if (headingMarkerOffset !== null) return headingMarkerOffset;
     const inlineCodeDelimiterOffset = getInlineCodeDelimiterCaretOffsetAtPoint(lineElement, clientX, clientY);
     if (inlineCodeDelimiterOffset !== null) return lineStart + inlineCodeDelimiterOffset;
 
@@ -4473,6 +4784,8 @@
                     <Braces size={15} class="tab-icon"/>
                   {:else if category.id === 'table'}
                     <Table2 size={15} class="tab-icon"/>
+                  {:else if category.id === 'subtitle'}
+                    <FileText size={15} class="tab-icon"/>
                   {:else}
                     <Code2 size={15} class="tab-icon"/>
                   {/if}
@@ -4826,6 +5139,71 @@
                 </span>
               </label>
             </div>
+
+            {#if activeSettingsFormat.id === 'markdown'}
+              <div class="settings-format-module">
+                <h5 class="settings-subsection-title">{t('settings.markdown.headings')}</h5>
+                <label class="settings-check-row" for="markdown-hide-heading-markers-window">
+                  <input
+                    id="markdown-hide-heading-markers-window"
+                    class="settings-checkbox"
+                    type="checkbox"
+                    checked={markdownRenderSettings.hideHeadingMarkers}
+                    onchange={(event) => markdownRenderSettings = { ...markdownRenderSettings, hideHeadingMarkers: (event.currentTarget as HTMLInputElement).checked }}
+                  />
+                  <span class="settings-check-copy">
+                    <span class="settings-check-title">{t('settings.markdown.hideMarkers.title')}</span>
+                    <span class="settings-check-description">{t('settings.markdown.hideMarkers.description')}</span>
+                  </span>
+                </label>
+                <label class="settings-check-row" for="markdown-heading-dividers-window">
+                  <input
+                    id="markdown-heading-dividers-window"
+                    class="settings-checkbox"
+                    type="checkbox"
+                    checked={markdownRenderSettings.showHeadingDividers}
+                    onchange={(event) => markdownRenderSettings = { ...markdownRenderSettings, showHeadingDividers: (event.currentTarget as HTMLInputElement).checked }}
+                  />
+                  <span class="settings-check-copy">
+                    <span class="settings-check-title">{t('settings.markdown.dividers.title')}</span>
+                    <span class="settings-check-description">{t('settings.markdown.dividers.description')}</span>
+                  </span>
+                </label>
+
+                <div class="markdown-heading-settings" aria-label={t('settings.markdown.headings')}>
+                  {#each markdownHeadingLevels as level}
+                    <div class="markdown-heading-setting-row">
+                      <span class="markdown-heading-setting-label">{t('settings.markdown.level', { level })}</span>
+                      <label for={`markdown-heading-${level}-size-window`}>{t('settings.markdown.sizePercent')}</label>
+                      <input
+                        id={`markdown-heading-${level}-size-window`}
+                        class="font-size-num markdown-heading-size-input"
+                        type="number"
+                        min="80"
+                        max="145"
+                        step="1"
+                        value={markdownRenderSettings.headings[level].sizePercent}
+                        onchange={(event) => setMarkdownHeadingStyle(level, 'sizePercent', Number((event.currentTarget as HTMLInputElement).value))}
+                      />
+                      <span class="markdown-heading-unit">%</span>
+                      <label for={`markdown-heading-${level}-weight-window`}>{t('settings.fontWeight')}</label>
+                      <select
+                        id={`markdown-heading-${level}-weight-window`}
+                        class="tab-size-select markdown-heading-weight-select"
+                        value={markdownRenderSettings.headings[level].fontWeight}
+                        onchange={(event) => setMarkdownHeadingStyle(level, 'fontWeight', (event.currentTarget as HTMLSelectElement).value as MarkdownHeadingStyle['fontWeight'])}
+                      >
+                        <option value="400">400</option>
+                        <option value="500">500</option>
+                        <option value="600">600</option>
+                        <option value="700">700</option>
+                        <option value="800">800</option>
+                      </select>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -4855,10 +5233,8 @@
     <div class="title-tab-bar">
       <div
         class="titlebar-app-icon"
-        data-tauri-drag-region
         aria-hidden="true"
-        onpointerdown={handleTitlebarPointerDown}
-        ondblclick={handleTitlebarDoubleClick}
+        onmousedown={handleTitlebarMouseDown}
       >
         <img class="titlebar-app-image" src="/favicon.png" alt="" draggable="false" />
       </div>
@@ -4903,10 +5279,8 @@
         </button>
         <div
           class="titlebar-drag-region"
-          data-tauri-drag-region
           aria-hidden="true"
-          onpointerdown={handleTitlebarPointerDown}
-          ondblclick={handleTitlebarDoubleClick}
+          onmousedown={handleTitlebarMouseDown}
         ></div>
       </div>
 
@@ -5073,8 +5447,23 @@
         {/if}
       </div>
 
-      <!-- 우측 설정 톱니바퀴 및 렌더 모드 토글 버튼 -->
+      <!-- 우측 업데이트, 테마, 렌더 모드 및 설정 버튼 -->
       <div class="menu-right">
+        {#if availableAppUpdate}
+          <button
+            type="button"
+            class="available-update-button"
+            onclick={handleAvailableUpdateInstall}
+            disabled={isCheckingForUpdate || isInstallingUpdate}
+            aria-label={`${t('update.install')} ${availableAppUpdate.version}`}
+            title={`${t('update.install')} ${availableAppUpdate.version}`}
+          >
+            <Download size={14} aria-hidden="true" />
+            <span>{t('update.install')}</span>
+            <span class="available-update-version">{availableAppUpdate.version}</span>
+          </button>
+        {/if}
+
         <button
           class="theme-mode-toggle"
           onclick={() => {
@@ -5171,7 +5560,7 @@
                   {@const lineIdx = startLine + idx}
                   {@const line = parsedLines[idx]}
                   {#if line}
-                    <div class="backdrop-line" data-line-index={lineIdx} class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} class:fenced-code-line={line.fencedCodePosition !== undefined} class:fenced-code-start={line.fencedCodePosition === 'start'} class:fenced-code-middle={line.fencedCodePosition === 'middle'} class:fenced-code-end={line.fencedCodePosition === 'end'} style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {getRenderLineHeight(lineIdx)}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize};">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
+                    <div use:observeRenderedLine class="backdrop-line" data-line-index={lineIdx} class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} class:fenced-code-line={line.fencedCodePosition !== undefined} class:fenced-code-start={line.fencedCodePosition === 'start'} class:fenced-code-middle={line.fencedCodePosition === 'middle'} class:fenced-code-end={line.fencedCodePosition === 'end'} class:markdown-heading-line={line.headingLevel !== undefined} class:markdown-heading-divider={line.headingLevel !== undefined && line.headingLevel <= 2 && markdownRenderSettings.showHeadingDividers} class:styled-text-geometry={line.headingLevel !== undefined} style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize}; {getMarkdownHeadingLineStyle(line.headingLevel)}">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
                   {/if}
                 {/each}
               </div>
@@ -5363,8 +5752,46 @@
   :global(.hl-number) {
     color: var(--color-hl-number);
   }
-  :global(.hl-list-marker) {
+  :global(.hl-list-marker),
+  :global(.hl-heading-marker) {
     color: var(--color-hl-list-marker);
+  }
+  :global(.hl-section) {
+    color: var(--color-hl-key-strong);
+    font-weight: 700;
+  }
+  :global(.hl-operator) {
+    color: var(--text-muted);
+  }
+  :global(.hl-timestamp) {
+    color: var(--color-hl-key-medium);
+    font-variant-numeric: tabular-nums;
+  }
+  :global(.hl-keyword) {
+    color: var(--color-hl-list-marker);
+    font-weight: 700;
+  }
+  :global(.hl-keyword-error),
+  :global(.hl-keyword-fatal) {
+    color: #dc2626;
+  }
+  :global(.hl-keyword-warn),
+  :global(.hl-keyword-warning) {
+    color: #d97706;
+  }
+  :global(.hl-link) {
+    color: var(--color-hl-key-medium);
+    text-decoration: underline;
+  }
+  :global(.hl-strong) {
+    font-weight: 700;
+  }
+  :global(.hl-emphasis) {
+    font-style: italic;
+  }
+  :global(.hl-quote-marker) {
+    color: var(--color-hl-list-marker);
+    font-weight: 700;
   }
   :global(.hl-key) {
     color: var(--color-hl-key-medium);
@@ -5758,6 +6185,48 @@
   .menu-right {
     display: flex;
     align-items: center;
+    gap: 0.1rem;
+  }
+
+  .available-update-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3rem;
+    height: 24px;
+    padding: 0 0.5rem;
+    margin-right: 0.25rem;
+    border: 1px solid var(--accent-color);
+    border-radius: 5px;
+    background-color: transparent;
+    color: var(--accent-color);
+    font-family: var(--font-ui);
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    transition: background-color 0.1s, color 0.1s;
+  }
+
+  .available-update-button:hover:not(:disabled) {
+    background-color: var(--accent-color);
+    color: white;
+  }
+
+  .available-update-button:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 1px;
+  }
+
+  .available-update-button:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .available-update-version {
+    font-size: 0.68rem;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.78;
   }
 
   .menu-item-container {
@@ -5962,6 +6431,15 @@
     -webkit-font-smoothing: subpixel-antialiased;
     -moz-osx-font-smoothing: auto;
     font-weight: var(--font-render-weight, normal);
+  }
+
+  .backdrop-line.markdown-heading-line .line-content {
+    font-size: var(--markdown-heading-size, 100%);
+    font-weight: var(--markdown-heading-weight, 600);
+  }
+
+  .backdrop-line.markdown-heading-divider {
+    box-shadow: inset 0 -1px color-mix(in srgb, var(--color-render-text, var(--text-color)) 18%, transparent);
   }
 
   .backdrop-line.fenced-code-line {
@@ -6330,6 +6808,37 @@
   .settings-format-module + .settings-format-module {
     border-top: 1px solid var(--border-color);
     padding-top: 0.85rem;
+  }
+
+  .markdown-heading-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+
+  .markdown-heading-setting-row {
+    display: grid;
+    grid-template-columns: 72px 82px 58px 18px 88px minmax(92px, 120px);
+    align-items: center;
+    gap: 0.45rem;
+    color: var(--text-color);
+    font-size: 0.78rem;
+  }
+
+  .markdown-heading-setting-label {
+    font-weight: 600;
+  }
+
+  .markdown-heading-size-input {
+    width: 58px;
+  }
+
+  .markdown-heading-unit {
+    color: var(--text-muted);
+  }
+
+  .markdown-heading-weight-select {
+    width: 100%;
   }
 
   .settings-format-heading {

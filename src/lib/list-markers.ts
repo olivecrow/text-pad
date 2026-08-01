@@ -6,8 +6,9 @@ export interface ListMarker {
   marker: string;
 }
 
-export type ListMarkerSeparator = 'dot' | 'right-parenthesis' | 'parentheses';
+export type ListMarkerSeparator = 'dot' | 'right-parenthesis' | 'parentheses' | 'unordered';
 export type ListMarkerKind = 'upper-roman' | 'upper-alpha' | 'decimal' | 'lower-roman' | 'lower-alpha';
+export type ListMarkerFamily = 'ordered' | 'unordered';
 
 interface ListMarkerStyle {
   kind: ListMarkerKind;
@@ -15,6 +16,8 @@ interface ListMarkerStyle {
 }
 
 const listMarkerAtStartRegex = /^([ \t]*)(?:\(([A-Za-z]+|\d+)\)|([A-Za-z]+|\d+)([.)]))([ \t]+)/;
+const unorderedListMarkerAtStartRegex = /^([ \t]*)([-*+•])([ \t]+)/;
+const unorderedListMarkerLabels = ['-', '*', '+', '•'] as const;
 const romanNumeralRegex = /^(?=[mdclxvi]+$)m{0,3}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})$/i;
 const romanDigitValues: ReadonlyArray<readonly [number, string]> = [
   [1000, 'M'],
@@ -58,6 +61,19 @@ export function isListMarkerLabel(label: string): boolean {
 }
 
 export function getListMarkerAtStart(text: string): ListMarker | null {
+  const unorderedMatch = text.match(unorderedListMarkerAtStartRegex);
+  if (unorderedMatch) {
+    const label = unorderedMatch[2] || '';
+    const spacing = unorderedMatch[3] || '';
+    return {
+      indent: unorderedMatch[1] || '',
+      label,
+      separator: 'unordered',
+      spacing,
+      marker: formatListMarker(label, 'unordered', spacing)
+    };
+  }
+
   const match = text.match(listMarkerAtStartRegex);
   if (!match) return null;
 
@@ -86,6 +102,7 @@ export function formatListMarker(
   separator: ListMarkerSeparator,
   spacing = ' '
 ): string {
+  if (separator === 'unordered') return `${label}${spacing}`;
   if (separator === 'parentheses') return `(${label})${spacing}`;
   if (separator === 'right-parenthesis') return `${label})${spacing}`;
   return `${label}.${spacing}`;
@@ -110,9 +127,43 @@ function getListMarkerStyleForIndentLevel(indentLevel: number): ListMarkerStyle 
   ];
 }
 
-export function getListMarkerForIndentLevel(indentLevel: number, spacing = ' '): string {
+export function getListMarkerForIndentLevel(
+  indentLevel: number,
+  spacing = ' ',
+  family: ListMarkerFamily = 'ordered'
+): string {
+  if (family === 'unordered') {
+    const safeIndentLevel = Math.max(0, Math.floor(indentLevel));
+    return formatListMarker(
+      unorderedListMarkerLabels[safeIndentLevel % unorderedListMarkerLabels.length],
+      'unordered',
+      spacing
+    );
+  }
+
   const style = getListMarkerStyleForIndentLevel(indentLevel);
   return formatListMarker(getInitialLabel(style.kind), style.separator, spacing);
+}
+
+function getTextColumns(text: string, startColumn = 0, tabSize = 4): number {
+  const safeTabSize = Math.max(1, Math.floor(tabSize));
+  let columns = Math.max(0, Math.floor(startColumn));
+
+  for (const char of text) {
+    if (char === '\t') {
+      columns += safeTabSize - (columns % safeTabSize);
+    } else {
+      columns += 1;
+    }
+  }
+
+  return columns;
+}
+
+export function getListContinuationIndent(marker: ListMarker, tabSize = 4): string {
+  const indentColumns = getTextColumns(marker.indent, 0, tabSize);
+  const bodyStartColumns = getTextColumns(marker.marker, indentColumns, tabSize);
+  return `${marker.indent}${' '.repeat(bodyStartColumns - indentColumns)}`;
 }
 
 function incrementDecimalLabel(label: string): string {
@@ -184,6 +235,7 @@ function isRomanSequenceStep(previousLabel: string, currentLabel: string): boole
 }
 
 export function getNextListMarkerLabel(label: string, previousLabel: string | null = null): string | null {
+  if (unorderedListMarkerLabels.some((candidate) => candidate === label)) return label;
   if (/^\d+$/.test(label)) return incrementDecimalLabel(label);
 
   if (label.length > 1) {
@@ -211,4 +263,77 @@ export function getNextListMarkerLabel(label: string, previousLabel: string | nu
   }
 
   return incrementAlphabeticLabel(label);
+}
+
+export function renumberFollowingListMarkerSequence(
+  text: string,
+  firstLineStart: number,
+  currentMarker: ListMarker,
+  previousLabel: string | null,
+  insertedLabel: string,
+  tabSize = 4
+): string {
+  if (firstLineStart < 0 || firstLineStart >= text.length) return text;
+
+  const targetIndentColumns = getTextColumns(currentMarker.indent, 0, tabSize);
+  let originalPreviousPreviousLabel = previousLabel;
+  let originalPreviousLabel = currentMarker.label;
+  let renumberedPreviousPreviousLabel = currentMarker.label;
+  let renumberedPreviousLabel = insertedLabel;
+  let offset = firstLineStart;
+  let transformed = '';
+  let changed = false;
+
+  while (offset < text.length) {
+    const newlineIndex = text.indexOf('\n', offset);
+    const lineEnd = newlineIndex === -1
+      ? text.length
+      : text[newlineIndex - 1] === '\r'
+        ? newlineIndex - 1
+        : newlineIndex;
+    const nextLineStart = newlineIndex === -1 ? text.length : newlineIndex + 1;
+    const lineText = text.slice(offset, lineEnd);
+    if (/^[ \t]*$/.test(lineText)) break;
+
+    const marker = getListMarkerAtStart(lineText);
+    const indent = marker?.indent ?? lineText.match(/^[ \t]*/)?.[0] ?? '';
+    const indentColumns = getTextColumns(indent, 0, tabSize);
+    if (indentColumns < targetIndentColumns) break;
+
+    let nextLineText = lineText;
+    if (indentColumns === targetIndentColumns) {
+      if (!marker || marker.separator !== currentMarker.separator) break;
+
+      const expectedOriginalLabel = getNextListMarkerLabel(
+        originalPreviousLabel,
+        originalPreviousPreviousLabel
+      );
+      if (marker.label !== expectedOriginalLabel) break;
+
+      const nextRenumberedLabel = getNextListMarkerLabel(
+        renumberedPreviousLabel,
+        renumberedPreviousPreviousLabel
+      );
+      if (!nextRenumberedLabel) break;
+
+      const bodyStart = marker.indent.length + marker.marker.length;
+      nextLineText = `${marker.indent}${formatListMarker(
+        nextRenumberedLabel,
+        marker.separator,
+        marker.spacing
+      )}${lineText.slice(bodyStart)}`;
+      changed ||= nextLineText !== lineText;
+
+      originalPreviousPreviousLabel = originalPreviousLabel;
+      originalPreviousLabel = marker.label;
+      renumberedPreviousPreviousLabel = renumberedPreviousLabel;
+      renumberedPreviousLabel = nextRenumberedLabel;
+    }
+
+    transformed += nextLineText + text.slice(lineEnd, nextLineStart);
+    offset = nextLineStart;
+  }
+
+  if (!changed) return text;
+  return `${text.slice(0, firstLineStart)}${transformed}${text.slice(offset)}`;
 }

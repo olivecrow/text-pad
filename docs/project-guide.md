@@ -17,7 +17,10 @@ graph TD
 
 ## 주요 경로
 
+- `supported-text-formats.json`: 제품 지원 형식, 확장자, 대표 샘플의 단일 목록. 프론트엔드, Rust 대화상자, 설치 연결 검증이 이 목록을 공유한다.
 - `src/routes/+page.svelte`: 메인 화면, 원문 모드, 렌더 모드, 설정창 UI.
+- `src/lib/line-oriented-formats.ts`: Markdown, 설정, 로그, 자막·가사 형식의 줄 단위 토큰화와 오류 검사.
+- `src/lib/markdown-settings.ts`: Markdown 제목 1~6단계 표시 설정과 저장값 정규화.
 - `src/lib/i18n/`: 영어 기준표, 9개 추가 언어 번역표와 언어 선택·대체 처리.
 - `src-tauri/src/lib.rs`: 파일 읽기/쓰기 명령, Windows 가로 휠 처리, Tauri 플러그인 설정.
 - `src-tauri/capabilities/default.json`, `src-tauri/capabilities/settings.json`: 창별로 분리한 Tauri 명령 권한.
@@ -39,9 +42,12 @@ graph TD
 
 ## 현재 기능 범위
 
-- 현재 제품 지원 형식인 `.txt`, `.json`, `.csv`, `.tsv`, `.yaml`, `.yml` 파일 열기와 저장.
+- 현재 제품 지원 형식인 `.txt`, `.text`, `.md`, `.markdown`, `.json`, `.jsonl`, `.ndjson`, `.csv`, `.tsv`, `.yaml`, `.yml`, `.ini`, `.cfg`, `.conf`, `.properties`, `.env`, `.log`, `.srt`, `.vtt`, `.lrc` 파일 열기와 저장.
+- 메인 창에 드롭한 텍스트 파일을 각각 새 탭으로 열기.
 - 원문 모드 편집.
 - 렌더 모드 구문 강조, 들여쓰기 가이드, 줄 번호, 가상화된 화면 렌더링.
+- Markdown 제목 1~6단계의 크기·굵기 설정, 제목 표식 숨김, 링크·강조·인용·코드 구분.
+- JSON Lines, INI/CFG, CONF, Properties, ENV, LOG, SRT, WebVTT, LRC의 의미별 색 구분과 엄격 형식의 오류 위치 표시.
 - 라이트/다크 테마, 렌더 색상, 글꼴, 글자 크기, 탭 크기 설정.
 - 시스템 언어 우선 선택, 영어 대체와 설정창 언어 변경을 지원하는 10개 언어 UI.
 - 메인 창을 편집기 준비 뒤 표시해 첫 화면이 곧바로 입력 가능한 상태가 되게 하는 시작 흐름.
@@ -49,18 +55,17 @@ graph TD
 - 설정창에서 파일 형식별 렌더 표시와 렌더 편집 모듈 켜기/끄기.
 - CSV/TSV 렌더 모드에서 셀 편집, 행·열 추가·제거·이동, 열 너비 조절, 첫 행 강조와 행 번호 표시.
 - Windows 앱 표시 이름과 번들 실행 파일 이름을 `text-pad`로 생성.
-- 현재 제품 지원 확장자를 Windows 파일 연결 정보로 등록해 `연결 프로그램`에서 선택 가능하게 함.
+- 현재 제품 지원 확장자를 Windows 파일 연결과 기본 앱 후보 정보로 등록해 `연결 프로그램`의 항상 사용 또는 Windows 기본 앱 설정에서 선택 가능하게 함.
 - NSIS 설치 파일에서 같은 버전 삭제를 선택하면 삭제 후 설치를 재개하지 않고 종료.
 - Windows WebView2 가로 휠 입력 보정.
 - Windows 릴리스 빌드 생성.
-- 앱 시작 시 한 번 수행하는 업데이트 확인과 `도움말` 메뉴의 수동 확인.
+- 앱 시작 시 조용히 수행하는 업데이트 확인, 새 버전 툴바 버튼과 `도움말` 메뉴의 수동 확인.
 - 버전, 릴리스 날짜, 프로젝트 라이선스와 오픈소스 출처를 표시하는 정보 창.
 - GitHub Releases의 서명된 설치 파일과 `latest.json`을 사용하는 자체 업데이트.
 
 ## 아직 제품 범위로 남은 기능
 
 - 검색, 바꾸기, 특정 줄 이동의 완성도 개선.
-- Markdown 렌더링과 제한적 편집.
 - JSON 트리 보기와 값 편집.
 - YAML 구조 보기와 주석 보존형 편집.
 - 파일 인코딩과 줄바꿈 보존 강화.
@@ -68,6 +73,7 @@ graph TD
 ## 주요 명령
 
 - `npm run validate:i18n`: 번역표 키와 치환 변수 검사.
+- `npm run validate:formats`: 중앙 지원 목록, 샘플, Windows 설치 연결의 일치 검사.
 - `npm run check`: Svelte와 TypeScript 검사.
 - `npm run build`: 프론트엔드 정적 빌드.
 - `npm run tauri dev`: Tauri 개발 실행.

@@ -14,6 +14,7 @@
     "updater:default",
     "allow-get-startup-files",
     "allow-open-file-dialog",
+    "allow-open-file-paths",
     "allow-save-file-dialog",
     "allow-write-file-content",
     "core:window:default",

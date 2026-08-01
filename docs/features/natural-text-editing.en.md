@@ -75,6 +75,15 @@ The behavioral contract is:
 - In render mode, hidden inline backticks and fenced-code delimiter lines are not collapsed-caret stops. Pointer and arrow-key movement skips to a visible inline-code boundary or to an adjacent editable line inside or outside the fenced block.
 - Pressing Backspace within the leading whitespace of the line immediately after a closing fence keeps the code content and line structure, but reduces each run of opening and closing backticks to two characters so only fenced-block syntax is disabled. Place the caret immediately after the two remaining closing backticks, at the position where the removed backticks were. Selection deletion that includes both fences and the complete block remains allowed. Disabling the fences is one Undo action.
 
+## Editing Markdown headings
+
+- In render-enabled `.md` and `.markdown` documents, recognize `# ` through `###### ` after no more than three leading spaces as heading levels 1 through 6.
+- The default setting hides the leading heading marker, but keeps the same source range as hidden syntax so source text and selections remain stable. Do not hide or reinterpret the same markers inside a fenced code block.
+- Per-level size and weight, marker visibility, and level 1 and 2 dividers are shared display settings for every Markdown document. Changing them alters neither source text nor Undo history.
+- Typing `# ` remains ordinary character input. The app does not delete or rewrite the marker, and source mode displays it as normal HTML `textarea` text.
+- Pointer placement, arrow movement, and selection on a heading map the actual rendered glyph widths back to source positions. Do not leave a collapsed caret trapped inside a hidden marker range.
+- Links, emphasis, and inline code inside a heading keep their exact source ranges, and saved text never receives display-only size, weight, color, or divider data.
+
 ## Indentation and outdentation
 
 Treat Tab as a command that makes the current line structurally deeper, not as a character that inserts spaces at the caret.
@@ -101,12 +110,13 @@ The current recognized forms are:
 - Decimal: `1. `, `1) `, `(1) `
 - Single Latin letter: `A. `, `a) `, `(a) `
 - Valid Roman numeral: `I. `, `II. `, `iv. `
+- Unordered marker: `- `, `* `, `+ `, `• `
 
-Whitespace between the marker and body is treated as part of the marker and preserved when continuing the list. Identical text in the middle of a line is not treated as a list marker.
+`-`, `*`, and `+` are widely used lightweight-markup markers, while `•` is common in ordinary documents. Whitespace between the marker and body is treated as part of the marker and preserved when continuing the list. Identical text in the middle of a line is not treated as a list marker.
 
 ### Indentation depth and marker style
 
-When a list line is indented or outdented, choose its marker style again from the target depth.
+When a list line is indented or outdented, choose its marker style again from the target depth and marker family. Ordered markers use the following styles.
 
 | Depth | Style | Example |
 | ---: | --- | --- |
@@ -127,22 +137,32 @@ From depth 9 onward, repeat decimal and lowercase Latin markers as a pair while 
 3. Parentheses: `(1) `, `(a) `
 4. Return to the period
 
-When tabs and spaces are mixed, calculate visual indentation using four-column tab stops. The target depth after the move takes precedence over the marker's previous style.
+Unordered markers remain separate from ordered markers and cycle by depth in this order: `- `, `* `, `+ `, `• `. Return to `- ` at depth 4.
+
+When tabs and spaces are mixed, calculate visual indentation using four-column tab stops. In both families, the target depth after the move takes precedence over the marker's previous style.
 
 ### Create the next item with Enter
 
 - Apply automatic continuation only when the selection is collapsed and the caret is after the complete list marker.
+- When the current line is an empty item containing only leading indentation and a list marker, with the caret at the line end, plain `Enter` ends the list by removing the marker and its following whitespace instead of creating another item.
+- Ending the list does not insert another newline. A top-level item becomes an empty ordinary line; a nested item keeps only its existing leading indentation and places the caret after it.
+- The resulting empty ordinary line is an automatic-sequence boundary, so existing following markers keep their numbers. `Shift+Enter` still creates a marker-free continuation line instead.
 - Preserve the current indentation, delimiter, and whitespace following the marker.
 - Increment decimal numbers, Latin letters, and Roman numerals to their next value.
+- For an unordered list, reuse the current symbol for the next item at the same depth.
 - A single-letter marker can be ambiguous between a Roman numeral and a Latin letter. First use the sequence of the immediately preceding line with the same indentation and delimiter; when there is no preceding clue, treat `I` and `i` as the start of a Roman sequence and other single letters as alphabetic.
 - If the next marker cannot be calculated safely, do not guess or rewrite source text; fall back to the default Enter behavior.
 - If body text exists after the caret, split the line and move that text after the new marker.
+- When continuous following ordered items use the same indentation depth and delimiter, increment each of their markers by one. Continue looking for the next item at the same depth across deeper child items and `Shift+Enter` continuation lines without changing those intervening lines.
+- End the automatic-sequence range at a blank line, an ordinary paragraph at the same or shallower depth, a different delimiter or unordered symbol at the same depth, or an already broken sequence. Do not rewrite source text beyond that boundary.
 - Preserve the document's newline style: use Windows CRLF in a CRLF document and Unix LF in an LF document.
 
 Example:
 
 ```text
 1. before|after
+2. second
+3. third
 ```
 
 Result after Enter:
@@ -150,6 +170,8 @@ Result after Enter:
 ```text
 1. before
 2. |after
+3. second
+4. third
 ```
 
 The same rule applies to other delimiters.
@@ -165,7 +187,82 @@ Result after Enter:
 2) |after
 ```
 
-Continuing the list and moving trailing body text together form one Undo action.
+An unordered list continues with the same symbol.
+
+```text
+- before|after
+- next
+```
+
+Result after Enter:
+
+```text
+- before
+- |after
+- next
+```
+
+Ending a list from an empty item with Enter:
+
+```text
+1. before
+2. |
+3. after
+```
+
+Result after Enter:
+
+```text
+1. before
+|
+3. after
+```
+
+Continuing the list, moving trailing body text, and renumbering following items together form one Undo action. Removing the marker from an empty item is a separate single Undo action.
+
+### Break a line inside the same item with Shift+Enter
+
+- When the selection is collapsed and the caret is after the complete list marker, `Shift+Enter` creates a continuation line in the same item without a new marker.
+- Measure where the current item's body begins in the active render font and align the continuation line's leading whitespace to the nearest space boundary. Also account for the current tab width when leading indentation or marker spacing contains tabs.
+- Move body text after the caret to the new continuation line without changing the numbers of following items.
+- When plain `Enter` is pressed on a marker-free continuation line, search backward for an owning marker whose measured body start matches the current indentation, without crossing a blank line or a shallower ordinary paragraph.
+- When an owner is found, create its next item and renumber continuous following items under the same automatic-sequence boundary rules. Otherwise, fall back to general indentation preservation.
+- Pressing `Shift+Enter` again on a continuation line creates another marker-free continuation line with the same indentation.
+- Preserve the current CRLF or LF newline style.
+
+Example:
+
+```text
+1. before|after
+2. next
+```
+
+Result after Shift+Enter:
+
+```text
+1. before
+    |after
+2. next
+```
+
+After entering body text on the continuation line, press Enter in this state:
+
+```text
+1. before
+    continuation|
+2. next
+```
+
+Result after Enter:
+
+```text
+1. before
+    continuation
+2. |
+3. next
+```
+
+Creating a `Shift+Enter` continuation line and later pressing plain `Enter` on that line to create the next marker and renumber following items are each one Undo action.
 
 ## Enter and empty indented lines
 
@@ -175,7 +272,10 @@ Indented lines that are not list items should also retain their context when a n
 - With an active selection, replace the selection with the newline and indentation in one operation.
 - Pressing Backspace at the end of an otherwise empty, automatically indented line joins it to the previous line and moves the caret to the end of that line.
 - Joining an empty indented line takes precedence over deleting one indentation level.
-- Automatic list continuation takes precedence over general indentation preservation.
+- A list `Shift+Enter` continuation takes precedence over automatic list continuation.
+- Ending a list with plain `Enter` on an empty marker item takes precedence over automatic list continuation.
+- Plain `Enter` on a list continuation line is first evaluated as creating the owning marker's next item.
+- Direct list continuation, continuation-line item creation, and following-item renumbering take precedence over general indentation preservation.
 - Each assisted Enter operation and empty-line join is its own single Undo action.
 
 ## Context-aware substitutions
@@ -225,8 +325,9 @@ An editor that overlays a rendered backdrop and a real input element must manage
 - Use the same word-breaking rules for soft wrapping, and never add display wraps to source text.
 - While resize-driven wrapping calculations are unstable, prefer the real input text over an outdated rendered backdrop.
 - Preserve syntax highlighting during selection, and draw the selection background from the rendered layer's actual glyph boundaries so its position cannot drift from the text. A selection that mixes proportional and monospace text follows the width of each rendered font.
-- If a custom caret is used, click mapping, keyboard movement, and wrap measurement must all use the same font measurement rules.
-- Render inline code and fenced backtick code blocks with a monospace font by default while keeping the body text's font size and line height. Hide inline-code delimiters only when the backticks contain at least one non-whitespace character; show the backticks for an empty or whitespace-only inline-code span so its empty state remains visible. Hide the complete opening and closing fence lines of multi-line code blocks in render mode, while preserving their layout space for source-position mapping and preventing a collapsed caret from remaining inside hidden syntax. Use only about 12px of each hidden fence line for the block's top and bottom fill padding, inset the fill about 12px from both horizontal editor edges, and keep about 12px of inner padding between the fill edges and code text. Draw a multi-line code block as one continuous filled background from its opening fence through its closing fence without a separate outline, and keep code text and rendered selection highlights above the fill. Treat the default code text color as the lowest-priority fallback so syntax colors for brackets, list markers, strings, numbers, and similar tokens remain visible, and use a less saturated default code text color in the dark theme. Allow the code background and default code text colors to be changed independently for the light and dark themes. When proportional and monospace text share a line, calculate click mapping and caret placement from the code token's actual rendered width.
+- Take custom-caret and click positions from the actual DOM ranges of the rendered text nodes after the browser completes layout, rather than recalculating them from character counts or average glyph widths. Skip empty rendered nodes at a line end and use the right edge of the last real glyph so the caret remains visible at the end of a source line and at the end of the document.
+- Measure each visible source line after its final soft wrapping and use that height to position the next source line and its line number. Width estimates are only an initial virtualization fallback for offscreen lines and are replaced with measured heights when those lines enter the viewport.
+- Render inline code and fenced backtick code blocks with a monospace font by default while keeping the body text's font size and line height. Hide inline-code delimiters only when the backticks contain at least one non-whitespace character; show the backticks for an empty or whitespace-only inline-code span so its empty state remains visible. Hide the complete opening and closing fence lines of multi-line code blocks in render mode, while preserving their layout space for source-position mapping and preventing a collapsed caret from remaining inside hidden syntax. Use only about 12px of each hidden fence line for the block's top and bottom fill padding, inset the fill about 12px from both horizontal editor edges, and keep about 12px of inner padding between the fill edges and code text. Draw a multi-line code block as one continuous filled background from its opening fence through its closing fence without a separate outline, and keep code text and rendered selection highlights above the fill. Treat the default code text color as the lowest-priority fallback so syntax colors for brackets, list markers, strings, numbers, and similar tokens remain visible, and use a less saturated default code text color in the dark theme. Allow the code background and default code text colors to be changed independently for the light and dark themes. Even when proportional and monospace text share a line, calculate click mapping and caret placement from the actual rendered DOM ranges.
 - Convert positions in both directions between Windows CRLF source text and the browser `textarea` selection offsets normalized to LF.
 - Use the same source-to-display position conversion for editing, Undo, Redo, and tab restoration.
 
@@ -239,15 +340,18 @@ The current render-mode priority is:
 1. Block deletion selections that include only part of a fenced-code delimiter
 2. Disable fenced-block syntax on Backspace from the immediately following line
 3. Block single-character deletion across a newline adjacent to a fenced-code delimiter
-4. Continue a list marker on Enter
-5. Preserve indentation on Enter for a general line
-6. Join an otherwise empty automatically indented line on Backspace
-7. Indent or outdent lines with Tab or Shift+Tab
-8. Delete leading indentation with Backspace
-9. Delete an empty automatic pair with Backspace
-10. Apply a context-aware substitution confirmed by Space
-11. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
-12. Fall back to default `textarea` input when none of the conditions match
+4. Create a marker-free list continuation line with Shift+Enter
+5. End the list with Enter on an empty marker item
+6. Continue a list marker and renumber following items on Enter
+7. Create the next item and renumber following items from a list continuation line on Enter
+8. Preserve indentation on Enter for a general line
+9. Join an otherwise empty automatically indented line on Backspace
+10. Indent or outdent lines with Tab or Shift+Tab
+11. Delete leading indentation with Backspace
+12. Delete an empty automatic pair with Backspace
+13. Apply a context-aware substitution confirmed by Space
+14. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
+15. Fall back to default `textarea` input when none of the conditions match
 
 Do not chain one editing-assistance helper from inside another. The top-level input path selects exactly one feature by priority, and that feature records the final source text and selection only once.
 
@@ -282,6 +386,7 @@ When editing assistance is added or changed, verify at least the following:
 
 - `src/routes/+page.svelte`: top-level render-mode input, caret and selection conversion, and edit-result recording.
 - `src/lib/list-markers.ts`: list-marker recognition, sequence advancement, and depth-based style selection.
+- `src/lib/line-oriented-formats.ts` and `src/lib/markdown-settings.ts`: Markdown heading recognition and shared per-level display settings.
 - `src/lib/editor-undo.ts`: per-tab Undo and Redo history.
 - `docs/features/render-mode.md`: rendered presentation and file-format-specific contracts.
 - `docs/features/editor-undo.md`: internal Undo contract.

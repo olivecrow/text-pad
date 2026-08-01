@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "formats": [
+    { "id": "plain", "extensions": ["txt", "text"], "sample": "samples/plain-notes.text" },
+    { "id": "markdown", "extensions": ["md", "markdown"], "sample": "samples/markdown-guide.md" },
+    { "id": "json", "extensions": ["json"], "sample": "samples/app-settings.json" },
+    { "id": "jsonlines", "extensions": ["jsonl", "ndjson"], "sample": "samples/events.jsonl" },
+    { "id": "csv", "extensions": ["csv"], "sample": "samples/sample-orders.csv" },
+    { "id": "tsv", "extensions": ["tsv"], "sample": "samples/sprint-board.tsv" },
+    { "id": "yaml", "extensions": ["yaml", "yml"], "sample": "samples/deployment.yaml" },
+    { "id": "ini", "extensions": ["ini", "cfg"], "sample": "samples/app-config.ini" },
+    { "id": "conf", "extensions": ["conf"], "sample": "samples/service.conf" },
+    { "id": "properties", "extensions": ["properties"], "sample": "samples/messages.properties" },
+    { "id": "dotenv", "extensions": ["env"], "sample": "samples/example.env" },
+    { "id": "log", "extensions": ["log"], "sample": "samples/activity.log" },
+    { "id": "srt", "extensions": ["srt"], "sample": "samples/captions.srt" },
+    { "id": "webvtt", "extensions": ["vtt"], "sample": "samples/captions.vtt" },
+    { "id": "lrc", "extensions": ["lrc"], "sample": "samples/lyrics.lrc" }
+  ]
+}

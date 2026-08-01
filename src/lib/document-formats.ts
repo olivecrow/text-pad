@@ -1,3 +1,4 @@
+import supportedTextFormatManifest from '../../supported-text-formats.json';
 import {
   tokenizeLineWithState,
   type BlockCommentRule,
@@ -20,6 +21,13 @@ import {
   type ParsedLine as StructuredParsedLine
 } from './structured-rendering';
 import { translate, type AppLocale, type TranslationKey } from './i18n';
+import {
+  getLineOrientedFormatDiagnostic,
+  parseLineOrientedFormat,
+  type LineOrientedFormatId
+} from './line-oriented-formats';
+import type { MarkdownRenderSettings } from './markdown-settings';
+import { getDelimitedTableSyntaxError } from './delimited-table';
 
 export type ParsedLine = StructuredParsedLine;
 
@@ -35,18 +43,25 @@ export type DocumentFormatId =
   | 'plain'
   | 'markdown'
   | 'json'
+  | 'jsonlines'
   | 'csv'
   | 'tsv'
   | 'yaml'
   | 'ini'
+  | 'conf'
+  | 'properties'
+  | 'dotenv'
   | 'log'
+  | 'srt'
+  | 'webvtt'
+  | 'lrc'
   | 'javascript'
   | 'typescript'
   | 'rust'
   | 'html'
   | 'css';
 
-export type DocumentFormatCategoryId = 'document' | 'structured' | 'table' | 'code';
+export type DocumentFormatCategoryId = 'document' | 'structured' | 'table' | 'subtitle' | 'code';
 
 export interface DocumentFormatCategory {
   id: DocumentFormatCategoryId;
@@ -88,6 +103,7 @@ interface ParseDocumentOptions {
   lineRange?: DocumentLineRange;
   renderEnabled?: boolean;
   featureSettings?: DocumentFeatureSettings;
+  markdownSettings?: MarkdownRenderSettings;
 }
 
 const cBlockComment: BlockCommentRule = { start: '/*', end: '*/' };
@@ -106,10 +122,25 @@ const hashCommentSyntax: CommentSyntax = {
   line: [hashLineComment]
 };
 
+interface SupportedTextFormatManifestEntry {
+  id: DocumentFormatId;
+  extensions: string[];
+  sample: string;
+}
+
+const supportedManifestFormats = supportedTextFormatManifest.formats as SupportedTextFormatManifestEntry[];
+const supportedExtensionsByFormat = new Map(
+  supportedManifestFormats.map((entry) => [entry.id, entry.extensions])
+);
+
+function getSupportedExtensions(formatId: DocumentFormatId, fallback: string[]): string[] {
+  return supportedExtensionsByFormat.get(formatId) || fallback;
+}
+
 const plainTextFormat: DocumentFormat = {
   id: 'plain',
   labelKey: 'format.plain.label',
-  extensions: ['txt'],
+  extensions: getSupportedExtensions('plain', ['txt']),
   defaultExtension: 'txt',
   validatesSyntax: false,
   renderDescriptionKey: 'format.render.generic',
@@ -119,30 +150,40 @@ const plainTextFormat: DocumentFormat = {
 const markdownFormat: DocumentFormat = {
   id: 'markdown',
   labelKey: 'format.markdown.label',
-  extensions: ['md'],
+  extensions: getSupportedExtensions('markdown', ['md']),
   defaultExtension: 'md',
   validatesSyntax: false,
-  renderDescriptionKey: 'format.render.generic',
-  editDescriptionKey: 'format.edit.generic',
+  renderDescriptionKey: 'format.markdown.render',
+  editDescriptionKey: 'format.markdown.edit',
   commentSyntax: { block: [htmlBlockComment] }
 };
 
 const jsonFormat: DocumentFormat = {
   id: 'json',
   labelKey: 'format.json.label',
-  extensions: ['json'],
+  extensions: getSupportedExtensions('json', ['json']),
   defaultExtension: 'json',
   validatesSyntax: true,
   renderDescriptionKey: 'format.json.render',
   editDescriptionKey: 'format.json.edit'
 };
 
+const jsonLinesFormat: DocumentFormat = {
+  id: 'jsonlines',
+  labelKey: 'format.jsonlines.label',
+  extensions: getSupportedExtensions('jsonlines', ['jsonl', 'ndjson']),
+  defaultExtension: 'jsonl',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.jsonlines.render',
+  editDescriptionKey: 'format.jsonlines.edit'
+};
+
 const csvFormat: DocumentFormat = {
   id: 'csv',
   labelKey: 'format.csv.label',
-  extensions: ['csv'],
+  extensions: getSupportedExtensions('csv', ['csv']),
   defaultExtension: 'csv',
-  validatesSyntax: false,
+  validatesSyntax: true,
   renderDescriptionKey: 'format.csv.render',
   editDescriptionKey: 'format.csv.edit'
 };
@@ -150,9 +191,9 @@ const csvFormat: DocumentFormat = {
 const tsvFormat: DocumentFormat = {
   id: 'tsv',
   labelKey: 'format.tsv.label',
-  extensions: ['tsv'],
+  extensions: getSupportedExtensions('tsv', ['tsv']),
   defaultExtension: 'tsv',
-  validatesSyntax: false,
+  validatesSyntax: true,
   renderDescriptionKey: 'format.tsv.render',
   editDescriptionKey: 'format.tsv.edit'
 };
@@ -160,7 +201,7 @@ const tsvFormat: DocumentFormat = {
 const yamlFormat: DocumentFormat = {
   id: 'yaml',
   labelKey: 'format.yaml.label',
-  extensions: ['yaml', 'yml'],
+  extensions: getSupportedExtensions('yaml', ['yaml', 'yml']),
   defaultExtension: 'yaml',
   validatesSyntax: true,
   renderDescriptionKey: 'format.yaml.render',
@@ -171,22 +212,85 @@ const yamlFormat: DocumentFormat = {
 const iniFormat: DocumentFormat = {
   id: 'ini',
   labelKey: 'format.ini.label',
-  extensions: ['ini', 'cfg'],
+  extensions: getSupportedExtensions('ini', ['ini', 'cfg']),
   defaultExtension: 'ini',
-  validatesSyntax: false,
-  renderDescriptionKey: 'format.render.generic',
-  editDescriptionKey: 'format.edit.generic',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.config.render',
+  editDescriptionKey: 'format.config.edit',
   commentSyntax: { line: [semicolonLineComment, iniHashLineComment] }
+};
+
+const confFormat: DocumentFormat = {
+  id: 'conf',
+  labelKey: 'format.conf.label',
+  extensions: getSupportedExtensions('conf', ['conf']),
+  defaultExtension: 'conf',
+  validatesSyntax: false,
+  renderDescriptionKey: 'format.config.render',
+  editDescriptionKey: 'format.config.edit',
+  commentSyntax: { line: [semicolonLineComment, iniHashLineComment] }
+};
+
+const propertiesFormat: DocumentFormat = {
+  id: 'properties',
+  labelKey: 'format.properties.label',
+  extensions: getSupportedExtensions('properties', ['properties']),
+  defaultExtension: 'properties',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.config.render',
+  editDescriptionKey: 'format.config.edit',
+  commentSyntax: hashCommentSyntax
+};
+
+const dotenvFormat: DocumentFormat = {
+  id: 'dotenv',
+  labelKey: 'format.dotenv.label',
+  extensions: getSupportedExtensions('dotenv', ['env']),
+  defaultExtension: 'env',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.config.render',
+  editDescriptionKey: 'format.config.edit',
+  commentSyntax: hashCommentSyntax
 };
 
 const logFormat: DocumentFormat = {
   id: 'log',
   labelKey: 'format.log.label',
-  extensions: ['log'],
+  extensions: getSupportedExtensions('log', ['log']),
   defaultExtension: 'log',
   validatesSyntax: false,
-  renderDescriptionKey: 'format.render.generic',
-  editDescriptionKey: 'format.edit.generic'
+  renderDescriptionKey: 'format.log.render',
+  editDescriptionKey: 'format.log.edit'
+};
+
+const srtFormat: DocumentFormat = {
+  id: 'srt',
+  labelKey: 'format.srt.label',
+  extensions: getSupportedExtensions('srt', ['srt']),
+  defaultExtension: 'srt',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.subtitle.render',
+  editDescriptionKey: 'format.subtitle.edit'
+};
+
+const webVttFormat: DocumentFormat = {
+  id: 'webvtt',
+  labelKey: 'format.webvtt.label',
+  extensions: getSupportedExtensions('webvtt', ['vtt']),
+  defaultExtension: 'vtt',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.subtitle.render',
+  editDescriptionKey: 'format.subtitle.edit'
+};
+
+const lrcFormat: DocumentFormat = {
+  id: 'lrc',
+  labelKey: 'format.lrc.label',
+  extensions: getSupportedExtensions('lrc', ['lrc']),
+  defaultExtension: 'lrc',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.subtitle.render',
+  editDescriptionKey: 'format.subtitle.edit'
 };
 
 const javascriptFormat: DocumentFormat = {
@@ -248,11 +352,18 @@ export const configurableDocumentFormats = [
   plainTextFormat,
   markdownFormat,
   jsonFormat,
+  jsonLinesFormat,
   csvFormat,
   tsvFormat,
   yamlFormat,
   iniFormat,
+  confFormat,
+  propertiesFormat,
+  dotenvFormat,
   logFormat,
+  srtFormat,
+  webVttFormat,
+  lrcFormat,
   javascriptFormat,
   typescriptFormat,
   rustFormat,
@@ -271,13 +382,19 @@ export const configurableDocumentFormatCategories: DocumentFormatCategory[] = [
     id: 'structured',
     labelKey: 'category.structured.label',
     descriptionKey: 'category.structured.description',
-    formatIds: ['json', 'yaml', 'ini']
+    formatIds: ['json', 'jsonlines', 'yaml', 'ini', 'conf', 'properties', 'dotenv']
   },
   {
     id: 'table',
     labelKey: 'category.table.label',
     descriptionKey: 'category.table.description',
     formatIds: ['csv', 'tsv']
+  },
+  {
+    id: 'subtitle',
+    labelKey: 'category.subtitle.label',
+    descriptionKey: 'category.subtitle.description',
+    formatIds: ['srt', 'webvtt', 'lrc']
   },
   {
     id: 'code',
@@ -287,24 +404,27 @@ export const configurableDocumentFormatCategories: DocumentFormatCategory[] = [
   }
 ];
 
-const productSupportedDocumentFormats = [
-  plainTextFormat,
-  jsonFormat,
-  csvFormat,
-  tsvFormat,
-  yamlFormat
-];
+export const productSupportedDocumentFormats = supportedManifestFormats.map((entry) =>
+  configurableDocumentFormats.find((format) => format.id === entry.id)
+).filter((format): format is DocumentFormat => !!format);
 
 export function createDefaultDocumentFeatureSettings(): DocumentFeatureSettings {
   return {
     plain: { render: true, edit: true },
     markdown: { render: true, edit: true },
     json: { render: true, edit: true },
+    jsonlines: { render: true, edit: true },
     csv: { render: true, edit: true },
     tsv: { render: true, edit: true },
     yaml: { render: true, edit: true },
     ini: { render: true, edit: true },
+    conf: { render: true, edit: true },
+    properties: { render: true, edit: true },
+    dotenv: { render: true, edit: true },
     log: { render: true, edit: true },
+    srt: { render: true, edit: true },
+    webvtt: { render: true, edit: true },
+    lrc: { render: true, edit: true },
     javascript: { render: true, edit: true },
     typescript: { render: true, edit: true },
     rust: { render: true, edit: true },
@@ -360,33 +480,16 @@ export function getOpenFileDialogFilters(locale: AppLocale) {
 
 export function getSaveFileDialogFilters(locale: AppLocale) {
   return [
-    {
-      name: translate(locale, 'filter.textFiles'),
-      extensions: ['txt']
-    },
-    {
-      name: translate(locale, 'filter.jsonFiles'),
-      extensions: ['json']
-    },
-    {
-      name: translate(locale, 'filter.csvFiles'),
-      extensions: ['csv']
-    },
-    {
-      name: translate(locale, 'filter.tsvFiles'),
-      extensions: ['tsv']
-    },
-    {
-      name: translate(locale, 'filter.yamlFiles'),
-      extensions: ['yaml', 'yml']
-    },
+    ...productSupportedDocumentFormats.map((format) => ({
+      name: translate(locale, format.labelKey),
+      extensions: format.extensions
+    })),
     {
       name: translate(locale, 'filter.allSupportedTextFiles'),
       extensions: supportedTextExtensions
     }
   ];
 }
-
 export function getFileExtension(pathOrName: string | null | undefined): string {
   if (!pathOrName) return '';
   const fileName = pathOrName.split(/[?#]/)[0].split(/[/\\]/).pop() || pathOrName;
@@ -1152,6 +1255,40 @@ function getJsonErrorOffset(content: string, message: string): number {
   return invalidToken?.start ?? 0;
 }
 
+function getJsonLinesDiagnostic(content: string, locale: AppLocale): DocumentDiagnostic | null {
+  const lines = content.split(/\r?\n/u);
+  let offset = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] || '';
+    if (!line.trim() && index === lines.length - 1) break;
+    if (!line.trim()) {
+      return {
+        severity: 'error',
+        message: translate(locale, 'diagnostic.formatSyntax', { format: translate(locale, jsonLinesFormat.labelKey), line: index + 1, column: 1 }),
+        line: index + 1,
+        column: 1,
+        offset
+      };
+    }
+    try {
+      JSON.parse(line);
+    } catch (err) {
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      const lineOffset = getJsonErrorOffset(line, rawMessage);
+      const column = lineOffset + 1;
+      return {
+        severity: 'error',
+        message: translate(locale, 'diagnostic.formatSyntax', { format: translate(locale, jsonLinesFormat.labelKey), line: index + 1, column }),
+        line: index + 1,
+        column,
+        offset: offset + lineOffset
+      };
+    }
+    offset += line.length + 1;
+  }
+  return null;
+}
+
 function getJsonDiagnostic(content: string, locale: AppLocale): DocumentDiagnostic | null {
   if (content.trim().length === 0) {
     return {
@@ -1238,7 +1375,34 @@ export function getDocumentDiagnostic(
   const format = getDocumentFormatForContent(content, options.pathOrName);
   if (!isDocumentFormatRenderEnabled(format, options.featureSettings)) return null;
   if (format.id === 'json') return getJsonDiagnostic(content, options.locale);
+  if (format.id === 'jsonlines') return getJsonLinesDiagnostic(content, options.locale);
   if (format.id === 'yaml') return getYamlDiagnostic(content, options.locale);
+  if (format.id === 'csv' || format.id === 'tsv') {
+    const position = getDelimitedTableSyntaxError(content, format.id === 'csv' ? ',' : '\t');
+    if (!position) return null;
+    return {
+      severity: 'error',
+      message: translate(options.locale, 'diagnostic.formatSyntax', {
+        format: translate(options.locale, format.labelKey),
+        line: position.line,
+        column: position.column
+      }),
+      ...position
+    };
+  }
+  if (['ini', 'properties', 'dotenv', 'srt', 'webvtt', 'lrc'].includes(format.id)) {
+    const position = getLineOrientedFormatDiagnostic(content, format.id as LineOrientedFormatId);
+    if (!position) return null;
+    return {
+      severity: 'error',
+      message: translate(options.locale, 'diagnostic.formatSyntax', {
+        format: translate(options.locale, format.labelKey),
+        line: position.line,
+        column: position.column
+      }),
+      ...position
+    };
+  }
   return null;
 }
 
@@ -1257,7 +1421,7 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
     };
   }
 
-  if (format.id === 'json') {
+  if (format.id === 'json' || format.id === 'jsonlines') {
     return {
       format,
       lines: splitFlatTokensIntoLines(
@@ -1283,6 +1447,20 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
         lineRange,
         getYamlRenderDepth
       ),
+      diagnostic: null
+    };
+  }
+
+  if (['markdown', 'ini', 'conf', 'properties', 'dotenv', 'log', 'srt', 'webvtt', 'lrc'].includes(format.id)) {
+    return {
+      format,
+      lines: parseLineOrientedFormat(content, format.id as LineOrientedFormatId, {
+        tabSize: options.tabSize,
+        lineStartOffsets: options.lineStartOffsets,
+        lineRange,
+        hideMarkdownHeadingMarkers: options.markdownSettings?.hideHeadingMarkers ?? true,
+        commentSyntax: format.commentSyntax || null
+      }),
       diagnostic: null
     };
   }

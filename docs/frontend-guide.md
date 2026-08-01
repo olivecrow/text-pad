@@ -5,7 +5,10 @@
 ## 현재 진입점
 
 - `src/routes/+page.svelte`: 메인 편집기, 렌더 모드, 설정창, 메뉴, 상태 표시줄.
+- `supported-text-formats.json`: 제품 지원 형식, 확장자, 대표 샘플의 단일 목록.
 - `src/lib/document-formats.ts`: 확장자 기반 문서 형식 판별, 열기/저장 대화상자 필터, 형식별 렌더 파싱과 문법 검사.
+- `src/lib/line-oriented-formats.ts`: Markdown, 설정, 로그, 자막·가사 형식의 토큰화와 오류 위치 계산.
+- `src/lib/markdown-settings.ts`: Markdown 제목 1~6단계의 공통 표시 설정.
 - `src/lib/delimited-table.ts`: CSV/TSV 파싱, 직렬화, 셀·행·열 변경 계산.
 - `src/lib/DelimitedTableEditor.svelte`: CSV/TSV 표 편집 화면과 행·열 조작.
 - `src/lib/app-updater.ts`: 설치 버전 조회, 업데이트 확인·설치·재시작 연결.
@@ -26,6 +29,7 @@
 - `isRenderMode`: 원문 모드와 렌더 모드 전환 상태.
 - `sourceFontSize`, `renderFontSize`, `tabSize`: 편집기 표시 설정.
 - `themeMode`, `currentTheme`, `lightColors`, `darkColors`: 테마와 렌더 색상 설정.
+- `documentFeatureSettings`, `markdownRenderSettings`: 형식별 공통 렌더 기능과 Markdown 제목 표시 설정.
 - `languagePreference`, `systemLocale`, `locale`: 저장된 언어 선택, 시스템 언어와 실제 표시 언어.
 - `isSettingsWindow`: 현재 창이 독립 설정창인지 구분한다.
 - `isCheckingForUpdate`, `isInstallingUpdate`, `transientStatusMessage`: 업데이트 작업과 하단 임시 상태 표시.
@@ -47,8 +51,9 @@
 - 새 편집 기능의 실행 취소 적용 기준은 `docs/features/editor-undo.md`를 따른다.
 
 앱 시작 때 메인 Tauri 창은 숨김 상태로 만들어진다. 메인 편집기의 `textarea`가 붙으면 프론트엔드가 운영체제에서 넘긴 시작 파일 경로를 먼저 열고, 그 다음 창을 표시하고 초점을 편집기로 옮겨, 사용자가 처음 보는 창이 바로 편집 가능한 상태가 되게 한다.
+메인 창은 Tauri의 네이티브 파일 드롭 이벤트를 구독한다. 드롭된 실제 파일 경로를 Rust 명령으로 읽고 기존 탭을 교체하지 않은 채 파일마다 새 탭으로 추가한다. 설정창은 파일 드롭을 처리하지 않는다.
 
-업데이트 확인은 이 시작 표시와 초점 이동을 끝낸 뒤 예약한다. 네트워크 응답 때문에 첫 화면 표시나 입력 가능 시점이 늦어져서는 안 된다. 세부 계약은 `docs/features/app-updates.md`를 따른다.
+업데이트 확인은 이 시작 표시와 초점 이동을 끝낸 뒤 예약한다. 시작 확인은 확인창을 띄우지 않고 새 버전을 찾았을 때만 메뉴바 오른쪽에 업데이트 버튼을 표시한다. 네트워크 응답 때문에 첫 화면 표시나 입력 가능 시점이 늦어져서는 안 된다. 세부 계약은 `docs/features/app-updates.md`를 따른다.
 
 ## 원문 모드
 
@@ -61,6 +66,7 @@
 - 탭, 백스페이스, Enter, 괄호, 따옴표 입력은 HTML `textarea` 기본 동작을 따른다.
 - 긴 줄과 큰 파일에서 입력 지연이 생기지 않게 한다.
 - 파일을 새로 열면 새 탭이나 깨끗한 빈 탭에서 스크롤 위치를 처음으로 둔다.
+- 운영체제에서 파일을 메인 창에 드롭하면 기존 활성 탭을 교체하지 않고 드롭한 파일을 새 탭으로 연다.
 - 탭을 전환할 때 활성 탭의 원문, 선택 영역, 스크롤 위치를 먼저 저장하고 새 탭 상태를 복원한다.
 - 세부 파일 흐름은 `docs/features/file-workflow.md`를 기준으로 한다.
 
@@ -74,7 +80,10 @@
 - 들여쓰기 가이드.
 - 닫힘이 있는 백틱 코드, 문자열, 숫자, 글머리 기호, 색상 코드, 데이터 파일 형식의 불리언 값, 파일 형식별 주석 강조.
 - 닫힘이 있는 소괄호, 대괄호, 중괄호 중첩 강조.
-- `.json`, `.yaml`, `.yml` 파일의 키, 값, 구분자, 괄호, 주석 표시와 문법 오류 상태 표시.
+- `.json`, `.jsonl`, `.ndjson`, `.yaml`, `.yml` 파일의 키, 값, 구분자, 괄호, 주석 표시와 문법 오류 상태 표시.
+- `.ini`, `.cfg`, `.conf`, `.properties`, `.env` 파일의 섹션, 키, 연산자, 값, 주석 구분과 엄격 형식 오류 표시.
+- `.log` 파일의 시간과 심각도 구분, `.srt`, `.vtt`, `.lrc` 파일의 큐·시간·메타데이터·대사 구분과 오류 표시.
+- `.md`, `.markdown` 제목 1~6단계의 크기·굵기·구분선, 숨긴 제목 표식, 링크·강조·인용·코드 구분.
 - `.csv`, `.tsv` 파일의 표 표시, 셀 편집, 외부 여백의 행·열 추가·제거, 드래그 이동과 열 너비 조절.
 - 데이터 파일 형식의 키 깊이 3단계 색상 반복 표시.
 - 중첩된 괄호와 따옴표는 요소 종류보다 바깥쪽에서 안쪽으로 들어가는 깊이를 우선해서 색상을 적용한다.
@@ -98,7 +107,7 @@
 - 렌더 모드 편집 보조는 `isRenderMode`가 켜진 상태에서만 키 입력을 가로채야 하며, 원문 모드의 기본 `textarea` 입력 동작을 바꾸지 않아야 한다.
 - 이 모드 판정은 편집 입력의 상위 경로에서 처리한다. 들여쓰기, 자동 쌍 문자, 자동 변환 같은 세부 편집 함수는 호출 모드를 직접 확인하지 않는다.
 - 글머리, 자동 쌍 문자, 들여쓰기, 줄바꿈, 자동 변환, 캐럿과 선택 영역, 조합 입력, 실행 취소의 통합 행동 계약은 `docs/features/natural-text-editing.md`와 `docs/features/natural-text-editing.en.md`를 함께 기준으로 한다.
-- 새 파일 형식은 `src/lib/document-formats.ts`에 형식 판별, 확장자 목록, 렌더 파서, 주석 문법, 문법 검사 여부, 렌더 편집 가능 여부를 추가한다. 형식별 렌더 표시와 렌더 편집은 설정 객체를 통해 켜고 끌 수 있어야 하며, 설정창에서는 해당 형식의 트리 메뉴 최상단에 배치한다.
+- 새 제품 지원 형식은 먼저 `supported-text-formats.json`에 식별자, 확장자, 대표 샘플을 추가하고 `src/lib/document-formats.ts`에 형식 판별, 렌더 파서, 주석 문법, 문법 검사 여부, 렌더 편집 가능 여부를 연결한다. `npm run validate:formats`가 열기·저장과 Windows 설치 연결을 함께 검사하므로, 별도 확장자 목록을 새로 만들지 않는다. 형식별 렌더 표시와 렌더 편집은 설정 객체를 통해 켜고 끌 수 있어야 하며, 설정창에서는 해당 형식의 트리 메뉴 최상단에 배치한다.
 - 세부 표시 계약은 `docs/features/render-mode.md`를 기준으로 한다.
 - CSV/TSV 표 편집은 `docs/features/delimited-table.md`를 기준으로 한다.
 
@@ -127,7 +136,7 @@
 ## UI 기준
 
 - Windows 메모장형 밀도와 Fluent 스타일을 유지한다.
-- 탭과 창 제어 버튼을 제외한 통합 제목 표시줄의 빈 배경은 전체 높이에서 창 드래그와 더블클릭 최대화가 동작해야 한다.
+- 탭과 창 제어 버튼을 제외한 통합 제목 표시줄의 빈 배경은 전체 높이에서 창 드래그와 더블클릭 최대화가 동작해야 한다. 드래그는 `mousedown`에서 `startDragging()`을 한 번만 호출하며, 같은 영역에 `data-tauri-drag-region` 자동 처리와 수동 호출을 함께 두지 않는다.
 - 아이콘 버튼에는 `title` 또는 접근성 이름을 둔다.
 - 메뉴, 설정, 토글은 키보드로 접근 가능해야 한다.
 - 버튼과 입력 요소 안의 텍스트가 좁은 창에서도 잘리지 않게 한다.
@@ -137,6 +146,7 @@
 ## 검증
 
 - 번역표 변경 후: `npm run validate:i18n`
+- 지원 형식이나 샘플 변경 후: `npm run validate:formats`
 - 프론트엔드 변경 후: `npm run check`
 - 설정창, Tauri 권한, 패키징에 영향이 있으면: `.agents/skills/text-pad-signed-build/SKILL.md`에 따라 `npm run tauri:build:signed`
 - 화면 구조 변경 후: 실제 앱에서 겹침, 잘림, 포커스 이동을 확인한다.

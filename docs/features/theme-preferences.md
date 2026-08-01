@@ -36,6 +36,7 @@ CSV/TSV 표의 첫 행 강조, 행 번호 표시, 행·열 이동 애니메이�
 - `pref_render_auto_symbol_substitution`: 렌더 모드 화살표 기호 자동 변환 사용 여부.
 - `pref_render_preserve_indent_on_enter`: 렌더 모드 줄바꿈 시 들여쓰기 유지 사용 여부.
 - `pref_document_format_features`: 파일 형식별 렌더 표시와 렌더 편집 사용 여부. JSON 문자열 형태로 저장하며, 각 형식 식별자 아래에 `render`와 `edit` 값을 둔다.
+- `pref_markdown_render_settings`: 모든 Markdown 문서에 공통인 제목 표식 숨김, 1·2단계 구분선, 제목 1~6단계별 크기 비율과 굵기. 잘못된 크기는 80~145% 범위로 제한하고 굵기는 지원하는 400~800 값으로 정규화한다.
 - `pref_light_*`: 라이트 테마 렌더 색상과 굵기.
 - `pref_dark_*`: 다크 테마 렌더 색상과 굵기.
 

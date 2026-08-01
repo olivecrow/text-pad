@@ -1,4 +1,5 @@
 import type { FencedCodeLinePosition, Token } from './render-tokenizer';
+import type { MarkdownHeadingLevel } from './markdown-settings';
 
 export interface ParsedLine {
   id: number;
@@ -7,6 +8,7 @@ export interface ParsedLine {
   extraIndentSpaces: number;
   tokens: Token[];
   fencedCodePosition?: FencedCodeLinePosition;
+  headingLevel?: MarkdownHeadingLevel;
 }
 
 export interface DocumentLineRange {

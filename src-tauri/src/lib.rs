@@ -4,7 +4,8 @@ mod file_commands;
 mod windows_wheel;
 
 use file_commands::{
-    get_startup_files, open_file_dialog, save_file_dialog, write_file_content, ApprovedFilePaths,
+    get_startup_files, open_file_dialog, open_file_paths, save_file_dialog, write_file_content,
+    ApprovedFilePaths,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -42,6 +43,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_startup_files,
             open_file_dialog,
+            open_file_paths,
             save_file_dialog,
             write_file_content,
         ])

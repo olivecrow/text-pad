@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "text-pad",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "identifier": "com.textpad.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -34,11 +34,25 @@
       {
         "ext": [
           "txt",
+          "text",
+          "md",
+          "markdown",
           "json",
+          "jsonl",
+          "ndjson",
           "csv",
           "tsv",
           "yaml",
-          "yml"
+          "yml",
+          "ini",
+          "cfg",
+          "conf",
+          "properties",
+          "env",
+          "log",
+          "srt",
+          "vtt",
+          "lrc"
         ],
         "name": "text-pad document",
         "description": "text-pad supported text file",
@@ -48,6 +62,14 @@
     "windows": {
       "nsis": {
         "template": "installer.nsi"
+      },
+      "wix": {
+        "fragmentPaths": [
+          "default-app-capabilities.wxs"
+        ],
+        "componentRefs": [
+          "DefaultAppCapabilities"
+        ]
       }
     },
     "targets": "all",
