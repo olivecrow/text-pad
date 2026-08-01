@@ -242,6 +242,19 @@
   let lastEditorSnapshot: EditorSnapshot = getTabSnapshot(initialTab);
   let tabs = $state<EditorTab[]>([initialTab]);
   let activeTabId = $state<string>(initialTab.id);
+  const minimumTabWidth = 128;
+  const preferredTabWidth = 150;
+  const tabItemGap = 2;
+  let tabListEl = $state<HTMLDivElement | null>(null);
+  let isTabStripOverflowing = $state(false);
+  let isTabOverflowMenuOpen = $state(false);
+  let hiddenTabIds = $state<string[]>([]);
+  let tabScrollThumbWidth = $state(0);
+  let tabScrollThumbLeft = $state(0);
+  let hiddenTabs = $derived(tabs.filter((tab) => hiddenTabIds.includes(tab.id)));
+  let tabListPreferredWidth = $derived(
+    tabs.length * preferredTabWidth + Math.max(0, tabs.length - 1) * tabItemGap
+  );
 
   let filePath = $state<string | null>(initialTab.filePath);
   let fileName = $state<string>(initialTab.fileName);
@@ -831,6 +844,93 @@
     restoreEditorView(tab);
   }
 
+  function updateTabStripMetrics() {
+    const tabList = tabListEl;
+    if (!tabList || tabList.clientWidth <= 0) return;
+
+    const viewportWidth = tabList.clientWidth;
+    const contentWidth = tabList.scrollWidth;
+    const maxScrollLeft = Math.max(0, contentWidth - viewportWidth);
+    const nextIsOverflowing = maxScrollLeft > 1;
+
+    isTabStripOverflowing = nextIsOverflowing;
+    if (!nextIsOverflowing) {
+      isTabOverflowMenuOpen = false;
+      hiddenTabIds = [];
+      tabScrollThumbWidth = viewportWidth;
+      tabScrollThumbLeft = 0;
+      return;
+    }
+
+    const nextThumbWidth = Math.max(32, viewportWidth * (viewportWidth / contentWidth));
+    const scrollProgress = Math.min(1, Math.max(0, tabList.scrollLeft / maxScrollLeft));
+    tabScrollThumbWidth = nextThumbWidth;
+    tabScrollThumbLeft = scrollProgress * (viewportWidth - nextThumbWidth);
+
+    const visibleLeft = tabList.scrollLeft;
+    const visibleRight = visibleLeft + viewportWidth;
+    const nextHiddenTabIds = Array.from(tabList.querySelectorAll<HTMLElement>('[data-tab-id]'))
+      .filter((tabItem) => (
+        tabItem.offsetLeft < visibleLeft - 0.5
+        || tabItem.offsetLeft + tabItem.offsetWidth > visibleRight + 0.5
+      ))
+      .map((tabItem) => tabItem.dataset.tabId)
+      .filter((tabId): tabId is string => !!tabId);
+
+    if (
+      nextHiddenTabIds.length !== hiddenTabIds.length
+      || nextHiddenTabIds.some((tabId, index) => tabId !== hiddenTabIds[index])
+    ) {
+      hiddenTabIds = nextHiddenTabIds;
+    }
+  }
+
+  function scrollTabIntoView(tabId: string) {
+    const tabList = tabListEl;
+    if (!tabList) return;
+
+    const tabItem = Array.from(tabList.querySelectorAll<HTMLElement>('[data-tab-id]'))
+      .find((item) => item.dataset.tabId === tabId);
+    if (!tabItem) return;
+
+    const tabLeft = tabItem.offsetLeft;
+    const tabRight = tabLeft + tabItem.offsetWidth;
+    if (tabLeft < tabList.scrollLeft) {
+      tabList.scrollLeft = tabLeft;
+    } else if (tabRight > tabList.scrollLeft + tabList.clientWidth) {
+      tabList.scrollLeft = tabRight - tabList.clientWidth;
+    }
+    updateTabStripMetrics();
+  }
+
+  function handleTabListWheel(event: WheelEvent) {
+    if (!isTabStripOverflowing || !tabListEl) return;
+
+    const rawDelta = event.deltaX !== 0
+      ? event.deltaX
+      : (event.shiftKey ? event.deltaY : 0);
+    if (rawDelta === 0) return;
+
+    event.preventDefault();
+    const deltaScale = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+      ? 16
+      : (event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? tabListEl.clientWidth : 1);
+    tabListEl.scrollLeft += rawDelta * deltaScale;
+    updateTabStripMetrics();
+  }
+
+  function toggleTabOverflowMenu(event: MouseEvent) {
+    event.stopPropagation();
+    openDropdown = null;
+    isTabOverflowMenuOpen = !isTabOverflowMenuOpen;
+  }
+
+  function selectTabFromOverflowMenu(tabId: string) {
+    isTabOverflowMenuOpen = false;
+    if (tabId !== activeTabId) activateTab(tabId);
+    requestAnimationFrame(() => scrollTabIntoView(tabId));
+  }
+
   function activateTab(tabId: string) {
     if (tabId === activeTabId) return;
     syncActiveTabState();
@@ -900,6 +1000,31 @@
     if (!canClose) return;
     closeTabWithoutPrompt(tabId);
   }
+
+  $effect(() => {
+    if (!isBrowser || !tabListEl) return;
+
+    const tabList = tabListEl;
+    const resizeObserver = new ResizeObserver(updateTabStripMetrics);
+    resizeObserver.observe(tabList);
+    const frame = requestAnimationFrame(updateTabStripMetrics);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+    };
+  });
+
+  $effect(() => {
+    if (!isBrowser) return;
+    void tabs.length;
+    const nextActiveTabId = activeTabId;
+    const frame = requestAnimationFrame(() => {
+      scrollTabIntoView(nextActiveTabId);
+      updateTabStripMetrics();
+    });
+    return () => cancelAnimationFrame(frame);
+  });
 
   // 시스템 테마 변경 감지
   $effect(() => {
@@ -3681,6 +3806,7 @@
 
   function closeAllDropdown() {
     openDropdown = null;
+    isTabOverflowMenuOpen = false;
   }
 
   function performUndo(): boolean {
@@ -3931,7 +4057,9 @@
 
     const key = e.key.toLowerCase();
 
-    if (!isSettingsWindow && e.ctrlKey && key === 'z') {
+    if (e.key === 'Escape') {
+      closeAllDropdown();
+    } else if (!isSettingsWindow && e.ctrlKey && key === 'z') {
       e.preventDefault();
       if (e.shiftKey) {
         performRedo();
@@ -5257,43 +5385,108 @@
       </div>
 
       <div class="titlebar-tabs">
-        <div class="tab-list" role="tablist" aria-label={t('window.openTabs')}>
-          {#each tabs as tab (tab.id)}
-            <div class="tab-item" class:active={tab.id === activeTabId} class:dirty={tab.isDirty}>
-              <button
-                type="button"
-                class="tab-select"
-                role="tab"
-                aria-selected={tab.id === activeTabId}
-                title={tab.filePath || getDisplayFileName(tab)}
-                onclick={() => activateTab(tab.id)}
-              >
-                {#if tab.isDirty}
-                  <span class="tab-dirty-dot" aria-hidden="true"></span>
-                {/if}
-                <span class="tab-title">{getDisplayFileName(tab)}</span>
-              </button>
-              <button
-                type="button"
-                class="tab-close-btn"
-                aria-label={t('window.closeTab', { fileName: getDisplayFileName(tab) })}
-                title={t('window.closeTabTitle')}
-                onclick={(event) => handleCloseTab(tab.id, event)}
-              >
-                <X size={14} aria-hidden="true" />
-              </button>
-            </div>
-          {/each}
-        </div>
-        <button
-          type="button"
-          class="tab-add-btn"
-          aria-label={t('window.newTab')}
-          title={t('window.newTab')}
-          onclick={handleAddTab}
+        <div
+          class="tab-list-shell"
+          style={`--minimum-tab-width: ${minimumTabWidth}px; --preferred-tab-width: ${preferredTabWidth}px; --tab-list-preferred-width: ${tabListPreferredWidth}px;`}
         >
-          <Plus size={16} aria-hidden="true" />
-        </button>
+          <div
+            class="tab-list"
+            role="tablist"
+            aria-label={t('window.openTabs')}
+            bind:this={tabListEl}
+            onscroll={updateTabStripMetrics}
+            onwheel={handleTabListWheel}
+          >
+            {#each tabs as tab (tab.id)}
+              <div
+                class="tab-item"
+                class:active={tab.id === activeTabId}
+                class:dirty={tab.isDirty}
+                data-tab-id={tab.id}
+              >
+                <button
+                  type="button"
+                  class="tab-select"
+                  role="tab"
+                  aria-selected={tab.id === activeTabId}
+                  title={tab.filePath || getDisplayFileName(tab)}
+                  onclick={() => activateTab(tab.id)}
+                >
+                  {#if tab.isDirty}
+                    <span class="tab-dirty-dot" aria-hidden="true"></span>
+                  {/if}
+                  <span class="tab-title">{getDisplayFileName(tab)}</span>
+                </button>
+                <button
+                  type="button"
+                  class="tab-close-btn"
+                  aria-label={t('window.closeTab', { fileName: getDisplayFileName(tab) })}
+                  title={t('window.closeTabTitle')}
+                  onclick={(event) => handleCloseTab(tab.id, event)}
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              </div>
+            {/each}
+          </div>
+          {#if isTabStripOverflowing}
+            <div class="tab-scroll-indicator" aria-hidden="true">
+              <div
+                class="tab-scroll-thumb"
+                style={`width: ${tabScrollThumbWidth}px; transform: translateX(${tabScrollThumbLeft}px);`}
+              ></div>
+            </div>
+          {/if}
+        </div>
+        <div class="tab-strip-actions">
+          <button
+            type="button"
+            class="tab-add-btn"
+            aria-label={t('window.newTab')}
+            title={t('window.newTab')}
+            onclick={handleAddTab}
+          >
+            <Plus size={16} aria-hidden="true" />
+          </button>
+          <div class="tab-overflow-menu-container">
+            <button
+              type="button"
+              class="tab-overflow-btn"
+              class:active={isTabOverflowMenuOpen}
+              class:unavailable={!isTabStripOverflowing}
+              aria-label={t('window.openTabs')}
+              title={t('window.openTabs')}
+              aria-haspopup="menu"
+              aria-expanded={isTabStripOverflowing && isTabOverflowMenuOpen}
+              aria-hidden={!isTabStripOverflowing}
+              tabindex={isTabStripOverflowing ? 0 : -1}
+              disabled={!isTabStripOverflowing}
+              onclick={toggleTabOverflowMenu}
+            >
+              <ChevronDown size={16} aria-hidden="true" />
+            </button>
+            {#if isTabStripOverflowing && isTabOverflowMenuOpen}
+              <div class="tab-overflow-menu" role="menu" aria-label={t('window.openTabs')}>
+                {#each hiddenTabs as tab (tab.id)}
+                  <button
+                    type="button"
+                    class="tab-overflow-item"
+                    class:active={tab.id === activeTabId}
+                    role="menuitemradio"
+                    aria-checked={tab.id === activeTabId}
+                    title={tab.filePath || getDisplayFileName(tab)}
+                    onclick={() => selectTabFromOverflowMenu(tab.id)}
+                  >
+                    {#if tab.isDirty}
+                      <span class="tab-dirty-dot" aria-hidden="true"></span>
+                    {/if}
+                    <span class="tab-overflow-title">{getDisplayFileName(tab)}</span>
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        </div>
         <div
           class="titlebar-drag-region"
           aria-hidden="true"
@@ -6027,7 +6220,7 @@
     box-sizing: border-box;
     user-select: none;
     min-width: 0;
-    overflow: hidden;
+    overflow: visible;
   }
 
   .titlebar-app-icon {
@@ -6062,24 +6255,38 @@
     z-index: 0;
   }
 
-  .tab-list {
+  .tab-list-shell {
     position: relative;
     z-index: 1;
+    flex: 0 1 var(--tab-list-preferred-width);
+    width: var(--tab-list-preferred-width);
+    min-width: 0;
+    height: 32px;
+  }
+
+  .tab-list {
+    position: relative;
     display: flex;
     align-items: flex-end;
     gap: 2px;
-    flex: 0 1 auto;
-    min-width: 0;
+    width: 100%;
+    height: 32px;
     overflow-x: auto;
     overflow-y: hidden;
-    scrollbar-width: thin;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+  }
+
+  .tab-list::-webkit-scrollbar {
+    width: 0;
+    height: 0;
   }
 
   .tab-item {
     display: flex;
     align-items: center;
-    flex: 0 1 252px;
-    min-width: 150px;
+    flex: 0 1 var(--preferred-tab-width);
+    min-width: var(--minimum-tab-width);
     max-width: 272px;
     height: 32px;
     color: var(--text-color);
@@ -6120,7 +6327,9 @@
 
   .tab-select:focus-visible,
   .tab-close-btn:focus-visible,
-  .tab-add-btn:focus-visible {
+  .tab-add-btn:focus-visible,
+  .tab-overflow-btn:focus-visible,
+  .tab-overflow-item:focus-visible {
     outline: 2px solid var(--accent-color);
     outline-offset: -2px;
   }
@@ -6140,7 +6349,8 @@
   }
 
   .tab-close-btn,
-  .tab-add-btn {
+  .tab-add-btn,
+  .tab-overflow-btn {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -6161,14 +6371,107 @@
   }
 
   .tab-close-btn:hover,
-  .tab-add-btn:hover {
+  .tab-add-btn:hover,
+  .tab-overflow-btn:hover,
+  .tab-overflow-btn.active {
     background-color: var(--bg-tab-button-hover);
   }
 
   .tab-add-btn {
-    position: relative;
-    z-index: 1;
     margin-bottom: 3px;
+  }
+
+  .tab-strip-actions {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
+  .tab-overflow-menu-container {
+    position: relative;
+    width: 28px;
+    height: 28px;
+    margin-bottom: 3px;
+  }
+
+  .tab-overflow-btn {
+    height: 28px;
+  }
+
+  .tab-overflow-btn.unavailable {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .tab-overflow-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    min-width: 210px;
+    max-width: 300px;
+    max-height: 260px;
+    padding: 4px;
+    overflow-y: auto;
+    background-color: var(--bg-dropdown);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: var(--shadow-menu);
+    box-sizing: border-box;
+    z-index: 120;
+  }
+
+  .tab-overflow-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 30px;
+    padding: 5px 9px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 0.78rem;
+    text-align: left;
+    cursor: pointer;
+    outline: none;
+  }
+
+  .tab-overflow-item:hover,
+  .tab-overflow-item.active {
+    background-color: var(--bg-menu-hover);
+  }
+
+  .tab-overflow-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tab-scroll-indicator {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 3;
+    height: 2px;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .tab-scroll-thumb {
+    height: 2px;
+    border-radius: 999px;
+    background-color: var(--text-muted);
+    opacity: 0.55;
+    will-change: transform;
   }
 
   .window-control-group {
