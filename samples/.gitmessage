@@ -1,0 +1,7 @@
+Summarize the change clearly
+
+Explain why the change is needed and note any important tradeoffs.
+
+Refs: #123
+Signed-off-by: Example Maintainer <maintainer@example.com>
+# Lines beginning with # are removed by Git.

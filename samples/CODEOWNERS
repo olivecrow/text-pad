@@ -1,0 +1,4 @@
+# Default reviewers for repository content
+* @example/core-team
+/docs/ @example/docs-team
+/src-tauri/ @example/desktop-team @example/security-team

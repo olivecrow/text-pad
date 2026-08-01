@@ -1,0 +1,17 @@
+# Application metadata
+title = "text-pad sample"
+enabled = true
+refresh_seconds = 30
+accent_colors = ["#2563eb", "#16a34a"]
+description = """
+A compact configuration example
+that preserves multiline text.
+"""
+
+[window]
+width = 960
+height = 640
+
+[[recent_files]]
+path = "notes/readme.txt"
+pinned = false

@@ -71,11 +71,14 @@
     type DelimitedTableSeparator
   } from "$lib/delimited-table";
 
+  type TextEncoding = 'utf8' | 'utf8Bom' | 'utf16Le' | 'utf16Be';
+
   interface EditorTab {
     id: string;
     filePath: string | null;
     fileName: string;
     fileContent: string;
+    encoding: TextEncoding;
     isDirty: boolean;
     scrollTop: number;
     scrollLeft: number;
@@ -89,6 +92,12 @@
   interface OpenedFile {
     path: string;
     content: string;
+    encoding: TextEncoding;
+  }
+
+  interface SavedFile {
+    path: string;
+    encoding: TextEncoding;
   }
 
   let nextTabId = 1;
@@ -180,7 +189,7 @@
     return tab.filePath ? tab.fileName : getUnsavedFileNameFromContent(tab.fileContent);
   }
 
-  function createEditorTab(options: Partial<Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent' | 'isDirty'>> = {}): EditorTab {
+  function createEditorTab(options: Partial<Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent' | 'encoding' | 'isDirty'>> = {}): EditorTab {
     const nextFileContent = options.fileContent ?? "";
     const nextFilePath = options.filePath ?? null;
     return {
@@ -188,6 +197,7 @@
       filePath: nextFilePath,
       fileName: options.fileName ?? (nextFilePath ? getFileNameFromPath(nextFilePath) : getNextUntitledFileName()),
       fileContent: nextFileContent,
+      encoding: options.encoding ?? 'utf8',
       isDirty: options.isDirty ?? false,
       scrollTop: 0,
       scrollLeft: 0,
@@ -220,6 +230,7 @@
   let filePath = $state<string | null>(initialTab.filePath);
   let fileName = $state<string>(initialTab.fileName);
   let fileContent = $state<string>(initialTab.fileContent);
+  let fileEncoding = $state<TextEncoding>(initialTab.encoding);
   let isDirty = $state<boolean>(initialTab.isDirty);
   let isLoading = $state<boolean>(false);
   let errorMsg = $state<string | null>(null);
@@ -274,9 +285,9 @@
   let expandedFormatCategories = $state<Record<DocumentFormatCategoryId, boolean>>({
     document: true,
     structured: true,
+    project: true,
     table: true,
-    subtitle: true,
-    code: true
+    subtitle: true
   });
   let hasCenteredSettingsWindowThisSession = false;
 
@@ -777,6 +788,7 @@
       filePath,
       fileName: nextFileName,
       fileContent,
+      encoding: fileEncoding,
       isDirty: nextIsDirty,
       scrollTop,
       scrollLeft,
@@ -817,6 +829,7 @@
     filePath = tab.filePath;
     fileName = getDisplayFileName(tab);
     fileContent = tab.fileContent;
+    fileEncoding = tab.encoding;
     isDirty = history.isDirty();
     errorMsg = null;
     restoreEditorView(tab);
@@ -1169,18 +1182,20 @@
     }
   }
 
-  function applySavedPath(tabId: string, targetPath: string) {
-    const nextFileName = getFileNameFromPath(targetPath);
+  function applySavedFile(tabId: string, savedFile: SavedFile) {
+    const nextFileName = getFileNameFromPath(savedFile.path);
     markTabHistorySaved(tabId);
     updateTabById(tabId, {
-      filePath: targetPath,
+      filePath: savedFile.path,
       fileName: nextFileName,
+      encoding: savedFile.encoding,
       isDirty: false
     });
 
     if (tabId === activeTabId) {
-      filePath = targetPath;
+      filePath = savedFile.path;
       fileName = nextFileName;
+      fileEncoding = savedFile.encoding;
       isDirty = false;
     }
   }
@@ -1190,8 +1205,12 @@
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab) return;
 
-    await invoke("write_file_content", { path: targetPath, content: tab.fileContent });
-    applySavedPath(tabId, targetPath);
+    await invoke("write_file_content", {
+      path: targetPath,
+      content: tab.fileContent,
+      encoding: tab.encoding
+    });
+    applySavedFile(tabId, { path: targetPath, encoding: tab.encoding });
   }
 
   async function saveTabFile(tabId: string): Promise<boolean> {
@@ -1204,14 +1223,15 @@
       return true;
     }
 
-    const targetPath = await invoke<string | null>("save_file_dialog", {
+    const savedFile = await invoke<SavedFile | null>("save_file_dialog", {
       defaultName: getSuggestedSaveFileName(tab),
       content: tab.fileContent,
+      encoding: null,
       filters: getSaveFileDialogFilters(locale)
     });
-    if (!targetPath) return false;
+    if (!savedFile) return false;
 
-    applySavedPath(tabId, targetPath);
+    applySavedFile(tabId, savedFile);
     return true;
   }
 
@@ -1224,16 +1244,17 @@
     const tab = getActiveTab();
     if (!tab) return false;
 
-    const targetPath = await invoke<string | null>("save_file_dialog", {
+    const savedFile = await invoke<SavedFile | null>("save_file_dialog", {
       defaultName: getSuggestedSaveFileName(tab),
       content: tab.fileContent,
+      encoding: tab.filePath ? tab.encoding : null,
       filters: getSaveFileDialogFilters(locale)
     });
-    if (!targetPath) {
+    if (!savedFile) {
       return false;
     }
 
-    applySavedPath(activeTabId, targetPath);
+    applySavedFile(activeTabId, savedFile);
     return true;
   }
 
@@ -1982,6 +2003,7 @@
       filePath: openedFile.path,
       fileName: getFileNameFromPath(openedFile.path),
       fileContent: openedFile.content,
+      encoding: openedFile.encoding,
       isDirty: false
     });
     const activeTab = getActiveTab();
@@ -2983,12 +3005,46 @@
 
   function getPreferredNewline(text: string, offset: number): string {
     const previousLineBreak = offset <= 0 ? -1 : text.lastIndexOf('\n', offset - 1);
-    if (previousLineBreak > 0 && text[previousLineBreak - 1] === '\r') return '\r\n';
+    if (previousLineBreak >= 0) {
+      return previousLineBreak > 0 && text[previousLineBreak - 1] === '\r' ? '\r\n' : '\n';
+    }
 
-    const firstLineBreak = text.indexOf('\n');
-    if (firstLineBreak > 0 && text[firstLineBreak - 1] === '\r') return '\r\n';
+    const nextLineBreak = text.indexOf('\n', offset);
+    if (nextLineBreak >= 0) {
+      return nextLineBreak > 0 && text[nextLineBreak - 1] === '\r' ? '\r\n' : '\n';
+    }
 
     return '\n';
+  }
+
+  function getLineEndingLabel(text: string): string {
+    const lineEndings = new Set<string>();
+    for (let index = 0; index < text.length; index += 1) {
+      if (text[index] === '\r') {
+        if (text[index + 1] === '\n') {
+          lineEndings.add('CRLF');
+          index += 1;
+        } else {
+          lineEndings.add('CR');
+        }
+      } else if (text[index] === '\n') {
+        lineEndings.add('LF');
+      }
+    }
+    return lineEndings.size > 0 ? [...lineEndings].join('/') : 'LF';
+  }
+
+  function getTextEncodingLabel(encoding: TextEncoding): string {
+    switch (encoding) {
+      case 'utf8Bom':
+        return 'UTF-8 BOM';
+      case 'utf16Le':
+        return 'UTF-16 LE';
+      case 'utf16Be':
+        return 'UTF-16 BE';
+      default:
+        return 'UTF-8';
+    }
   }
 
   function getPreviousLineBounds(text: string, lineStart: number): { start: number; end: number } | null {
@@ -3487,7 +3543,7 @@
       syncActiveTabState();
       closeAllDropdown();
       const openedFile = await invoke<OpenedFile | null>("open_file_dialog", {
-        filterName: getOpenFileDialogFilters(locale)[0]?.name ?? t('filter.textFiles')
+        filters: getOpenFileDialogFilters(locale)
       });
 
       if (openedFile) {
@@ -5560,7 +5616,7 @@
                   {@const lineIdx = startLine + idx}
                   {@const line = parsedLines[idx]}
                   {#if line}
-                    <div use:observeRenderedLine class="backdrop-line" data-line-index={lineIdx} class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} class:fenced-code-line={line.fencedCodePosition !== undefined} class:fenced-code-start={line.fencedCodePosition === 'start'} class:fenced-code-middle={line.fencedCodePosition === 'middle'} class:fenced-code-end={line.fencedCodePosition === 'end'} class:markdown-heading-line={line.headingLevel !== undefined} class:markdown-heading-divider={line.headingLevel !== undefined && line.headingLevel <= 2 && markdownRenderSettings.showHeadingDividers} class:styled-text-geometry={line.headingLevel !== undefined} style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize}; {getMarkdownHeadingLineStyle(line.headingLevel)}">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
+                    <div use:observeRenderedLine class="backdrop-line" data-line-index={lineIdx} class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} class:configuration-rule-line={line.lineKind === 'rule'} class:configuration-negated-rule-line={line.lineKind === 'negated-rule'} class:configuration-section-line={line.lineKind === 'section'} class:translation-source-line={line.lineKind === 'translation-source'} class:translation-target-line={line.lineKind === 'translation-target'} class:translation-empty-line={line.lineKind === 'translation-empty'} class:subject-line={line.lineKind === 'subject'} class:fenced-code-line={line.fencedCodePosition !== undefined} class:fenced-code-start={line.fencedCodePosition === 'start'} class:fenced-code-middle={line.fencedCodePosition === 'middle'} class:fenced-code-end={line.fencedCodePosition === 'end'} class:markdown-heading-line={line.headingLevel !== undefined} class:markdown-heading-divider={line.headingLevel !== undefined && line.headingLevel <= 2 && markdownRenderSettings.showHeadingDividers} class:styled-text-geometry={line.headingLevel !== undefined} style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize}; {getMarkdownHeadingLineStyle(line.headingLevel)}">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
                   {/if}
                 {/each}
               </div>
@@ -5647,8 +5703,8 @@
         {/if}
         <span class="status-item">{t('status.lineColumn', { line: cursorLine, column: cursorCol })}</span>
         <span class="status-item">100%</span>
-        <span class="status-item">Windows (CRLF)</span>
-        <span class="status-item">UTF-8</span>
+        <span class="status-item">{getLineEndingLabel(fileContent)}</span>
+        <span class="status-item">{getTextEncodingLabel(fileEncoding)}</span>
       </div>
     </footer>
 
@@ -5795,6 +5851,36 @@
   }
   :global(.hl-key) {
     color: var(--color-hl-key-medium);
+  }
+  :global(.hl-pattern) {
+    color: var(--color-hl-key-strong);
+  }
+  :global(.hl-attribute) {
+    color: var(--color-hl-key-medium);
+    font-weight: 600;
+  }
+  :global(.hl-owner) {
+    color: var(--color-hl-string);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+    text-underline-offset: 0.12em;
+  }
+  :global(.hl-tag) {
+    color: var(--color-hl-key-strong);
+    font-weight: 650;
+  }
+  :global(.hl-directive) {
+    color: var(--color-hl-key-medium);
+    font-weight: 600;
+  }
+  :global(.hl-hash) {
+    color: var(--color-hl-string);
+    font-variant-numeric: tabular-nums;
+  }
+  :global(.hl-host) {
+    color: var(--color-hl-key-medium);
+    text-decoration: underline dotted color-mix(in srgb, currentColor 40%, transparent);
+    text-underline-offset: 0.14em;
   }
   :global(.hl-key-depth-0) {
     color: var(--color-hl-key-strong);
@@ -6440,6 +6526,36 @@
 
   .backdrop-line.markdown-heading-divider {
     box-shadow: inset 0 -1px color-mix(in srgb, var(--color-render-text, var(--text-color)) 18%, transparent);
+  }
+
+  .backdrop-line.configuration-section-line {
+    background-color: color-mix(in srgb, var(--color-hl-key-medium) 7%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--color-hl-key-medium) 45%, transparent);
+  }
+
+  .backdrop-line.configuration-negated-rule-line {
+    background-color: color-mix(in srgb, #d97706 5%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, #d97706 48%, transparent);
+  }
+
+  .backdrop-line.translation-source-line {
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--color-hl-key-medium) 38%, transparent);
+  }
+
+  .backdrop-line.translation-target-line {
+    background-color: color-mix(in srgb, #16a34a 4%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, #16a34a 42%, transparent);
+  }
+
+  .backdrop-line.translation-empty-line {
+    background-color: color-mix(in srgb, #d97706 7%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, #d97706 55%, transparent);
+  }
+
+  .backdrop-line.subject-line {
+    background-color: color-mix(in srgb, var(--color-hl-key-strong) 6%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--color-hl-key-strong) 48%, transparent);
+    font-weight: 650;
   }
 
   .backdrop-line.fenced-code-line {

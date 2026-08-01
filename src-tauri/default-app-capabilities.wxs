@@ -18,17 +18,60 @@
           <RegistryValue Name=".md" Type="string" Value="text-pad.md" />
           <RegistryValue Name=".markdown" Type="string" Value="text-pad.markdown" />
           <RegistryValue Name=".json" Type="string" Value="text-pad.json" />
+          <RegistryValue Name=".jsonc" Type="string" Value="text-pad.jsonc" />
           <RegistryValue Name=".jsonl" Type="string" Value="text-pad.jsonl" />
           <RegistryValue Name=".ndjson" Type="string" Value="text-pad.ndjson" />
+          <RegistryValue Name=".xml" Type="string" Value="text-pad.xml" />
+          <RegistryValue Name=".xsd" Type="string" Value="text-pad.xsd" />
+          <RegistryValue Name=".xsl" Type="string" Value="text-pad.xsl" />
+          <RegistryValue Name=".xslt" Type="string" Value="text-pad.xslt" />
+          <RegistryValue Name=".rss" Type="string" Value="text-pad.rss" />
+          <RegistryValue Name=".atom" Type="string" Value="text-pad.atom" />
+          <RegistryValue Name=".po" Type="string" Value="text-pad.po" />
+          <RegistryValue Name=".pot" Type="string" Value="text-pad.pot" />
           <RegistryValue Name=".csv" Type="string" Value="text-pad.csv" />
           <RegistryValue Name=".tsv" Type="string" Value="text-pad.tsv" />
           <RegistryValue Name=".yaml" Type="string" Value="text-pad.yaml" />
           <RegistryValue Name=".yml" Type="string" Value="text-pad.yml" />
+          <RegistryValue Name=".toml" Type="string" Value="text-pad.toml" />
           <RegistryValue Name=".ini" Type="string" Value="text-pad.ini" />
           <RegistryValue Name=".cfg" Type="string" Value="text-pad.cfg" />
           <RegistryValue Name=".conf" Type="string" Value="text-pad.conf" />
           <RegistryValue Name=".properties" Type="string" Value="text-pad.properties" />
           <RegistryValue Name=".env" Type="string" Value="text-pad.env" />
+          <RegistryValue Name=".gitignore" Type="string" Value="text-pad.gitignore" />
+          <RegistryValue Name=".gitattributes" Type="string" Value="text-pad.gitattributes" />
+          <RegistryValue Name=".gitconfig" Type="string" Value="text-pad.gitconfig" />
+          <RegistryValue Name=".gitmodules" Type="string" Value="text-pad.gitmodules" />
+          <RegistryValue Name=".editorconfig" Type="string" Value="text-pad.editorconfig" />
+          <RegistryValue Name=".npmrc" Type="string" Value="text-pad.npmrc" />
+          <RegistryValue Name=".dockerignore" Type="string" Value="text-pad.dockerignore" />
+          <RegistryValue Name=".ignore" Type="string" Value="text-pad.ignore" />
+          <RegistryValue Name=".npmignore" Type="string" Value="text-pad.npmignore" />
+          <RegistryValue Name=".prettierignore" Type="string" Value="text-pad.prettierignore" />
+          <RegistryValue Name=".eslintignore" Type="string" Value="text-pad.eslintignore" />
+          <RegistryValue Name=".stylelintignore" Type="string" Value="text-pad.stylelintignore" />
+          <RegistryValue Name=".helmignore" Type="string" Value="text-pad.helmignore" />
+          <RegistryValue Name=".vercelignore" Type="string" Value="text-pad.vercelignore" />
+          <RegistryValue Name=".cursorignore" Type="string" Value="text-pad.cursorignore" />
+          <RegistryValue Name=".rgignore" Type="string" Value="text-pad.rgignore" />
+          <RegistryValue Name=".fdignore" Type="string" Value="text-pad.fdignore" />
+          <RegistryValue Name=".gitmessage" Type="string" Value="text-pad.gitmessage" />
+          <RegistryValue Name=".mailmap" Type="string" Value="text-pad.mailmap" />
+          <RegistryValue Name=".reg" Type="string" Value="text-pad.reg" />
+          <RegistryValue Name=".service" Type="string" Value="text-pad.service" />
+          <RegistryValue Name=".socket" Type="string" Value="text-pad.socket" />
+          <RegistryValue Name=".timer" Type="string" Value="text-pad.timer" />
+          <RegistryValue Name=".target" Type="string" Value="text-pad.target" />
+          <RegistryValue Name=".path" Type="string" Value="text-pad.path" />
+          <RegistryValue Name=".mount" Type="string" Value="text-pad.mount" />
+          <RegistryValue Name=".automount" Type="string" Value="text-pad.automount" />
+          <RegistryValue Name=".swap" Type="string" Value="text-pad.swap" />
+          <RegistryValue Name=".slice" Type="string" Value="text-pad.slice" />
+          <RegistryValue Name=".scope" Type="string" Value="text-pad.scope" />
+          <RegistryValue Name=".network" Type="string" Value="text-pad.network" />
+          <RegistryValue Name=".netdev" Type="string" Value="text-pad.netdev" />
+          <RegistryValue Name=".link" Type="string" Value="text-pad.link" />
           <RegistryValue Name=".log" Type="string" Value="text-pad.log" />
           <RegistryValue Name=".srt" Type="string" Value="text-pad.srt" />
           <RegistryValue Name=".vtt" Type="string" Value="text-pad.vtt" />
@@ -45,17 +88,60 @@
             <RegistryValue Name=".md" Type="string" Value="" />
             <RegistryValue Name=".markdown" Type="string" Value="" />
             <RegistryValue Name=".json" Type="string" Value="" />
+            <RegistryValue Name=".jsonc" Type="string" Value="" />
             <RegistryValue Name=".jsonl" Type="string" Value="" />
             <RegistryValue Name=".ndjson" Type="string" Value="" />
+            <RegistryValue Name=".xml" Type="string" Value="" />
+            <RegistryValue Name=".xsd" Type="string" Value="" />
+            <RegistryValue Name=".xsl" Type="string" Value="" />
+            <RegistryValue Name=".xslt" Type="string" Value="" />
+            <RegistryValue Name=".rss" Type="string" Value="" />
+            <RegistryValue Name=".atom" Type="string" Value="" />
+            <RegistryValue Name=".po" Type="string" Value="" />
+            <RegistryValue Name=".pot" Type="string" Value="" />
             <RegistryValue Name=".csv" Type="string" Value="" />
             <RegistryValue Name=".tsv" Type="string" Value="" />
             <RegistryValue Name=".yaml" Type="string" Value="" />
             <RegistryValue Name=".yml" Type="string" Value="" />
+            <RegistryValue Name=".toml" Type="string" Value="" />
             <RegistryValue Name=".ini" Type="string" Value="" />
             <RegistryValue Name=".cfg" Type="string" Value="" />
             <RegistryValue Name=".conf" Type="string" Value="" />
             <RegistryValue Name=".properties" Type="string" Value="" />
             <RegistryValue Name=".env" Type="string" Value="" />
+            <RegistryValue Name=".gitignore" Type="string" Value="" />
+            <RegistryValue Name=".gitattributes" Type="string" Value="" />
+            <RegistryValue Name=".gitconfig" Type="string" Value="" />
+            <RegistryValue Name=".gitmodules" Type="string" Value="" />
+            <RegistryValue Name=".editorconfig" Type="string" Value="" />
+            <RegistryValue Name=".npmrc" Type="string" Value="" />
+            <RegistryValue Name=".dockerignore" Type="string" Value="" />
+            <RegistryValue Name=".ignore" Type="string" Value="" />
+            <RegistryValue Name=".npmignore" Type="string" Value="" />
+            <RegistryValue Name=".prettierignore" Type="string" Value="" />
+            <RegistryValue Name=".eslintignore" Type="string" Value="" />
+            <RegistryValue Name=".stylelintignore" Type="string" Value="" />
+            <RegistryValue Name=".helmignore" Type="string" Value="" />
+            <RegistryValue Name=".vercelignore" Type="string" Value="" />
+            <RegistryValue Name=".cursorignore" Type="string" Value="" />
+            <RegistryValue Name=".rgignore" Type="string" Value="" />
+            <RegistryValue Name=".fdignore" Type="string" Value="" />
+            <RegistryValue Name=".gitmessage" Type="string" Value="" />
+            <RegistryValue Name=".mailmap" Type="string" Value="" />
+            <RegistryValue Name=".reg" Type="string" Value="" />
+            <RegistryValue Name=".service" Type="string" Value="" />
+            <RegistryValue Name=".socket" Type="string" Value="" />
+            <RegistryValue Name=".timer" Type="string" Value="" />
+            <RegistryValue Name=".target" Type="string" Value="" />
+            <RegistryValue Name=".path" Type="string" Value="" />
+            <RegistryValue Name=".mount" Type="string" Value="" />
+            <RegistryValue Name=".automount" Type="string" Value="" />
+            <RegistryValue Name=".swap" Type="string" Value="" />
+            <RegistryValue Name=".slice" Type="string" Value="" />
+            <RegistryValue Name=".scope" Type="string" Value="" />
+            <RegistryValue Name=".network" Type="string" Value="" />
+            <RegistryValue Name=".netdev" Type="string" Value="" />
+            <RegistryValue Name=".link" Type="string" Value="" />
             <RegistryValue Name=".log" Type="string" Value="" />
             <RegistryValue Name=".srt" Type="string" Value="" />
             <RegistryValue Name=".vtt" Type="string" Value="" />

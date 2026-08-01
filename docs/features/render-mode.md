@@ -28,9 +28,15 @@
 - 데이터 파일 형식의 불리언, 즉 참/거짓 값.
 - `.json` 파일의 키, 문자열 값, 숫자, `true`, `false`, `null`, 콜론, 쉼표, 중괄호, 대괄호.
 - `.json` 파일의 문법 오류 상태와 오류가 있는 줄 표시.
+- `.jsonc`, `tsconfig.json`, `jsconfig.json`, `.vscode` 설정 파일의 JSON 구조, 줄·블록 주석, 후행 쉼표와 문법 오류 표시.
 - `.jsonl`, `.ndjson` 파일의 줄별 JSON 값과 잘못된 줄 표시.
+- `.xml`, `.xsd`, `.xsl`, `.xslt`, `.rss`, `.atom` 파일의 요소, 속성, 문자열, 엔터티, 처리 지시, CDATA와 well-formedness 오류 표시.
+- `.po`, `.pot` 파일의 원문, 번역, 문맥, 참조, 플래그와 미번역 상태 표시.
 - `.md`, `.markdown` 파일의 제목 단계, 링크, 굵은 강조, 기울임 강조, 인용 표식, 목록, 인라인·울타리 코드.
-- `.ini`, `.cfg`, `.conf`, `.properties`, `.env` 파일의 섹션, 키, 연산자, 값, 주석.
+- `.toml`, `Cargo.lock`, `poetry.lock`, `.ini`, `.cfg`, `.conf`, `.properties`, `.env`, `.env.*`, `.gitconfig`, `.gitmodules`, `.editorconfig`, `.npmrc` 파일의 섹션, 키, 연산자, 값, 주석.
+- `.gitignore`, `.gitattributes`, `.dockerignore`, 일반 ignore 파일, `.git/info/exclude`, `.git/info/sparse-checkout`, `.git/info/attributes`, `CODEOWNERS`의 경로 패턴, 와일드카드, 속성, 담당자와 반전 규칙.
+- Git 커밋 메시지의 제목·트레일러·정리 주석, `.mailmap`의 신원·이메일, `.git-blame-ignore-revs`의 객체 ID.
+- `.reg`, OpenSSH 설정, systemd 단위 파일, hosts 파일의 경로·섹션·지시어·값·IP·호스트 매핑.
 - `.log` 파일의 시간과 TRACE/DEBUG/INFO/WARN/ERROR/FATAL 심각도.
 - `.srt`, `.vtt`, `.lrc` 파일의 큐 번호, 시간, 메타데이터, 대사와 형식 오류 줄.
 - `.yaml`, `.yml` 파일의 키, 값, 목록 표식, 주석, 문서 구분자, 블록 문자열 표식.
@@ -41,22 +47,16 @@
 
 ## 파일 형식별 주석
 
-주석은 파일 이름의 마지막 점 뒤 문자열인 확장자에 맞는 문법만 인식한다. 확장자가 없거나 아래 목록에 없으면 주석 강조를 하지 않는다.
+주석은 중앙 형식 등록부가 확장자, 관례적 파일명 또는 경로 패턴으로 판별한 형식의 문법만 인식한다. 프로그래밍 언어 파일은 지원 형식으로 판별하지 않는다.
 
-- `.bash`, `.py`, `.r`, `.rb`, `.sh`, `.toml`, `.yaml`, `.yml`, `.zsh`: `#`.
-- `.c`, `.cpp`, `.cs`, `.go`, `.h`, `.java`, `.js`, `.jsx`, `.kt`, `.rs`, `.swift`, `.ts`, `.tsx`: `//`, `/* ... */`.
-- `.php`: `//`, `#`, `/* ... */`.
-- `.css`: `/* ... */`.
-- `.html`, `.md`, `.svg`, `.xml`: `<!-- ... -->`.
-- `.ini`, `.cfg`, `.conf`: 줄 첫 공백 뒤의 `;` 또는 `#`.
+- `.md`, `.markdown`: `<!-- ... -->`.
+- XML: `<!-- ... -->`.
+- `.jsonc`와 JSONC로 판별한 설정 파일: `//`, `/* ... */`.
+- `.toml`, YAML, ENV, Gettext, Git·일반 ignore/attributes, Docker ignore, CODEOWNERS, OpenSSH, hosts: `#`.
+- `.ini`, `.cfg`, `.conf`, Git config, EditorConfig, npmrc: 줄 첫 공백 뒤의 `;` 또는 `#`.
+- systemd: 줄 첫 공백 뒤의 `#` 또는 `;`.
+- REG: 줄 첫 공백 뒤의 `;`.
 - `.properties`: 줄 첫 공백 뒤의 `#` 또는 `!`.
-- `.env`: 줄 첫 공백 뒤의 `#`.
-- `.bat`, `.cmd`: 줄 첫 공백 뒤의 `REM` 또는 `::`.
-- `.ps1`: `#`, `<# ... #>`.
-- `.sql`: `--`, `/* ... */`.
-- `.lua`: `--`, `--[[ ... ]]`.
-- `.vim`: `"`.
-- `.jsonc`: `//`, `/* ... */`.
 
 일반 소설, 로그, 표 데이터처럼 `.txt`, `.log`, `.csv`, `.tsv` 파일은 주석 강조 대상이 아니다.
 `.json` 파일은 주석을 허용하지 않으며, 주석처럼 보이는 텍스트도 JSON 문법 오류로 검사한다.
@@ -67,7 +67,7 @@
 - 렌더 표시를 끄면 해당 형식의 강조, 주석 인식, JSON과 YAML 문법 검사 같은 형식별 렌더 모듈을 쓰지 않고 기본 텍스트 줄만 표시한다.
 - 렌더 편집을 끄면 렌더 레이어에서 보이는 토큰을 클릭해 원문을 바꾸는 동작을 막는다.
 - 렌더 편집은 렌더 표시가 켜져 있을 때만 의미가 있다. 렌더 표시가 꺼진 형식에서는 클릭 편집도 실행하지 않는다.
-- 현재 설정 대상 형식은 `텍스트`, `Markdown`, `JSON`, `JSON Lines`, `CSV`, `TSV`, `YAML`, `INI/CFG`, `CONF`, `Properties`, `ENV`, `LOG`, `SRT`, `WebVTT`, `LRC`, `JavaScript`, `TypeScript`, `Rust`, `HTML`, `CSS`다. 프로그래밍 언어 형식은 설정 가능하지만 제품 지원·설치 연결 목록에는 포함하지 않는다.
+- 현재 설정 대상 형식은 중앙 등록부의 34개 형식이다. `텍스트`, `Markdown`, `Gettext`, `LOG`, `JSON`, `JSONC`, `JSON Lines`, `XML`, `YAML`, `TOML`, `INI/CFG`, `CONF`, `Properties`, `ENV`, `Windows 레지스트리`, `OpenSSH 설정`, `systemd`, `hosts`, Git·일반 ignore·프로젝트 설정, `CSV`, `TSV`, `SRT`, `WebVTT`, `LRC`를 포함한다. 프로그래밍 언어 파일은 설정 및 제품 지원 목록에서 제외한다.
 
 ## CSV/TSV 표 표시와 편집
 
@@ -93,6 +93,28 @@
 - 문법 오류가 있으면 상단 오류 표시와 상태 표시줄에 행과 열을 표시하고, 해당 줄의 줄 번호와 배경을 표시한다.
 - 문법 오류가 있어도 원문 편집과 저장은 막지 않는다.
 - JSON 렌더링은 기존 렌더 모드의 글꼴, 글자 크기, 탭 크기, 괄호 깊이 색상, 문자열 색상, 숫자 색상을 재사용한다.
+
+## JSONC, TOML과 프로젝트 설정 표시
+
+- `.jsonc`, `tsconfig.json`, `jsconfig.json`, `.vscode/settings.json`, `.vscode/tasks.json`, `.vscode/launch.json`은 JSONC로 판별한다. 키·값·괄호 표시와 불리언 클릭 편집은 JSON과 같고, 줄 주석과 블록 주석 및 후행 쉼표를 허용해 검사한다.
+- `.toml`, `Cargo.lock`, `poetry.lock`은 TOML로 판별한다. 테이블과 테이블 배열, 키, 대입 연산자, 문자열, 숫자, 불리언, 주석을 구분하고 `smol-toml` 해석기를 기준으로 오류 행과 열을 표시한다.
+- `.gitignore`, `.dockerignore`, `.git/info/exclude`, `.git/info/sparse-checkout`, 사용자 Git ignore 경로와 `.ignore`, `.npmignore`, `.prettierignore` 같은 일반 ignore 파일은 경로 부분과 `*`, `**`, `?`, 문자 범위, 디렉터리 구분자, 앞쪽 `!` 반전 규칙을 구분한다. 반전 규칙 줄에는 은은한 강조선을 표시한다.
+- `.gitattributes`와 `.git/info/attributes`는 첫 열의 경로 패턴과 뒤쪽 속성, 속성 해제 `-`, 미지정 `!`, 값 대입 `=`을 구분한다.
+- `.gitconfig`, `.gitmodules`, `.git/config`, `.git/config.worktree`, `.editorconfig`, `.npmrc`는 섹션, 키, 대입 연산자, 값, 주석을 구분한다. 섹션 줄에는 본문과 겹치지 않는 배경 강조를 표시한다.
+- `CODEOWNERS`는 첫 열의 경로 패턴과 뒤쪽의 사용자·팀 담당자를 구분한다. 담당자는 밑줄과 전용 색으로 표시한다.
+- `.gitmessage`, `COMMIT_EDITMSG`, `MERGE_MSG`, `TAG_EDITMSG`, `SQUASH_MSG`는 첫 유효 줄을 제목으로 강조하고 본문, `Signed-off-by` 같은 트레일러, 정리 주석과 가위 표식을 구분한다. 제목 길이 권고는 문법 오류로 취급하지 않는다.
+- `.mailmap`은 대표 신원과 별칭 이메일을 구분하고, `.git-blame-ignore-revs`는 40자리 SHA-1 또는 64자리 SHA-256 객체 ID와 주석을 구분한다.
+- 패턴 및 프로젝트 설정 형식의 진단은 빈 반전 규칙, 금지된 Git attributes 반전 패턴, 담당자 표기 누락, 닫히지 않은 섹션처럼 구현 간 차이 없이 명백한 오류만 보고한다.
+- 모든 표시는 토큰 위치와 원문을 일대일로 유지한다. 렌더 편집 중에도 줄, 공백, 인용부호, 패턴, 속성, 담당자를 자동 정렬하거나 다시 쓰지 않는다.
+
+## XML, Gettext와 운영체제 설정 표시
+
+- XML은 요소 이름을 굵은 주색, 속성을 보조색, 값과 CDATA를 문자열색, 엔터티와 처리 지시를 표식색으로 구분한다. `fast-xml-parser`의 well-formedness 검사를 사용하며 DTD 스키마 유효성 검사는 수행하지 않는다.
+- Gettext PO/POT는 `msgid` 원문에 파란 강조선, 번역된 `msgstr`에 녹색 강조선, 실제로 비어 있는 번역에 주황색 배경을 표시한다. 헤더 항목과 뒤에 문자열이 이어지는 여러 줄 `msgstr ""`은 미번역으로 표시하지 않는다.
+- REG는 헤더, 레지스트리 키 경로, 값 이름, `dword:`·`hex:` 데이터 형식, 숫자 바이트, 삭제 표식과 여러 줄 연속 값을 구분한다. 앱은 REG를 레지스트리에 가져오지 않고 텍스트만 편집한다.
+- OpenSSH 설정은 `Host`와 `Match` 범위를 섹션으로, 호스트 패턴과 지시어·값·주석을 구분한다. 새 OpenSSH 버전의 지시어를 막지 않도록 지시어 이름을 고정 목록으로 검사하지 않는다.
+- systemd 단위 파일은 섹션, 지시어, 값, `%i` 같은 지정자, 환경 변수와 백슬래시 연속 줄을 구분한다. 빈 대입으로 값을 초기화하는 문법을 허용한다.
+- hosts 파일은 IPv4·IPv6 주소, 하나 이상의 호스트 별칭과 인라인 주석을 구분한다. 명백히 잘못된 주소나 호스트 토큰만 오류로 표시한다.
 
 ## YAML 표시와 검사
 

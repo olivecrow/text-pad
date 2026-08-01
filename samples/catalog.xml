@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Human-editable catalog sample -->
+<catalog updated="2026-08-01">
+  <book id="intro" available="true">
+    <title>Editing &amp; Rendering</title>
+    <summary><![CDATA[Keep <source> text exact while styling it.]]></summary>
+  </book>
+</catalog>

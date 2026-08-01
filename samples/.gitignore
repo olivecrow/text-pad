@@ -1,0 +1,7 @@
+# Build output and local caches
+/build/
+.cache/
+*.log
+
+# Keep the checked-in example
+!examples/important.log

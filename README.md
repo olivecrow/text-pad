@@ -7,7 +7,7 @@
 - Open, edit, save, and create copies of local text files with Save As.
 - Work with multiple files in a tabbed interface.
 - Switch between Source Mode and Render Mode.
-- Edit JSON, YAML, CSV, and TSV documents with format-aware rendering.
+- Edit JSON/JSONC, XML, YAML, TOML, Gettext catalogs, Git and workspace configuration, Windows Registry exports, OpenSSH/systemd settings, hosts files, CSV, and TSV text with format-aware rendering.
 - Use natural editing helpers for paired characters, lists, indentation, and code blocks.
 - Customize font size, tab width, render colors, and render fonts.
 - Save separate render color preferences for light, dark, and system themes.

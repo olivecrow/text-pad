@@ -8,6 +8,7 @@ import {
   type TokenizeState
 } from './render-tokenizer';
 import { parseAllDocuments as parseYamlDocuments, type YAMLParseError } from 'yaml';
+import { parse as parseJsonc, type ParseError as JsoncParseError } from 'jsonc-parser';
 import {
   getIndentDepth,
   getIndentInfo,
@@ -28,6 +29,17 @@ import {
 } from './line-oriented-formats';
 import type { MarkdownRenderSettings } from './markdown-settings';
 import { getDelimitedTableSyntaxError } from './delimited-table';
+import {
+  getTextConfigurationDiagnostic,
+  parseTextConfigurationFormat,
+  type TextConfigurationFormatId
+} from './text-configuration-formats';
+import { getXmlDiagnostic, parseXmlFormat } from './xml-format';
+import {
+  getSpecializedTextDiagnostic,
+  parseSpecializedTextFormat,
+  type SpecializedTextFormatId
+} from './specialized-text-formats';
 
 export type ParsedLine = StructuredParsedLine;
 
@@ -43,25 +55,39 @@ export type DocumentFormatId =
   | 'plain'
   | 'markdown'
   | 'json'
+  | 'jsonc'
   | 'jsonlines'
+  | 'xml'
+  | 'gettext'
   | 'csv'
   | 'tsv'
   | 'yaml'
+  | 'toml'
   | 'ini'
   | 'conf'
   | 'properties'
   | 'dotenv'
+  | 'registry'
+  | 'sshconfig'
+  | 'systemd'
+  | 'hosts'
   | 'log'
   | 'srt'
   | 'webvtt'
   | 'lrc'
-  | 'javascript'
-  | 'typescript'
-  | 'rust'
-  | 'html'
-  | 'css';
+  | 'gitignore'
+  | 'gitattributes'
+  | 'gitconfig'
+  | 'editorconfig'
+  | 'npmrc'
+  | 'dockerignore'
+  | 'ignore'
+  | 'codeowners'
+  | 'gitmessage'
+  | 'gitmailmap'
+  | 'gitblame';
 
-export type DocumentFormatCategoryId = 'document' | 'structured' | 'table' | 'subtitle' | 'code';
+export type DocumentFormatCategoryId = 'document' | 'structured' | 'project' | 'table' | 'subtitle';
 
 export interface DocumentFormatCategory {
   id: DocumentFormatCategoryId;
@@ -125,6 +151,9 @@ const hashCommentSyntax: CommentSyntax = {
 interface SupportedTextFormatManifestEntry {
   id: DocumentFormatId;
   extensions: string[];
+  fileNames?: string[];
+  fileNamePatterns?: string[];
+  pathPatterns?: string[];
   sample: string;
 }
 
@@ -168,6 +197,17 @@ const jsonFormat: DocumentFormat = {
   editDescriptionKey: 'format.json.edit'
 };
 
+const jsoncFormat: DocumentFormat = {
+  id: 'jsonc',
+  labelKey: 'format.jsonc.label',
+  extensions: getSupportedExtensions('jsonc', ['jsonc']),
+  defaultExtension: 'jsonc',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.json.render',
+  editDescriptionKey: 'format.json.edit',
+  commentSyntax: cFamilyCommentSyntax
+};
+
 const jsonLinesFormat: DocumentFormat = {
   id: 'jsonlines',
   labelKey: 'format.jsonlines.label',
@@ -176,6 +216,28 @@ const jsonLinesFormat: DocumentFormat = {
   validatesSyntax: true,
   renderDescriptionKey: 'format.jsonlines.render',
   editDescriptionKey: 'format.jsonlines.edit'
+};
+
+const xmlFormat: DocumentFormat = {
+  id: 'xml',
+  labelKey: 'format.xml.label',
+  extensions: getSupportedExtensions('xml', ['xml']),
+  defaultExtension: 'xml',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.markup.render',
+  editDescriptionKey: 'format.markup.edit',
+  commentSyntax: { block: [htmlBlockComment] }
+};
+
+const gettextFormat: DocumentFormat = {
+  id: 'gettext',
+  labelKey: 'format.gettext.label',
+  extensions: getSupportedExtensions('gettext', ['po', 'pot']),
+  defaultExtension: 'po',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.translation.render',
+  editDescriptionKey: 'format.translation.edit',
+  commentSyntax: hashCommentSyntax
 };
 
 const csvFormat: DocumentFormat = {
@@ -206,6 +268,17 @@ const yamlFormat: DocumentFormat = {
   validatesSyntax: true,
   renderDescriptionKey: 'format.yaml.render',
   editDescriptionKey: 'format.yaml.edit',
+  commentSyntax: hashCommentSyntax
+};
+
+const tomlFormat: DocumentFormat = {
+  id: 'toml',
+  labelKey: 'format.toml.label',
+  extensions: getSupportedExtensions('toml', ['toml']),
+  defaultExtension: 'toml',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.config.render',
+  editDescriptionKey: 'format.config.edit',
   commentSyntax: hashCommentSyntax
 };
 
@@ -253,6 +326,171 @@ const dotenvFormat: DocumentFormat = {
   commentSyntax: hashCommentSyntax
 };
 
+const registryFormat: DocumentFormat = {
+  id: 'registry',
+  labelKey: 'format.registry.label',
+  extensions: getSupportedExtensions('registry', ['reg']),
+  defaultExtension: 'reg',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.registry.render',
+  editDescriptionKey: 'format.registry.edit',
+  commentSyntax: { line: [semicolonLineComment] }
+};
+
+const sshConfigFormat: DocumentFormat = {
+  id: 'sshconfig',
+  labelKey: 'format.sshconfig.label',
+  extensions: getSupportedExtensions('sshconfig', []),
+  defaultExtension: '',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.directive.render',
+  editDescriptionKey: 'format.directive.edit',
+  commentSyntax: hashCommentSyntax
+};
+
+const systemdFormat: DocumentFormat = {
+  id: 'systemd',
+  labelKey: 'format.systemd.label',
+  extensions: getSupportedExtensions('systemd', ['service']),
+  defaultExtension: 'service',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.directive.render',
+  editDescriptionKey: 'format.directive.edit',
+  commentSyntax: { line: [hashLineComment, semicolonLineComment] }
+};
+
+const hostsFormat: DocumentFormat = {
+  id: 'hosts',
+  labelKey: 'format.hosts.label',
+  extensions: getSupportedExtensions('hosts', []),
+  defaultExtension: '',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.hosts.render',
+  editDescriptionKey: 'format.hosts.edit',
+  commentSyntax: hashCommentSyntax
+};
+
+const gitIgnoreFormat: DocumentFormat = {
+  id: 'gitignore',
+  labelKey: 'format.gitignore.label',
+  extensions: getSupportedExtensions('gitignore', ['gitignore']),
+  defaultExtension: 'gitignore',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.pattern.render',
+  editDescriptionKey: 'format.pattern.edit',
+  commentSyntax: hashCommentSyntax
+};
+
+const gitAttributesFormat: DocumentFormat = {
+  id: 'gitattributes',
+  labelKey: 'format.gitattributes.label',
+  extensions: getSupportedExtensions('gitattributes', ['gitattributes']),
+  defaultExtension: 'gitattributes',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.pattern.render',
+  editDescriptionKey: 'format.pattern.edit',
+  commentSyntax: hashCommentSyntax
+};
+
+const gitConfigFormat: DocumentFormat = {
+  id: 'gitconfig',
+  labelKey: 'format.gitconfig.label',
+  extensions: getSupportedExtensions('gitconfig', ['gitconfig', 'gitmodules']),
+  defaultExtension: 'gitconfig',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.config.render',
+  editDescriptionKey: 'format.config.edit',
+  commentSyntax: { line: [semicolonLineComment, iniHashLineComment] }
+};
+
+const editorConfigFormat: DocumentFormat = {
+  id: 'editorconfig',
+  labelKey: 'format.editorconfig.label',
+  extensions: getSupportedExtensions('editorconfig', ['editorconfig']),
+  defaultExtension: 'editorconfig',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.config.render',
+  editDescriptionKey: 'format.config.edit',
+  commentSyntax: { line: [semicolonLineComment, iniHashLineComment] }
+};
+
+const npmRcFormat: DocumentFormat = {
+  id: 'npmrc',
+  labelKey: 'format.npmrc.label',
+  extensions: getSupportedExtensions('npmrc', ['npmrc']),
+  defaultExtension: 'npmrc',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.config.render',
+  editDescriptionKey: 'format.config.edit',
+  commentSyntax: { line: [semicolonLineComment, iniHashLineComment] }
+};
+
+const dockerIgnoreFormat: DocumentFormat = {
+  id: 'dockerignore',
+  labelKey: 'format.dockerignore.label',
+  extensions: getSupportedExtensions('dockerignore', ['dockerignore']),
+  defaultExtension: 'dockerignore',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.pattern.render',
+  editDescriptionKey: 'format.pattern.edit',
+  commentSyntax: hashCommentSyntax
+};
+
+const ignoreFormat: DocumentFormat = {
+  id: 'ignore',
+  labelKey: 'format.ignore.label',
+  extensions: getSupportedExtensions('ignore', ['ignore']),
+  defaultExtension: 'ignore',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.pattern.render',
+  editDescriptionKey: 'format.pattern.edit',
+  commentSyntax: hashCommentSyntax
+};
+
+const codeOwnersFormat: DocumentFormat = {
+  id: 'codeowners',
+  labelKey: 'format.codeowners.label',
+  extensions: getSupportedExtensions('codeowners', []),
+  defaultExtension: '',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.pattern.render',
+  editDescriptionKey: 'format.pattern.edit',
+  commentSyntax: hashCommentSyntax
+};
+
+const gitMessageFormat: DocumentFormat = {
+  id: 'gitmessage',
+  labelKey: 'format.gitmessage.label',
+  extensions: getSupportedExtensions('gitmessage', ['gitmessage']),
+  defaultExtension: 'gitmessage',
+  validatesSyntax: false,
+  renderDescriptionKey: 'format.gitmessage.render',
+  editDescriptionKey: 'format.gitmessage.edit',
+  commentSyntax: hashCommentSyntax
+};
+
+const gitMailmapFormat: DocumentFormat = {
+  id: 'gitmailmap',
+  labelKey: 'format.gitmailmap.label',
+  extensions: getSupportedExtensions('gitmailmap', ['mailmap']),
+  defaultExtension: 'mailmap',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.identity.render',
+  editDescriptionKey: 'format.identity.edit',
+  commentSyntax: hashCommentSyntax
+};
+
+const gitBlameFormat: DocumentFormat = {
+  id: 'gitblame',
+  labelKey: 'format.gitblame.label',
+  extensions: getSupportedExtensions('gitblame', []),
+  defaultExtension: '',
+  validatesSyntax: true,
+  renderDescriptionKey: 'format.hashlist.render',
+  editDescriptionKey: 'format.hashlist.edit',
+  commentSyntax: hashCommentSyntax
+};
+
 const logFormat: DocumentFormat = {
   id: 'log',
   labelKey: 'format.log.label',
@@ -293,82 +531,41 @@ const lrcFormat: DocumentFormat = {
   editDescriptionKey: 'format.subtitle.edit'
 };
 
-const javascriptFormat: DocumentFormat = {
-  id: 'javascript',
-  labelKey: 'format.javascript.label',
-  extensions: ['js'],
-  defaultExtension: 'js',
-  validatesSyntax: false,
-  renderDescriptionKey: 'format.render.generic',
-  editDescriptionKey: 'format.edit.generic',
-  commentSyntax: cFamilyCommentSyntax
-};
-
-const typescriptFormat: DocumentFormat = {
-  id: 'typescript',
-  labelKey: 'format.typescript.label',
-  extensions: ['ts'],
-  defaultExtension: 'ts',
-  validatesSyntax: false,
-  renderDescriptionKey: 'format.render.generic',
-  editDescriptionKey: 'format.edit.generic',
-  commentSyntax: cFamilyCommentSyntax
-};
-
-const rustFormat: DocumentFormat = {
-  id: 'rust',
-  labelKey: 'format.rust.label',
-  extensions: ['rs'],
-  defaultExtension: 'rs',
-  validatesSyntax: false,
-  renderDescriptionKey: 'format.render.generic',
-  editDescriptionKey: 'format.edit.generic',
-  commentSyntax: cFamilyCommentSyntax
-};
-
-const htmlFormat: DocumentFormat = {
-  id: 'html',
-  labelKey: 'format.html.label',
-  extensions: ['html'],
-  defaultExtension: 'html',
-  validatesSyntax: false,
-  renderDescriptionKey: 'format.render.generic',
-  editDescriptionKey: 'format.edit.generic',
-  commentSyntax: { block: [htmlBlockComment] }
-};
-
-const cssFormat: DocumentFormat = {
-  id: 'css',
-  labelKey: 'format.css.label',
-  extensions: ['css'],
-  defaultExtension: 'css',
-  validatesSyntax: false,
-  renderDescriptionKey: 'format.render.generic',
-  editDescriptionKey: 'format.edit.generic',
-  commentSyntax: { block: [cBlockComment] }
-};
-
 export const configurableDocumentFormats = [
   plainTextFormat,
   markdownFormat,
   jsonFormat,
+  jsoncFormat,
   jsonLinesFormat,
+  xmlFormat,
+  gettextFormat,
   csvFormat,
   tsvFormat,
   yamlFormat,
+  tomlFormat,
   iniFormat,
   confFormat,
   propertiesFormat,
   dotenvFormat,
+  registryFormat,
+  sshConfigFormat,
+  systemdFormat,
+  hostsFormat,
+  gitIgnoreFormat,
+  gitAttributesFormat,
+  gitConfigFormat,
+  editorConfigFormat,
+  npmRcFormat,
+  dockerIgnoreFormat,
+  ignoreFormat,
+  codeOwnersFormat,
+  gitMessageFormat,
+  gitMailmapFormat,
+  gitBlameFormat,
   logFormat,
   srtFormat,
   webVttFormat,
-  lrcFormat,
-  javascriptFormat,
-  typescriptFormat,
-  rustFormat,
-  htmlFormat,
-  cssFormat
+  lrcFormat
 ];
 
 export const configurableDocumentFormatCategories: DocumentFormatCategory[] = [
@@ -376,13 +573,19 @@ export const configurableDocumentFormatCategories: DocumentFormatCategory[] = [
     id: 'document',
     labelKey: 'category.document.label',
     descriptionKey: 'category.document.description',
-    formatIds: ['plain', 'markdown', 'log']
+    formatIds: ['plain', 'markdown', 'gettext', 'log']
   },
   {
     id: 'structured',
     labelKey: 'category.structured.label',
     descriptionKey: 'category.structured.description',
-    formatIds: ['json', 'jsonlines', 'yaml', 'ini', 'conf', 'properties', 'dotenv']
+    formatIds: ['json', 'jsonc', 'jsonlines', 'xml', 'yaml', 'toml', 'ini', 'conf', 'properties', 'dotenv', 'registry', 'sshconfig', 'systemd', 'hosts']
+  },
+  {
+    id: 'project',
+    labelKey: 'category.project.label',
+    descriptionKey: 'category.project.description',
+    formatIds: ['gitignore', 'gitattributes', 'gitconfig', 'gitmessage', 'gitmailmap', 'gitblame', 'editorconfig', 'npmrc', 'dockerignore', 'ignore', 'codeowners']
   },
   {
     id: 'table',
@@ -395,12 +598,6 @@ export const configurableDocumentFormatCategories: DocumentFormatCategory[] = [
     labelKey: 'category.subtitle.label',
     descriptionKey: 'category.subtitle.description',
     formatIds: ['srt', 'webvtt', 'lrc']
-  },
-  {
-    id: 'code',
-    labelKey: 'category.code.label',
-    descriptionKey: 'category.code.description',
-    formatIds: ['javascript', 'typescript', 'rust', 'html', 'css']
   }
 ];
 
@@ -413,23 +610,37 @@ export function createDefaultDocumentFeatureSettings(): DocumentFeatureSettings 
     plain: { render: true, edit: true },
     markdown: { render: true, edit: true },
     json: { render: true, edit: true },
+    jsonc: { render: true, edit: true },
     jsonlines: { render: true, edit: true },
+    xml: { render: true, edit: true },
+    gettext: { render: true, edit: true },
     csv: { render: true, edit: true },
     tsv: { render: true, edit: true },
     yaml: { render: true, edit: true },
+    toml: { render: true, edit: true },
     ini: { render: true, edit: true },
     conf: { render: true, edit: true },
     properties: { render: true, edit: true },
     dotenv: { render: true, edit: true },
+    registry: { render: true, edit: true },
+    sshconfig: { render: true, edit: true },
+    systemd: { render: true, edit: true },
+    hosts: { render: true, edit: true },
+    gitignore: { render: true, edit: true },
+    gitattributes: { render: true, edit: true },
+    gitconfig: { render: true, edit: true },
+    editorconfig: { render: true, edit: true },
+    npmrc: { render: true, edit: true },
+    dockerignore: { render: true, edit: true },
+    ignore: { render: true, edit: true },
+    codeowners: { render: true, edit: true },
+    gitmessage: { render: true, edit: true },
+    gitmailmap: { render: true, edit: true },
+    gitblame: { render: true, edit: true },
     log: { render: true, edit: true },
     srt: { render: true, edit: true },
     webvtt: { render: true, edit: true },
-    lrc: { render: true, edit: true },
-    javascript: { render: true, edit: true },
-    typescript: { render: true, edit: true },
-    rust: { render: true, edit: true },
-    html: { render: true, edit: true },
-    css: { render: true, edit: true }
+    lrc: { render: true, edit: true }
   };
 }
 
@@ -474,22 +685,63 @@ export function getOpenFileDialogFilters(locale: AppLocale) {
     {
       name: translate(locale, 'filter.textFiles'),
       extensions: supportedTextExtensions
+    },
+    {
+      name: translate(locale, 'filter.allFiles'),
+      extensions: ['*']
     }
   ];
 }
 
 export function getSaveFileDialogFilters(locale: AppLocale) {
   return [
-    ...productSupportedDocumentFormats.map((format) => ({
+    ...productSupportedDocumentFormats.filter((format) => format.extensions.length > 0).map((format) => ({
       name: translate(locale, format.labelKey),
       extensions: format.extensions
     })),
     {
       name: translate(locale, 'filter.allSupportedTextFiles'),
       extensions: supportedTextExtensions
+    },
+    {
+      name: translate(locale, 'filter.allFiles'),
+      extensions: ['*']
     }
   ];
 }
+
+function globPatternToRegExp(pattern: string): RegExp {
+  let source = '^';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index] || '';
+    const next = pattern[index + 1] || '';
+    if (char === '*' && next === '*') {
+      if (pattern[index + 2] === '/') {
+        source += '(?:.*/)?';
+        index += 2;
+      } else {
+        source += '.*';
+        index += 1;
+      }
+    } else if (char === '*') {
+      source += '[^/]*';
+    } else if (char === '?') {
+      source += '[^/]';
+    } else {
+      source += char.replace(/[\\^$.*+?()[\]{}|]/gu, '\\$&');
+    }
+  }
+  return new RegExp(`${source}$`, 'u');
+}
+
+function matchesManifestEntry(pathOrName: string, entry: SupportedTextFormatManifestEntry): boolean {
+  const normalizedPath = pathOrName.split(/[?#]/u)[0].replaceAll('\\', '/');
+  const fileName = normalizedPath.split('/').pop() || normalizedPath;
+  if (entry.fileNames?.includes(fileName)) return true;
+  if (entry.fileNamePatterns?.some((pattern) => globPatternToRegExp(pattern).test(fileName))) return true;
+  return entry.pathPatterns?.some((pattern) => globPatternToRegExp(pattern).test(normalizedPath)) ?? false;
+}
+
 export function getFileExtension(pathOrName: string | null | undefined): string {
   if (!pathOrName) return '';
   const fileName = pathOrName.split(/[?#]/)[0].split(/[/\\]/).pop() || pathOrName;
@@ -498,6 +750,11 @@ export function getFileExtension(pathOrName: string | null | undefined): string 
 }
 
 export function getDocumentFormatForPath(pathOrName: string | null | undefined): DocumentFormat {
+  if (pathOrName) {
+    const namedEntry = supportedManifestFormats.find((entry) => matchesManifestEntry(pathOrName, entry));
+    const namedFormat = configurableDocumentFormats.find((format) => format.id === namedEntry?.id);
+    if (namedFormat) return namedFormat;
+  }
   const extension = getFileExtension(pathOrName);
   return configurableDocumentFormats.find((format) => format.extensions.includes(extension)) || plainTextFormat;
 }
@@ -511,6 +768,18 @@ export function looksLikeYamlContent(content: string): boolean {
   return /^(?:%YAML\b|---(?:\s|$))/u.test(content.trimStart());
 }
 
+export function looksLikeXmlContent(content: string): boolean {
+  return /^(?:<\?xml\b|<!DOCTYPE\b)/iu.test(content.trimStart());
+}
+
+export function looksLikeGettextContent(content: string): boolean {
+  return /^(?:#[^\n]*\n)*msgid\s+"/u.test(content.trimStart());
+}
+
+export function looksLikeRegistryContent(content: string): boolean {
+  return /^(?:\uFEFF)?(?:Windows Registry Editor Version 5\.00|REGEDIT4)$/mu.test(content.split(/\r?\n/u)[0] || '');
+}
+
 export function getDocumentFormatForContent(
   content: string,
   pathOrName: string | null | undefined
@@ -519,12 +788,18 @@ export function getDocumentFormatForContent(
   if (namedFormat.id !== 'plain') return namedFormat;
   if (looksLikeJsonContent(content)) return jsonFormat;
   if (looksLikeYamlContent(content)) return yamlFormat;
+  if (looksLikeXmlContent(content)) return xmlFormat;
+  if (looksLikeGettextContent(content)) return gettextFormat;
+  if (looksLikeRegistryContent(content)) return registryFormat;
   return namedFormat;
 }
 
 export function getSuggestedFileExtensionForContent(content: string): string {
   if (looksLikeJsonContent(content)) return jsonFormat.defaultExtension;
   if (looksLikeYamlContent(content)) return yamlFormat.defaultExtension;
+  if (looksLikeXmlContent(content)) return xmlFormat.defaultExtension;
+  if (looksLikeGettextContent(content)) return gettextFormat.defaultExtension;
+  if (looksLikeRegistryContent(content)) return registryFormat.defaultExtension;
   return plainTextFormat.defaultExtension;
 }
 
@@ -711,15 +986,33 @@ function readJsonLiteralToken(content: string, start: number): FlatToken | null 
   return null;
 }
 
-function findNextNonJsonWhitespace(content: string, start: number): number {
+function findNextJsonSignificant(content: string, start: number, allowComments: boolean): number {
   let i = start;
-  while (i < content.length && isJsonWhitespaceChar(content[i])) i += 1;
+  while (i < content.length) {
+    while (i < content.length && isJsonWhitespaceChar(content[i])) i += 1;
+    if (!allowComments || content[i] !== '/') break;
+    if (content[i + 1] === '/') {
+      i += 2;
+      while (i < content.length && content[i] !== '\r' && content[i] !== '\n') i += 1;
+      continue;
+    }
+    if (content[i + 1] === '*') {
+      const end = content.indexOf('*/', i + 2);
+      i = end === -1 ? content.length : end + 2;
+      continue;
+    }
+    break;
+  }
   return i;
 }
 
-function scanJsonTokens(content: string, range?: { start: number; end: number }): FlatToken[] {
+function scanJsonTokens(
+  content: string,
+  range?: { start: number; end: number },
+  allowComments = false
+): FlatToken[] {
   const tokens: FlatToken[] = [];
-  let i = range ? Math.max(0, Math.min(range.start, content.length)) : 0;
+  let i = allowComments ? 0 : range ? Math.max(0, Math.min(range.start, content.length)) : 0;
   const scanEnd = range ? Math.min(range.end, content.length) : content.length;
 
   while (i < scanEnd) {
@@ -734,9 +1027,23 @@ function scanJsonTokens(content: string, range?: { start: number; end: number })
       continue;
     }
 
+    if (allowComments && char === '/' && (content[i + 1] === '/' || content[i + 1] === '*')) {
+      const start = i;
+      if (content[i + 1] === '/') {
+        i += 2;
+        while (i < content.length && content[i] !== '\r' && content[i] !== '\n') i += 1;
+      } else {
+        const end = content.indexOf('*/', i + 2);
+        i = end === -1 ? content.length : end + 2;
+      }
+      const token = { type: 'comment', text: content.slice(start, i), start, end: i } satisfies FlatToken;
+      if (shouldKeepFlatToken(token, range)) tokens.push(token);
+      continue;
+    }
+
     if (char === '"') {
       const token = readJsonStringToken(content, i);
-      if (token.type === 'string' && content[findNextNonJsonWhitespace(content, token.end)] === ':') {
+      if (token.type === 'string' && content[findNextJsonSignificant(content, token.end, allowComments)] === ':') {
         token.type = 'key';
       }
       if (shouldKeepFlatToken(token, range)) tokens.push(token);
@@ -1318,6 +1625,31 @@ function getJsonDiagnostic(content: string, locale: AppLocale): DocumentDiagnost
   }
 }
 
+function getJsoncDiagnostic(content: string, locale: AppLocale): DocumentDiagnostic | null {
+  const errors: JsoncParseError[] = [];
+  parseJsonc(content, errors, {
+    allowTrailingComma: true,
+    allowEmptyContent: false,
+    disallowComments: false
+  });
+  const firstError = errors[0];
+  if (!firstError) return null;
+
+  const offset = Math.max(0, Math.min(content.length, firstError.offset));
+  const position = offsetToLineColumn(content, offset);
+  return {
+    severity: 'error',
+    message: translate(locale, 'diagnostic.formatSyntax', {
+      format: translate(locale, jsoncFormat.labelKey),
+      line: position.line,
+      column: position.column
+    }),
+    line: position.line,
+    column: position.column,
+    offset
+  };
+}
+
 function getYamlDiagnosticPosition(
   content: string,
   error: YAMLParseError
@@ -1375,8 +1707,22 @@ export function getDocumentDiagnostic(
   const format = getDocumentFormatForContent(content, options.pathOrName);
   if (!isDocumentFormatRenderEnabled(format, options.featureSettings)) return null;
   if (format.id === 'json') return getJsonDiagnostic(content, options.locale);
+  if (format.id === 'jsonc') return getJsoncDiagnostic(content, options.locale);
   if (format.id === 'jsonlines') return getJsonLinesDiagnostic(content, options.locale);
   if (format.id === 'yaml') return getYamlDiagnostic(content, options.locale);
+  if (format.id === 'xml') {
+    const position = getXmlDiagnostic(content);
+    if (!position) return null;
+    return {
+      severity: 'error',
+      message: translate(options.locale, 'diagnostic.formatSyntax', {
+        format: translate(options.locale, format.labelKey),
+        line: position.line,
+        column: position.column
+      }),
+      ...position
+    };
+  }
   if (format.id === 'csv' || format.id === 'tsv') {
     const position = getDelimitedTableSyntaxError(content, format.id === 'csv' ? ',' : '\t');
     if (!position) return null;
@@ -1392,6 +1738,32 @@ export function getDocumentDiagnostic(
   }
   if (['ini', 'properties', 'dotenv', 'srt', 'webvtt', 'lrc'].includes(format.id)) {
     const position = getLineOrientedFormatDiagnostic(content, format.id as LineOrientedFormatId);
+    if (!position) return null;
+    return {
+      severity: 'error',
+      message: translate(options.locale, 'diagnostic.formatSyntax', {
+        format: translate(options.locale, format.labelKey),
+        line: position.line,
+        column: position.column
+      }),
+      ...position
+    };
+  }
+  if (['toml', 'gitignore', 'gitattributes', 'gitconfig', 'editorconfig', 'npmrc', 'dockerignore', 'ignore', 'codeowners'].includes(format.id)) {
+    const position = getTextConfigurationDiagnostic(content, format.id as TextConfigurationFormatId);
+    if (!position) return null;
+    return {
+      severity: 'error',
+      message: translate(options.locale, 'diagnostic.formatSyntax', {
+        format: translate(options.locale, format.labelKey),
+        line: position.line,
+        column: position.column
+      }),
+      ...position
+    };
+  }
+  if (['gettext', 'registry', 'sshconfig', 'systemd', 'gitmessage', 'gitmailmap', 'gitblame', 'hosts'].includes(format.id)) {
+    const position = getSpecializedTextDiagnostic(content, format.id as SpecializedTextFormatId);
     if (!position) return null;
     return {
       severity: 'error',
@@ -1421,17 +1793,53 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
     };
   }
 
-  if (format.id === 'json' || format.id === 'jsonlines') {
+  if (format.id === 'json' || format.id === 'jsonc' || format.id === 'jsonlines') {
     return {
       format,
       lines: splitFlatTokensIntoLines(
         content,
-        scanJsonTokens(content, lineRangeOffsets),
+        scanJsonTokens(content, lineRangeOffsets, format.id === 'jsonc'),
         options.tabSize,
         options.lineStartOffsets,
         lineRange,
         getJsonRenderDepth
       ),
+      diagnostic: null
+    };
+  }
+
+  if (format.id === 'xml') {
+    return {
+      format,
+      lines: parseXmlFormat(content, {
+        tabSize: options.tabSize,
+        lineStartOffsets: options.lineStartOffsets,
+        lineRange
+      }),
+      diagnostic: null
+    };
+  }
+
+  if (['toml', 'gitignore', 'gitattributes', 'gitconfig', 'editorconfig', 'npmrc', 'dockerignore', 'ignore', 'codeowners'].includes(format.id)) {
+    return {
+      format,
+      lines: parseTextConfigurationFormat(content, format.id as TextConfigurationFormatId, {
+        tabSize: options.tabSize,
+        lineStartOffsets: options.lineStartOffsets,
+        lineRange
+      }),
+      diagnostic: null
+    };
+  }
+
+  if (['gettext', 'registry', 'sshconfig', 'systemd', 'gitmessage', 'gitmailmap', 'gitblame', 'hosts'].includes(format.id)) {
+    return {
+      format,
+      lines: parseSpecializedTextFormat(content, format.id as SpecializedTextFormatId, {
+        tabSize: options.tabSize,
+        lineStartOffsets: options.lineStartOffsets,
+        lineRange
+      }),
       diagnostic: null
     };
   }

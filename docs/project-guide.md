@@ -17,9 +17,11 @@ graph TD
 
 ## 주요 경로
 
-- `supported-text-formats.json`: 제품 지원 형식, 확장자, 대표 샘플의 단일 목록. 프론트엔드, Rust 대화상자, 설치 연결 검증이 이 목록을 공유한다.
+- `supported-text-formats.json`: 제품 지원 형식, 확장자, 관례적 파일명·경로 패턴, 대표 샘플의 단일 목록. 프론트엔드, Rust 대화상자, 설치 연결 검증이 이 목록을 공유한다.
 - `src/routes/+page.svelte`: 메인 화면, 원문 모드, 렌더 모드, 설정창 UI.
 - `src/lib/line-oriented-formats.ts`: Markdown, 설정, 로그, 자막·가사 형식의 줄 단위 토큰화와 오류 검사.
+- `src/lib/xml-format.ts`: XML 요소·속성·엔터티·CDATA 보존형 토큰화와 well-formedness 검사.
+- `src/lib/specialized-text-formats.ts`: Gettext, REG, OpenSSH, systemd, hosts와 Git 특수 텍스트 형식의 전용 토큰화와 보수적 진단.
 - `src/lib/markdown-settings.ts`: Markdown 제목 1~6단계 표시 설정과 저장값 정규화.
 - `src/lib/i18n/`: 영어 기준표, 9개 추가 언어 번역표와 언어 선택·대체 처리.
 - `src-tauri/src/lib.rs`: 파일 읽기/쓰기 명령, Windows 가로 휠 처리, Tauri 플러그인 설정.
@@ -38,16 +40,17 @@ graph TD
 - `docs/features/theme-preferences.md`: 테마와 사용자 설정 저장 계약.
 - `docs/features/localization.md`: 지원 언어, 선택 우선순위와 번역표 관리 계약.
 - `docs/features/app-updates.md`: 시작 확인, 도움말 메뉴, 서명된 GitHub Release 업데이트와 라이선스 고지 계약.
+- `docs/features/supported-text-formats.md`: 프로그래밍 언어를 제외한 제품 지원 범위, 형식군별 렌더 전략과 제외 기준.
 - `docs/implementation-checklist.md`: 남은 기능과 완료 기준.
 
 ## 현재 기능 범위
 
-- 현재 제품 지원 형식인 `.txt`, `.text`, `.md`, `.markdown`, `.json`, `.jsonl`, `.ndjson`, `.csv`, `.tsv`, `.yaml`, `.yml`, `.ini`, `.cfg`, `.conf`, `.properties`, `.env`, `.log`, `.srt`, `.vtt`, `.lrc` 파일 열기와 저장.
+- 현재 제품 지원 형식인 일반 텍스트, Markdown, JSON/JSONC, JSON Lines, XML, Gettext PO/POT, CSV/TSV, YAML, TOML, INI 계열, ENV, Git·EditorConfig·npm·Docker 설정, REG, OpenSSH, systemd, hosts, 로그, 자막·가사 파일 열기와 저장.
 - 메인 창에 드롭한 텍스트 파일을 각각 새 탭으로 열기.
 - 원문 모드 편집.
 - 렌더 모드 구문 강조, 들여쓰기 가이드, 줄 번호, 가상화된 화면 렌더링.
 - Markdown 제목 1~6단계의 크기·굵기 설정, 제목 표식 숨김, 링크·강조·인용·코드 구분.
-- JSON Lines, INI/CFG, CONF, Properties, ENV, LOG, SRT, WebVTT, LRC의 의미별 색 구분과 엄격 형식의 오류 위치 표시.
+- XML, Gettext, JSON Lines, TOML, INI/CFG, CONF, Properties, ENV, Git·프로젝트 설정, REG, OpenSSH, systemd, hosts, LOG, SRT, WebVTT, LRC의 의미별 색 구분과 검사 가능한 형식의 오류 위치 표시.
 - 라이트/다크 테마, 렌더 색상, 글꼴, 글자 크기, 탭 크기 설정.
 - 시스템 언어 우선 선택, 영어 대체와 설정창 언어 변경을 지원하는 10개 언어 UI.
 - 메인 창을 편집기 준비 뒤 표시해 첫 화면이 곧바로 입력 가능한 상태가 되게 하는 시작 흐름.

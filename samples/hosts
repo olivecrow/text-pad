@@ -1,0 +1,4 @@
+# Local development aliases
+127.0.0.1 localhost text-pad.local
+::1 localhost-ipv6
+192.0.2.25 docs.example.test # documentation preview

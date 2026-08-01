@@ -1,0 +1,14 @@
+# Korean translations for the sample application.
+#: src/window.ts:24
+msgid "Open file"
+msgstr "파일 열기"
+
+#. Shown when no document is open.
+#, fuzzy
+msgctxt "empty-state"
+msgid "Drop a text file here"
+msgstr ""
+
+msgid "One tab"
+msgid_plural "%d tabs"
+msgstr[0] "탭 %d개"

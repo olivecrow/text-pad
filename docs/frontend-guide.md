@@ -5,9 +5,12 @@
 ## 현재 진입점
 
 - `src/routes/+page.svelte`: 메인 편집기, 렌더 모드, 설정창, 메뉴, 상태 표시줄.
-- `supported-text-formats.json`: 제품 지원 형식, 확장자, 대표 샘플의 단일 목록.
-- `src/lib/document-formats.ts`: 확장자 기반 문서 형식 판별, 열기/저장 대화상자 필터, 형식별 렌더 파싱과 문법 검사.
+- `supported-text-formats.json`: 제품 지원 형식, 확장자, 관례적 파일명·경로 패턴, 대표 샘플의 단일 목록.
+- `src/lib/document-formats.ts`: 경로·파일명·확장자 우선순위에 따른 문서 형식 판별, 열기/저장 대화상자 필터, 형식별 렌더 파싱과 문법 검사.
+- `src/lib/text-configuration-formats.ts`: TOML, Git 패턴·속성·설정, EditorConfig, npmrc, Docker ignore, CODEOWNERS의 보존형 토큰화와 진단.
 - `src/lib/line-oriented-formats.ts`: Markdown, 설정, 로그, 자막·가사 형식의 토큰화와 오류 위치 계산.
+- `src/lib/xml-format.ts`: XML 태그·속성·엔터티·CDATA 토큰화와 well-formedness 오류 위치 계산.
+- `src/lib/specialized-text-formats.ts`: Gettext, REG, OpenSSH, systemd, hosts와 Git 메시지·신원·리비전 목록의 형식별 표시와 진단.
 - `src/lib/markdown-settings.ts`: Markdown 제목 1~6단계의 공통 표시 설정.
 - `src/lib/delimited-table.ts`: CSV/TSV 파싱, 직렬화, 셀·행·열 변경 계산.
 - `src/lib/DelimitedTableEditor.svelte`: CSV/TSV 표 편집 화면과 행·열 조작.
@@ -24,7 +27,7 @@
 
 - `tabs`, `activeTabId`: 열린 파일 탭 목록과 현재 활성 탭 식별자.
 - `fileContent`: 저장 기준이 되는 원문 텍스트.
-- `filePath`, `fileName`, `isDirty`: 활성 탭의 파일 경로, 표시 이름, 변경 여부. 파일 경로가 없는 새 탭은 첫 줄을 표시 이름으로 쓴다.
+- `filePath`, `fileName`, `fileEncoding`, `isDirty`: 활성 탭의 파일 경로, 표시 이름, UTF-8/UTF-16 인코딩, 변경 여부. 파일 경로가 없는 새 탭은 첫 줄을 표시 이름으로 쓴다.
 - 실행 취소(Undo) 기록: 탭 식별자별 메모리 기록으로 유지한다. 다시 실행(Redo)은 실행 취소한 기록 안에서만 가능하다.
 - `isRenderMode`: 원문 모드와 렌더 모드 전환 상태.
 - `sourceFontSize`, `renderFontSize`, `tabSize`: 편집기 표시 설정.
@@ -80,8 +83,9 @@
 - 들여쓰기 가이드.
 - 닫힘이 있는 백틱 코드, 문자열, 숫자, 글머리 기호, 색상 코드, 데이터 파일 형식의 불리언 값, 파일 형식별 주석 강조.
 - 닫힘이 있는 소괄호, 대괄호, 중괄호 중첩 강조.
-- `.json`, `.jsonl`, `.ndjson`, `.yaml`, `.yml` 파일의 키, 값, 구분자, 괄호, 주석 표시와 문법 오류 상태 표시.
-- `.ini`, `.cfg`, `.conf`, `.properties`, `.env` 파일의 섹션, 키, 연산자, 값, 주석 구분과 엄격 형식 오류 표시.
+- `.json`, `.jsonc`, `.jsonl`, `.ndjson`, `.yaml`, `.yml`, `.toml` 파일의 키, 값, 구분자, 괄호, 주석 표시와 문법 오류 상태 표시.
+- `.ini`, `.cfg`, `.conf`, `.properties`, `.env`, `.gitconfig`, `.gitmodules`, `.editorconfig`, `.npmrc` 파일의 섹션, 키, 연산자, 값, 주석 구분과 검사 가능한 오류 표시.
+- `.gitignore`, `.gitattributes`, `.dockerignore`, `CODEOWNERS`의 경로 패턴, 와일드카드, 속성, 담당자, 반전 규칙 구분.
 - `.log` 파일의 시간과 심각도 구분, `.srt`, `.vtt`, `.lrc` 파일의 큐·시간·메타데이터·대사 구분과 오류 표시.
 - `.md`, `.markdown` 제목 1~6단계의 크기·굵기·구분선, 숨긴 제목 표식, 링크·강조·인용·코드 구분.
 - `.csv`, `.tsv` 파일의 표 표시, 셀 편집, 외부 여백의 행·열 추가·제거, 드래그 이동과 열 너비 조절.
@@ -107,7 +111,7 @@
 - 렌더 모드 편집 보조는 `isRenderMode`가 켜진 상태에서만 키 입력을 가로채야 하며, 원문 모드의 기본 `textarea` 입력 동작을 바꾸지 않아야 한다.
 - 이 모드 판정은 편집 입력의 상위 경로에서 처리한다. 들여쓰기, 자동 쌍 문자, 자동 변환 같은 세부 편집 함수는 호출 모드를 직접 확인하지 않는다.
 - 글머리, 자동 쌍 문자, 들여쓰기, 줄바꿈, 자동 변환, 캐럿과 선택 영역, 조합 입력, 실행 취소의 통합 행동 계약은 `docs/features/natural-text-editing.md`와 `docs/features/natural-text-editing.en.md`를 함께 기준으로 한다.
-- 새 제품 지원 형식은 먼저 `supported-text-formats.json`에 식별자, 확장자, 대표 샘플을 추가하고 `src/lib/document-formats.ts`에 형식 판별, 렌더 파서, 주석 문법, 문법 검사 여부, 렌더 편집 가능 여부를 연결한다. `npm run validate:formats`가 열기·저장과 Windows 설치 연결을 함께 검사하므로, 별도 확장자 목록을 새로 만들지 않는다. 형식별 렌더 표시와 렌더 편집은 설정 객체를 통해 켜고 끌 수 있어야 하며, 설정창에서는 해당 형식의 트리 메뉴 최상단에 배치한다.
+- 새 제품 지원 형식은 먼저 `supported-text-formats.json`에 식별자, 확장자 또는 관례적 파일명·경로 패턴, 대표 샘플을 추가하고 `src/lib/document-formats.ts`에 형식 판별, 렌더 파서, 주석 문법, 문법 검사 여부, 렌더 편집 가능 여부를 연결한다. `npm run validate:formats`가 열기·저장과 Windows 설치 연결을 함께 검사하므로 별도 확장자 목록을 새로 만들지 않는다. 확장자가 없는 형식은 모든 파일 필터로 선택할 수 있게 하되 Windows 파일 연결에는 확장자만 등록한다. 형식별 렌더 표시와 렌더 편집은 설정 객체를 통해 켜고 끌 수 있어야 하며, 설정창에서는 해당 형식의 트리 메뉴 최상단에 배치한다.
 - 세부 표시 계약은 `docs/features/render-mode.md`를 기준으로 한다.
 - CSV/TSV 표 편집은 `docs/features/delimited-table.md`를 기준으로 한다.
 

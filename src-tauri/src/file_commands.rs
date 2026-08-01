@@ -16,7 +16,7 @@ const MAX_FILE_LINE_COUNT: usize = 250_000;
 const SUPPORTED_TEXT_FORMAT_MANIFEST: &str = include_str!("../../supported-text-formats.json");
 const MAX_DIALOG_FILTER_NAME_CHARS: usize = 64;
 const MAX_DIALOG_FILTERS: usize = 32;
-const MAX_DIALOG_EXTENSIONS: usize = 32;
+const MAX_DIALOG_EXTENSIONS: usize = 64;
 
 fn dialog_filter_name(provided: Option<&str>, fallback: &str) -> String {
     let provided = provided.map(str::trim).unwrap_or_default();
@@ -101,7 +101,8 @@ fn sanitize_dialog_filters(filters: Vec<DialogFilter>, supported: &[String]) -> 
             .take(MAX_DIALOG_EXTENSIONS)
             .map(|extension| extension.trim().to_ascii_lowercase())
             .filter(|extension| {
-                supported_set.contains(extension.as_str()) && seen.insert(extension.clone())
+                (extension == "*" || supported_set.contains(extension.as_str()))
+                    && seen.insert(extension.clone())
             })
             .collect::<Vec<_>>();
         if extensions.is_empty() {
@@ -150,6 +151,30 @@ impl FileCommandError {
 pub struct OpenedFile {
     pub path: String,
     pub content: String,
+    pub encoding: TextEncoding,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextEncoding {
+    #[default]
+    Utf8,
+    Utf8Bom,
+    Utf16Le,
+    Utf16Be,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedFile {
+    pub path: String,
+    pub encoding: TextEncoding,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DecodedText {
+    content: String,
+    encoding: TextEncoding,
 }
 
 #[derive(Default)]
@@ -269,11 +294,140 @@ fn validate_content_limits(
     Ok(())
 }
 
+fn line_count(content: &str) -> usize {
+    let bytes = content.as_bytes();
+    let mut count = 1usize;
+
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' || (*byte == b'\r' && bytes.get(index + 1) != Some(&b'\n')) {
+            count = count.saturating_add(1);
+        }
+    }
+
+    count
+}
+
+fn encoded_text_len(content: &str, encoding: TextEncoding) -> usize {
+    match encoding {
+        TextEncoding::Utf8 => content.len(),
+        TextEncoding::Utf8Bom => content.len().saturating_add(3),
+        TextEncoding::Utf16Le | TextEncoding::Utf16Be => content
+            .encode_utf16()
+            .count()
+            .saturating_mul(2)
+            .saturating_add(2),
+    }
+}
+
+fn validate_text_limits(
+    content: &str,
+    encoding: TextEncoding,
+    max_bytes: usize,
+    max_lines: usize,
+) -> Result<(), FileCommandError> {
+    if encoded_text_len(content, encoding) > max_bytes {
+        return Err(FileCommandError::new(
+            "file_too_large",
+            format!(
+                "파일 크기는 최대 {} MiB까지 지원합니다",
+                max_bytes / (1024 * 1024)
+            ),
+        ));
+    }
+
+    if line_count(content) > max_lines {
+        return Err(FileCommandError::new(
+            "too_many_lines",
+            format!("파일은 최대 {max_lines}줄까지 지원합니다"),
+        ));
+    }
+
+    Ok(())
+}
+
+fn decode_utf16(bytes: &[u8], little_endian: bool) -> Result<String, FileCommandError> {
+    let mut chunks = bytes.chunks_exact(2);
+    let units = chunks
+        .by_ref()
+        .map(|chunk| {
+            if little_endian {
+                u16::from_le_bytes([chunk[0], chunk[1]])
+            } else {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if !chunks.remainder().is_empty() {
+        return Err(FileCommandError::new(
+            "invalid_data",
+            "UTF-16 텍스트의 바이트 수가 올바르지 않습니다",
+        ));
+    }
+
+    String::from_utf16(&units).map_err(|error| {
+        FileCommandError::new(
+            "invalid_data",
+            format!("UTF-16 텍스트가 올바르지 않습니다: {error}"),
+        )
+    })
+}
+
+fn decode_text_bytes(bytes: Vec<u8>) -> Result<DecodedText, FileCommandError> {
+    if let Some(content) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return std::str::from_utf8(content)
+            .map(|content| DecodedText {
+                content: content.to_owned(),
+                encoding: TextEncoding::Utf8Bom,
+            })
+            .map_err(|error| {
+                FileCommandError::new(
+                    "invalid_data",
+                    format!("UTF-8 BOM 텍스트가 올바르지 않습니다: {error}"),
+                )
+            });
+    }
+
+    if bytes.starts_with(&[0xFF, 0xFE, 0x00, 0x00]) || bytes.starts_with(&[0x00, 0x00, 0xFE, 0xFF])
+    {
+        return Err(FileCommandError::new(
+            "invalid_data",
+            "UTF-32 텍스트 인코딩은 지원하지 않습니다",
+        ));
+    }
+
+    if let Some(content) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return decode_utf16(content, true).map(|content| DecodedText {
+            content,
+            encoding: TextEncoding::Utf16Le,
+        });
+    }
+
+    if let Some(content) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return decode_utf16(content, false).map(|content| DecodedText {
+            content,
+            encoding: TextEncoding::Utf16Be,
+        });
+    }
+
+    String::from_utf8(bytes)
+        .map(|content| DecodedText {
+            content,
+            encoding: TextEncoding::Utf8,
+        })
+        .map_err(|error| {
+            FileCommandError::new(
+                "invalid_data",
+                format!("지원하는 UTF-8 또는 BOM이 있는 UTF-16 텍스트가 아닙니다: {error}"),
+            )
+        })
+}
+
 fn read_file_content_with_limits(
     file_path: &Path,
     max_bytes: usize,
     max_lines: usize,
-) -> Result<String, FileCommandError> {
+) -> Result<DecodedText, FileCommandError> {
     let file = File::open(file_path).map_err(|err| FileCommandError::from_io(err))?;
     let metadata = file
         .metadata()
@@ -295,15 +449,12 @@ fn read_file_content_with_limits(
         .map_err(|err| FileCommandError::from_io(err))?;
     validate_content_limits(&content, max_bytes, max_lines)?;
 
-    String::from_utf8(content).map_err(|err| {
-        FileCommandError::new(
-            "invalid_data",
-            format!("UTF-8 텍스트 파일이 아닙니다: {err}"),
-        )
-    })
+    let decoded = decode_text_bytes(content)?;
+    validate_text_limits(&decoded.content, decoded.encoding, max_bytes, max_lines)?;
+    Ok(decoded)
 }
 
-fn read_file_content_from_path(file_path: &Path) -> Result<String, FileCommandError> {
+fn read_file_content_from_path(file_path: &Path) -> Result<DecodedText, FileCommandError> {
     read_file_content_with_limits(file_path, MAX_FILE_SIZE_BYTES, MAX_FILE_LINE_COUNT)
 }
 
@@ -348,11 +499,44 @@ fn replace_existing_file(temp_file: NamedTempFile, file_path: &Path) -> io::Resu
     }
 }
 
-fn write_file_content_to_path(file_path: &Path, content: &str) -> io::Result<()> {
+fn encode_text(content: &str, encoding: TextEncoding) -> Vec<u8> {
+    match encoding {
+        TextEncoding::Utf8 => content.as_bytes().to_vec(),
+        TextEncoding::Utf8Bom => {
+            let mut bytes = Vec::with_capacity(content.len().saturating_add(3));
+            bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+            bytes.extend_from_slice(content.as_bytes());
+            bytes
+        }
+        TextEncoding::Utf16Le | TextEncoding::Utf16Be => {
+            let mut bytes = Vec::with_capacity(encoded_text_len(content, encoding));
+            bytes.extend_from_slice(if encoding == TextEncoding::Utf16Le {
+                &[0xFF, 0xFE]
+            } else {
+                &[0xFE, 0xFF]
+            });
+            for unit in content.encode_utf16() {
+                let encoded_unit = if encoding == TextEncoding::Utf16Le {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                };
+                bytes.extend_from_slice(&encoded_unit);
+            }
+            bytes
+        }
+    }
+}
+
+fn write_file_content_to_path(
+    file_path: &Path,
+    content: &str,
+    encoding: TextEncoding,
+) -> io::Result<()> {
     let parent_dir = target_parent_dir(file_path)?;
     let mut temp_file = NamedTempFile::new_in(parent_dir)?;
 
-    temp_file.write_all(content.as_bytes())?;
+    temp_file.write_all(&encode_text(content, encoding))?;
     temp_file.as_file_mut().sync_all()?;
 
     #[cfg(target_os = "windows")]
@@ -371,12 +555,13 @@ fn open_file(
     approved_paths: &ApprovedFilePaths,
 ) -> Result<OpenedFile, FileCommandError> {
     let normalized = normalize_existing_file_path(file_path).map_err(FileCommandError::from_io)?;
-    let content = read_file_content_from_path(&normalized)?;
+    let decoded = read_file_content_from_path(&normalized)?;
     approved_paths.approve(normalized.clone())?;
 
     Ok(OpenedFile {
         path: normalized.to_string_lossy().into_owned(),
-        content,
+        content: decoded.content,
+        encoding: decoded.encoding,
     })
 }
 
@@ -397,17 +582,21 @@ where
 #[tauri::command]
 pub async fn open_file_dialog(
     app: AppHandle,
-    filter_name: String,
+    filters: Vec<DialogFilter>,
     approved_paths: State<'_, ApprovedFilePaths>,
 ) -> Result<Option<OpenedFile>, FileCommandError> {
-    let filter_name = dialog_filter_name(Some(&filter_name), "Text files");
-    let extensions = supported_text_extensions()?;
-    let extension_refs = extensions.iter().map(String::as_str).collect::<Vec<_>>();
-    let selected = app
-        .dialog()
-        .file()
-        .add_filter(filter_name, &extension_refs)
-        .blocking_pick_file();
+    let supported = supported_text_extensions()?;
+    let filters = sanitize_dialog_filters(filters, &supported);
+    let mut dialog = app.dialog().file();
+    for filter in filters {
+        let extension_refs = filter
+            .extensions
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        dialog = dialog.add_filter(filter.name, &extension_refs);
+    }
+    let selected = dialog.blocking_pick_file();
     let Some(selected) = selected else {
         return Ok(None);
     };
@@ -440,11 +629,22 @@ pub fn open_file_paths(
 pub fn write_file_content(
     path: String,
     content: String,
+    encoding: TextEncoding,
     approved_paths: State<'_, ApprovedFilePaths>,
 ) -> Result<(), FileCommandError> {
-    validate_content_limits(content.as_bytes(), MAX_FILE_SIZE_BYTES, MAX_FILE_LINE_COUNT)?;
+    validate_text_limits(&content, encoding, MAX_FILE_SIZE_BYTES, MAX_FILE_LINE_COUNT)?;
     let file_path = approved_paths.resolve_approved(Path::new(&path))?;
-    write_file_content_to_path(&file_path, &content).map_err(FileCommandError::from_io)
+    write_file_content_to_path(&file_path, &content, encoding).map_err(FileCommandError::from_io)
+}
+
+fn default_text_encoding_for_path(file_path: &Path) -> TextEncoding {
+    match file_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
+        Some(extension) if extension.eq_ignore_ascii_case("reg") => TextEncoding::Utf16Le,
+        _ => TextEncoding::Utf8,
+    }
 }
 
 #[tauri::command]
@@ -452,11 +652,10 @@ pub async fn save_file_dialog(
     app: AppHandle,
     default_name: String,
     content: String,
+    encoding: Option<TextEncoding>,
     filters: Vec<DialogFilter>,
     approved_paths: State<'_, ApprovedFilePaths>,
-) -> Result<Option<String>, FileCommandError> {
-    validate_content_limits(content.as_bytes(), MAX_FILE_SIZE_BYTES, MAX_FILE_LINE_COUNT)?;
-
+) -> Result<Option<SavedFile>, FileCommandError> {
     let supported = supported_text_extensions()?;
     let filters = sanitize_dialog_filters(filters, &supported);
     let mut dialog = app.dialog().file().set_file_name(default_name);
@@ -480,12 +679,17 @@ pub async fn save_file_dialog(
     })?;
     let normalized =
         normalize_save_path(&selected_path).map_err(|err| FileCommandError::from_io(err))?;
+    let encoding = encoding.unwrap_or_else(|| default_text_encoding_for_path(&normalized));
+    validate_text_limits(&content, encoding, MAX_FILE_SIZE_BYTES, MAX_FILE_LINE_COUNT)?;
 
-    write_file_content_to_path(&normalized, &content)
+    write_file_content_to_path(&normalized, &content, encoding)
         .map_err(|err| FileCommandError::from_io(err))?;
     approved_paths.approve(normalized.clone())?;
 
-    Ok(Some(normalized.to_string_lossy().into_owned()))
+    Ok(Some(SavedFile {
+        path: normalized.to_string_lossy().into_owned(),
+        encoding,
+    }))
 }
 
 #[cfg(test)]
@@ -557,7 +761,7 @@ mod tests {
         let dir = create_test_dir("new")?;
         let target = dir.path.join("note.txt");
 
-        write_file_content_to_path(&target, "새 내용")?;
+        write_file_content_to_path(&target, "새 내용", TextEncoding::Utf8)?;
 
         assert_eq!(fs::read_to_string(&target)?, "새 내용");
         Ok(())
@@ -569,7 +773,7 @@ mod tests {
         let target = dir.path.join("note.txt");
         fs::write(&target, "이전 내용")?;
 
-        write_file_content_to_path(&target, "바뀐 내용")?;
+        write_file_content_to_path(&target, "바뀐 내용", TextEncoding::Utf8)?;
 
         assert_eq!(fs::read_to_string(&target)?, "바뀐 내용");
         Ok(())
@@ -588,7 +792,7 @@ mod tests {
             ));
         }
 
-        write_file_content_to_path(&target, "바뀐 내용")?;
+        write_file_content_to_path(&target, "바뀐 내용", TextEncoding::Utf8)?;
 
         assert!(is_acl_protected(&target)?);
         assert_eq!(fs::read_to_string(&target)?, "바뀐 내용");
@@ -656,6 +860,99 @@ mod tests {
 
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].extensions, vec!["jsonl"]);
+        Ok(())
+    }
+
+    #[test]
+    fn reads_utf8_bom_without_exposing_the_marker() -> io::Result<()> {
+        let dir = create_test_dir("utf8-bom")?;
+        let target = dir.path.join("note.txt");
+        fs::write(&target, encode_text("내용", TextEncoding::Utf8Bom))?;
+
+        let decoded = read_file_content_from_path(&target)
+            .map_err(|error| io::Error::other(error.message))?;
+
+        assert_eq!(decoded.content, "내용");
+        assert_eq!(decoded.encoding, TextEncoding::Utf8Bom);
+        Ok(())
+    }
+
+    #[test]
+    fn reads_and_writes_bom_marked_utf16() -> io::Result<()> {
+        let dir = create_test_dir("utf16")?;
+
+        for (name, encoding) in [
+            ("little.reg", TextEncoding::Utf16Le),
+            ("big.xml", TextEncoding::Utf16Be),
+        ] {
+            let target = dir.path.join(name);
+            write_file_content_to_path(&target, "첫 줄\r\n둘째 줄", encoding)?;
+            let decoded = read_file_content_from_path(&target)
+                .map_err(|error| io::Error::other(error.message))?;
+
+            assert_eq!(decoded.content, "첫 줄\r\n둘째 줄");
+            assert_eq!(decoded.encoding, encoding);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_malformed_utf16() -> io::Result<()> {
+        let dir = create_test_dir("invalid-utf16")?;
+        let target = dir.path.join("broken.reg");
+        fs::write(&target, [0xFF, 0xFE, 0x41])?;
+
+        let result = read_file_content_from_path(&target);
+
+        match result {
+            Ok(_) => panic!("손상된 UTF-16 파일은 열면 안 됩니다"),
+            Err(error) => assert_eq!(error.code, "invalid_data"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_utf32_bom_instead_of_misreading_it_as_utf16() -> io::Result<()> {
+        let dir = create_test_dir("utf32")?;
+        let target = dir.path.join("unsupported.txt");
+        fs::write(&target, [0xFF, 0xFE, 0x00, 0x00, 0x41, 0x00, 0x00, 0x00])?;
+
+        let result = read_file_content_from_path(&target);
+
+        match result {
+            Ok(_) => panic!("UTF-32를 UTF-16으로 잘못 판별하면 안 됩니다"),
+            Err(error) => assert_eq!(error.code, "invalid_data"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn new_registry_files_default_to_utf16_little_endian() {
+        assert_eq!(
+            default_text_encoding_for_path(Path::new("preferences.reg")),
+            TextEncoding::Utf16Le
+        );
+        assert_eq!(
+            default_text_encoding_for_path(Path::new("preferences.txt")),
+            TextEncoding::Utf8
+        );
+    }
+
+    #[test]
+    fn dialog_filters_allow_explicit_all_files_wildcard() -> io::Result<()> {
+        let supported =
+            supported_text_extensions().map_err(|error| io::Error::other(error.message))?;
+        let filters = sanitize_dialog_filters(
+            vec![DialogFilter {
+                name: "All files".to_string(),
+                extensions: vec!["*".to_string()],
+            }],
+            &supported,
+        );
+
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].extensions, vec!["*"]);
         Ok(())
     }
 

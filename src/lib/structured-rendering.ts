@@ -9,6 +9,15 @@ export interface ParsedLine {
   tokens: Token[];
   fencedCodePosition?: FencedCodeLinePosition;
   headingLevel?: MarkdownHeadingLevel;
+  lineKind?:
+    | 'rule'
+    | 'negated-rule'
+    | 'section'
+    | 'markup'
+    | 'translation-source'
+    | 'translation-target'
+    | 'translation-empty'
+    | 'subject';
 }
 
 export interface DocumentLineRange {

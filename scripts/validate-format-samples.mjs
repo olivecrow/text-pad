@@ -7,12 +7,31 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'supported-text-form
 const expectedTokenTypes = {
   markdown: ['heading-marker', 'strong', 'emphasis', 'link', 'quote-marker', 'list-marker', 'code'],
   json: ['key', 'string', 'number', 'boolean'],
+  jsonc: ['key', 'string', 'boolean', 'comment'],
   jsonlines: ['key', 'string', 'number', 'boolean'],
+  xml: ['tag', 'attribute', 'string', 'keyword', 'comment', 'directive'],
+  gettext: ['directive', 'string', 'keyword'],
   yaml: ['key', 'number', 'list-marker', 'literal'],
+  toml: ['section', 'key', 'operator', 'string', 'number', 'boolean', 'comment'],
   ini: ['section', 'key', 'operator', 'string', 'number', 'boolean', 'comment'],
   conf: ['key', 'operator', 'string', 'number', 'boolean', 'comment'],
   properties: ['key', 'operator', 'number', 'boolean', 'comment'],
   dotenv: ['key', 'operator', 'string', 'number', 'boolean', 'comment'],
+  gitignore: ['pattern', 'keyword', 'operator', 'comment'],
+  gitattributes: ['pattern', 'attribute', 'operator'],
+  gitconfig: ['section', 'key', 'operator', 'string'],
+  editorconfig: ['section', 'key', 'operator', 'string', 'boolean'],
+  npmrc: ['key', 'operator', 'string', 'boolean'],
+  dockerignore: ['pattern', 'keyword', 'operator', 'comment'],
+  ignore: ['pattern', 'keyword', 'operator', 'comment'],
+  codeowners: ['pattern', 'owner', 'comment'],
+  gitmessage: ['directive', 'operator', 'string', 'comment'],
+  gitmailmap: ['owner', 'comment'],
+  gitblame: ['hash', 'comment'],
+  registry: ['directive', 'section', 'key', 'operator', 'string', 'number', 'comment'],
+  sshconfig: ['directive', 'pattern', 'string', 'comment'],
+  systemd: ['section', 'directive', 'operator', 'string', 'keyword'],
+  hosts: ['keyword', 'host', 'comment'],
   log: ['timestamp', 'keyword'],
   srt: ['number', 'timestamp', 'operator'],
   webvtt: ['keyword', 'timestamp', 'operator', 'comment'],
@@ -61,6 +80,14 @@ const server = await createServer({
 try {
   const module = await server.ssrLoadModule('/src/lib/document-formats.ts');
   const summaries = [];
+  const categorizedIds = module.configurableDocumentFormatCategories.flatMap((category) => category.formatIds);
+  if (new Set(categorizedIds).size !== categorizedIds.length) {
+    throw new Error('A configurable document format appears in more than one settings category.');
+  }
+  const configurableIds = module.configurableDocumentFormats.map((format) => format.id).sort();
+  if (JSON.stringify([...categorizedIds].sort()) !== JSON.stringify(configurableIds)) {
+    throw new Error('Settings categories must contain every configurable document format exactly once.');
+  }
 
   for (const entry of manifest.formats) {
     const samplePath = path.join(root, ...entry.sample.split('/'));
@@ -98,6 +125,9 @@ try {
 
     const tokenTypes = new Set();
     for (const line of result.lines) collectTokenTypes(line.tokens, tokenTypes);
+    if (tokenTypes.has('invalid')) {
+      throw new Error(`${entry.sample}: a valid sample produced an invalid render token.`);
+    }
     for (const expectedType of expectedTokenTypes[entry.id] || []) {
       if (!tokenTypes.has(expectedType)) {
         throw new Error(`${entry.sample}: missing expected ${expectedType} token; found ${Array.from(tokenTypes).sort().join(", ")}.`);
@@ -130,9 +160,27 @@ try {
     { name: 'invalid.csv', content: 'name,note\ntext-pad,"unclosed', line: 2 },
     { name: 'invalid.tsv', content: 'name\tnote\ntext-pad\tbad"quote', line: 2 },
     { name: 'invalid.jsonl', content: '{"ok":true}\n{"broken":}', line: 2 },
+    { name: 'invalid.jsonc', content: '{\n  // comment\n  "broken":,\n}', line: 3 },
+    { name: 'invalid.xml', content: '<root>\n  <child></root>', line: 2 },
+    { name: 'invalid.po', content: 'msgstr "orphan"', line: 1 },
+    { name: 'invalid.toml', content: 'enabled = tru', line: 1 },
     { name: 'invalid.ini', content: '[editor\ntheme=dark', line: 1 },
     { name: 'invalid.properties', content: 'heart=\\u12Q4', line: 1 },
     { name: 'invalid.env', content: 'TITLE="open', line: 1 },
+    { name: 'invalid.gitattributes', content: '*.txt !', line: 1 },
+    { name: 'invalid.gitconfig', content: '[core', line: 1 },
+    { name: 'invalid.editorconfig', content: 'indent style = space', line: 1 },
+    { name: 'invalid.npmrc', content: '[section]', line: 1 },
+    { name: 'invalid.gitignore', content: '!', line: 1 },
+    { name: 'invalid.dockerignore', content: '!', line: 1 },
+    { name: 'invalid.ignore', content: '!', line: 1 },
+    { name: 'CODEOWNERS', content: '/docs/ docs-team', line: 1 },
+    { name: 'invalid.mailmap', content: 'No email mapping', line: 1 },
+    { name: '.git-blame-ignore-revs', content: '0123', line: 1 },
+    { name: 'invalid.reg', content: 'Windows Registry Editor Version 5.00\n[HKEY_CURRENT_USER\\Software\\text-pad]\n"Size"=dword:12', line: 3 },
+    { name: 'ssh_config', content: 'Host', line: 1 },
+    { name: 'invalid.service', content: '[Unit', line: 1 },
+    { name: 'hosts', content: '999.0.0.1 invalid.local', line: 1 },
     { name: 'invalid.srt', content: '1\n00:00:03,000 --> 00:00:02,000\ntext', line: 2 },
     { name: 'invalid.vtt', content: 'WEBVTT\n\n00:61.000 --> 00:02.000\ntext', line: 3 },
     { name: 'orphan.vtt', content: 'WEBVTT\n\norphan cue', line: 3 },
@@ -148,8 +196,34 @@ try {
     }
   }
 
+  const pathDetectionCases = [
+    ['C:/project/.vscode/settings.json', 'jsonc'],
+    ['C:/project/tsconfig.json', 'jsonc'],
+    ['C:/project/.env.local', 'dotenv'],
+    ['C:/project/.git/config', 'gitconfig'],
+    ['C:/project/.git/info/sparse-checkout', 'gitignore'],
+    ['C:/Users/example/.config/git/ignore', 'gitignore'],
+    ['C:/project/.prettierignore', 'ignore'],
+    ['C:/project/.github/CODEOWNERS', 'codeowners'],
+    ['C:/project/.git/COMMIT_EDITMSG', 'gitmessage'],
+    ['C:/project/.mailmap', 'gitmailmap'],
+    ['C:/project/.git-blame-ignore-revs', 'gitblame'],
+    ['C:/Users/example/.ssh/config', 'sshconfig'],
+    ['C:/Windows/System32/drivers/etc/hosts', 'hosts'],
+    ['C:/etc/systemd/system/text-pad.service', 'systemd'],
+    ['C:/project/catalog.xml', 'xml'],
+    ['C:/project/data.json', 'json']
+  ];
+  for (const [filePath, expectedFormat] of pathDetectionCases) {
+    const actualFormat = module.getDocumentFormatForPath(filePath).id;
+    if (actualFormat !== expectedFormat) {
+      throw new Error(`${filePath}: detected ${actualFormat}, expected ${expectedFormat}.`);
+    }
+  }
+
   console.log(`Rendered and validated ${summaries.length} format samples: ${summaries.join(', ')}`);
   console.log(`Detected ${invalidCases.length} representative syntax errors at the expected lines.`);
+  console.log(`Detected ${pathDetectionCases.length} representative file-name and path routing cases.`);
 } finally {
   await server.close();
 }

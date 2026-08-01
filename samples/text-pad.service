@@ -1,0 +1,13 @@
+[Unit]
+Description=text-pad background document watcher
+After=network.target
+
+[Service]
+Type=simple
+Environment="TEXT_PAD_THEME=dark"
+ExecStart=/usr/bin/text-pad \
+  --profile %i
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
