@@ -35,6 +35,8 @@
   - 새 REG 파일은 UTF-16 LE BOM, 그 밖의 새 파일은 UTF-8을 기본값으로 사용한다. 기존 탭의 다른 이름 저장은 탭 인코딩을 보존한다.
   - 필터 이름의 길이와 제어 문자를 제한하고, 확장자는 `supported-text-formats.json`에 등록된 값 또는 명시적인 모든 파일 와일드카드만 허용한다.
 
+- `setup_editor_window_wheel() -> Result<(), String>`
+  - 동적으로 만든 편집기 창에도 Windows 네이티브 가로 휠 훅을 설치한다.
 새 파일 입출력 기능을 추가할 때는 사용자가 대화상자로 선택했거나 운영체제가 파일 열기·드롭 의도로 넘긴 경로만 다루고, 실패를 `Result`로 반환한다.
 `FileCommandError`는 `code`와 `message`를 가진다. `code`는 오류 종류를 번역 테이블에 매핑하기 위한 짧은 코드이고, `message`는 운영체제나 파일 시스템에서 받은 상세 원문이다. 프론트엔드는 알려진 코드를 현재 표시 언어로 번역하고, 알 수 없는 오류에만 상세 원문을 fallback으로 사용한다.
 파일 원문은 UTF-8, UTF-8 BOM, UTF-16 LE/BE BOM을 지원한다. 디스크 바이트와 BOM으로 인코딩을 판별하고, BOM 없는 임의의 레거시 코드 페이지는 추측하지 않는다. 디스크에 인코딩된 크기 기준 최대 16 MiB, 디코딩한 원문 기준 최대 250,000줄까지만 열고 저장한다. 메타데이터 확인 뒤에도 제한보다 한 바이트만 더 읽어 파일 증가 경쟁에서 무제한 할당이 일어나지 않게 한다.
@@ -50,12 +52,12 @@
 - 메인 창은 빈 WebView가 먼저 보이지 않도록 `visible: false`로 시작하고, 편집기 `textarea`가 준비되면 프론트엔드가 `show()`와 `setFocus()`를 호출한다.
 - 설정 버튼은 기존 `settings` 창을 찾고, 없으면 동적으로 만든 뒤 `show()`와 `setFocus()`를 호출한다.
 - 설정창 닫기 요청은 창을 파괴하지 않고 `hide()`로 숨긴다.
-- `src-tauri/capabilities/default.json`은 `main` 창만 대상으로 파일 명령, 업데이트, 재시작, URL 열기, 파일 메시지창, 창 생성과 제어 권한을 부여한다.
-- 앱 전용 파일 명령은 `build.rs`의 애플리케이션 명세가 생성한 개별 허용 권한을 메인 창에만 연결한다.
+- `src-tauri/capabilities/default.json`은 `main`과 `editor-*` 편집기 창에 파일 명령, 창 간 이벤트, 업데이트, 재시작, URL 열기, 메시지창, 창 생성과 제어 권한을 부여한다.
+- 앱 전용 파일 명령은 `build.rs`의 애플리케이션 명세가 생성한 개별 허용 권한을 편집기 창에만 연결한다.
 - `src-tauri/capabilities/settings.json`은 `settings` 창에 이벤트 수신, 기본 창 조회, 숨기기 권한만 부여한다.
 - 프론트엔드에는 파일 열기·저장 대화상자 권한을 주지 않으며, 일반 메시지 대화상자와 웹 URL 열기만 허용한다.
 
-`tauri-plugin-window-state`는 메인 창만 복원해야 하므로 `settings` 창은 denylist에 둔다.
+`tauri-plugin-window-state`는 편집기 창의 위치와 크기를 복원하되 독립 설정창은 복원하지 않으므로 `settings` 창을 denylist에 둔다.
 
 ## 자체 업데이트
 
@@ -86,7 +88,7 @@ Windows WebView2는 일부 마우스 가로 휠 입력을 브라우저 `wheel` �
 
 - Windows 전용 코드는 `#[cfg(target_os = "windows")]` 안에 둔다.
 - 훅 설치 실패가 앱 종료로 이어지지 않게 하되, 실패한 설치 시도에서 만든 리소스는 회수한다.
-- 메인 창에만 훅을 연결한다.
+- 시작 시 메인 창에 훅을 연결하고, 동적 `editor-*` 창은 생성 뒤 전용 명령으로 같은 훅을 한 번 연결한다.
 
 ## Rust 기준
 

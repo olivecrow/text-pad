@@ -24,6 +24,12 @@ interface EditorUndoRecordOptions {
   mergeWindowMs?: number;
 }
 
+export interface EditorUndoHistoryState {
+  transactions: EditorUndoTransaction[];
+  cursor: number;
+  savedCursor: number | null;
+}
+
 export interface EditorUndoHistoryOptions {
   maxTransactions?: number;
   maxBytes?: number;
@@ -39,6 +45,14 @@ function cloneSelection(selection: EditorSelection): EditorSelection {
 
 function selectionsEqual(left: EditorSelection, right: EditorSelection): boolean {
   return left.start === right.start && left.end === right.end;
+}
+
+function cloneTransaction(transaction: EditorUndoTransaction): EditorUndoTransaction {
+  return {
+    ...transaction,
+    beforeSelection: cloneSelection(transaction.beforeSelection),
+    afterSelection: cloneSelection(transaction.afterSelection)
+  };
 }
 
 function getChangedRange(before: string, after: string) {
@@ -238,5 +252,34 @@ export class EditorUndoHistory {
 
   isDirty(): boolean {
     return this.savedCursor === null || this.cursor !== this.savedCursor;
+  }
+
+  exportState(): EditorUndoHistoryState {
+    return {
+      transactions: this.transactions.map(cloneTransaction),
+      cursor: this.cursor,
+      savedCursor: this.savedCursor
+    };
+  }
+
+  static fromState(
+    initialSnapshot: EditorSnapshot,
+    state: EditorUndoHistoryState,
+    options: EditorUndoHistoryOptions = {}
+  ): EditorUndoHistory {
+    const history = new EditorUndoHistory(initialSnapshot, options);
+    history.transactions = state.transactions.map(cloneTransaction);
+    history.cursor = Math.max(
+      0,
+      Math.min(Math.floor(state.cursor), history.transactions.length)
+    );
+    history.savedCursor = state.savedCursor === null
+      ? null
+      : Math.max(
+          0,
+          Math.min(Math.floor(state.savedCursor), history.transactions.length)
+        );
+    history.enforceHistoryBudget();
+    return history;
   }
 }

@@ -114,6 +114,15 @@ The current recognized forms are:
 
 `-`, `*`, and `+` are widely used lightweight-markup markers, while `•` is common in ordinary documents. Whitespace between the marker and body is treated as part of the marker and preserved when continuing the list. Identical text in the middle of a line is not treated as a list marker.
 
+### Rendered body cell and boundary editing
+
+- In render mode, a recognized list line is laid out as a two-column grid with a marker cell and a body cell. The body cell is a real layout region with its own wrapping width, not text positioned by drawing spaces after the marker.
+- First-line body text, soft-wrapped display rows, and `Shift+Enter` continuation lines all use the same left edge of the body cell. Leading whitespace on a continuation line remains only as source-compatible structure and is not editable body whitespace in render mode.
+- Clicking the marker cell or the structural area of a continuation line clamps a collapsed caret to the body start. A collapsed caret cannot remain in that structural area, and `ArrowLeft` at a continuation body start moves to the previous line end without traversing structural spaces.
+- Pressing `Backspace` at the body start of a marker line removes the marker's last visible character together with its following structural gap. Therefore `1. body` removes the period first and becomes `1body`, ending list treatment, while `• body` becomes `body` in one action.
+- Pressing `Backspace` at a continuation body start removes the preceding newline and continuation structure together, joining the body to the previous line.
+- Removing a marker-tail character and joining a continuation line are each one Undo action.
+
 ### Indentation depth and marker style
 
 When a list line is indented or outdented, choose its marker style again from the target depth and marker family. Ordered markers use the following styles.
@@ -345,13 +354,15 @@ The current render-mode priority is:
 6. Continue a list marker and renumber following items on Enter
 7. Create the next item and renumber following items from a list continuation line on Enter
 8. Preserve indentation on Enter for a general line
-9. Join an otherwise empty automatically indented line on Backspace
-10. Indent or outdent lines with Tab or Shift+Tab
-11. Delete leading indentation with Backspace
-12. Delete an empty automatic pair with Backspace
-13. Apply a context-aware substitution confirmed by Space
-14. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
-15. Fall back to default `textarea` input when none of the conditions match
+9. Remove the marker-tail character with Backspace at a list body start
+10. Join a list continuation line with Backspace at its body start
+11. Join an otherwise empty automatically indented line on Backspace
+12. Indent or outdent lines with Tab or Shift+Tab
+13. Delete leading indentation with Backspace
+14. Delete an empty automatic pair with Backspace
+15. Apply a context-aware substitution confirmed by Space
+16. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
+17. Fall back to default `textarea` input when none of the conditions match
 
 Do not chain one editing-assistance helper from inside another. The top-level input path selects exactly one feature by priority, and that feature records the final source text and selection only once.
 

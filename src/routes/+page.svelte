@@ -3,7 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { PhysicalPosition } from "@tauri-apps/api/dpi";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
+  import { emit, emitTo, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { Braces, ChevronDown, Code2, Copy, Download, FileCode2, FileText, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, Table2, X } from "@lucide/svelte";
   import {
@@ -27,12 +27,23 @@
     formatListMarker,
     getListContinuationIndent,
     getListMarkerAtStart,
+    getListMarkerBackspaceEdit,
+    getListMarkerBodyStart,
     getListMarkerForIndentLevel,
     getNextListMarkerLabel,
     renumberFollowingListMarkerSequence,
     type ListMarker
   } from "$lib/list-markers";
-  import { EditorUndoHistory, type EditorSelection, type EditorSnapshot } from "$lib/editor-undo";
+  import { EditorUndoHistory, type EditorSelection, type EditorSnapshot, type EditorUndoHistoryState } from "$lib/editor-undo";
+  import {
+    getTabDragPreviewPosition,
+    getTabDropIndex,
+    insertTabItem,
+    isPointInsideTabDock,
+    reorderTabItems,
+    tabDetachTargetClaimDelayMs,
+    type TabDragMetadata
+  } from "$lib/tab-drag";
   import {
     createDefaultMarkdownRenderSettings,
     markdownHeadingLevels,
@@ -107,6 +118,70 @@
     caretOffset: number;
   }
 
+  interface TabTransferPayload {
+    transferId: string;
+    sourceWindowLabel: string;
+    tab: EditorTab;
+    undoHistory: EditorUndoHistoryState;
+  }
+
+  interface TabTransferRequest extends TabDragMetadata {
+    targetWindowLabel: string;
+    dropIndex: number;
+  }
+
+  interface TabTransferDelivery extends TabTransferPayload {
+    dropIndex: number;
+  }
+
+  interface TabTransferAccepted {
+    transferId: string;
+    targetWindowLabel: string;
+  }
+
+  interface TabDragPreviewPresentation {
+    previewTitle: string;
+    previewIsDirty: boolean;
+    previewWidth: number;
+    previewOffsetX: number;
+    previewOffsetY: number;
+  }
+
+  interface OutgoingTabTransfer extends TabTransferPayload, TabDragPreviewPresentation {
+    receiverRequested: boolean;
+    handledInCurrentWindow: boolean;
+    hasLeftDock: boolean;
+    screenX: number;
+    screenY: number;
+    detachTimer: ReturnType<typeof setTimeout> | null;
+    expiryTimer: ReturnType<typeof setTimeout> | null;
+  }
+
+  interface TabPointerDragPayload extends TabDragMetadata, TabDragPreviewPresentation {
+    screenX: number;
+    screenY: number;
+  }
+
+  interface PendingPointerTabDrag {
+    pointerId: number;
+    tabId: string;
+    startClientX: number;
+    startClientY: number;
+    lastScreenX: number;
+    lastScreenY: number;
+    previewWidth: number;
+    previewOffsetX: number;
+    previewOffsetY: number;
+    transferId: string | null;
+  }
+
+  interface TabDragPreview extends TabDragPreviewPresentation {
+    transferId: string;
+    left: number;
+    top: number;
+  }
+
+
   interface OpenedFile {
     path: string;
     content: string;
@@ -125,6 +200,13 @@
   const languagePreferenceKey = 'pref_language';
   const documentRenderCache = createDocumentRenderCache();
 
+  const tabTransferRequestEvent = 'text-pad-tab-transfer-request';
+  const tabTransferDeliveryEvent = 'text-pad-tab-transfer-delivery';
+  const tabTransferAcceptedEvent = 'text-pad-tab-transfer-accepted';
+  const tabPointerDragMoveEvent = 'text-pad-tab-pointer-move';
+  const tabPointerDragDropEvent = 'text-pad-tab-pointer-drop';
+  const tabTransferIdQueryKey = 'tabTransferId';
+  const tabTransferSourceQueryKey = 'tabTransferSource';
   function getInitialLanguagePreference(): LanguagePreference {
     if (!isBrowser) return 'system';
     const savedPreference = localStorage.getItem(languagePreferenceKey);
@@ -146,6 +228,22 @@
     return '__TAURI_INTERNALS__' in runtimeWindow || '__TAURI__' in runtimeWindow;
   }
 
+  function getStartupTabTransferMetadata(): TabDragMetadata | null {
+    if (!isBrowser) return null;
+    const searchParams = new URLSearchParams(window.location.search);
+    const transferId = searchParams.get(tabTransferIdQueryKey);
+    const sourceWindowLabel = searchParams.get(tabTransferSourceQueryKey);
+    return transferId && sourceWindowLabel ? { transferId, sourceWindowLabel } : null;
+  }
+
+  function getCurrentEditorWindowLabel(): string {
+    if (!hasTauriRuntime()) return 'browser';
+    try {
+      return getCurrentWindow().label;
+    } catch {
+      return 'browser';
+    }
+  }
   function getInitialIsSettingsWindow(): boolean {
     if (!hasTauriRuntime()) return false;
 
@@ -246,6 +344,7 @@
   const preferredTabWidth = 150;
   const tabItemGap = 2;
   let tabListEl = $state<HTMLDivElement | null>(null);
+  let titlebarTabsEl = $state<HTMLDivElement | null>(null);
   let isTabStripOverflowing = $state(false);
   let isTabOverflowMenuOpen = $state(false);
   let hiddenTabIds = $state<string[]>([]);
@@ -256,6 +355,19 @@
     tabs.length * preferredTabWidth + Math.max(0, tabs.length - 1) * tabItemGap
   );
 
+  let draggedTabId = $state<string | null>(null);
+  let tabDropIndex = $state<number | null>(null);
+  let tabDropIndicatorLeft = $state(0);
+  let isTabDockDropTarget = $state(false);
+  let pendingPointerTabDrag: PendingPointerTabDrag | null = null;
+  let tabDragPreview = $state<TabDragPreview | null>(null);
+  let suppressedTabClickId: string | null = null;
+  let foreignTabDragTransferId: string | null = null;
+  const outgoingTabTransfers = new Map<string, OutgoingTabTransfer>();
+  const receivedTabTransferIds = new Set<string>();
+  const pendingIncomingTransferResolvers = new Map<string, (received: boolean) => void>();
+  let tabTransferListenersPromise: Promise<UnlistenFn[]> | null = null;
+  const startupTabTransferMetadata = getStartupTabTransferMetadata();
   let filePath = $state<string | null>(initialTab.filePath);
   let fileName = $state<string>(initialTab.fileName);
   let fileContent = $state<string>(initialTab.fileContent);
@@ -931,6 +1043,559 @@
     requestAnimationFrame(() => scrollTabIntoView(tabId));
   }
 
+  function createTabTransferId(): string {
+    const randomPart = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+    return `tab-transfer-${Date.now().toString(36)}-${randomPart}`;
+  }
+
+
+  function getActiveOutgoingTabTransfer(): OutgoingTabTransfer | null {
+    if (!draggedTabId) return null;
+    return Array.from(outgoingTabTransfers.values())
+      .find((transfer) => transfer.tab.id === draggedTabId) ?? null;
+  }
+
+  function clearTabDropTarget() {
+    tabDropIndex = null;
+    tabDropIndicatorLeft = 0;
+    isTabDockDropTarget = false;
+  }
+
+  function updateTabDropTarget(pointerX: number) {
+    const tabList = tabListEl;
+    if (!tabList) return;
+
+    const listRect = tabList.getBoundingClientRect();
+    if (isTabStripOverflowing) {
+      if (pointerX < listRect.left + 28) {
+        tabList.scrollLeft -= 16;
+      } else if (pointerX > listRect.right - 28) {
+        tabList.scrollLeft += 16;
+      }
+      updateTabStripMetrics();
+    }
+
+    const tabItems = Array.from(tabList.querySelectorAll<HTMLElement>('[data-tab-id]'));
+    const tabRects = tabItems.map((item) => {
+      const rect = item.getBoundingClientRect();
+      return { left: rect.left, width: rect.width };
+    });
+    const nextDropIndex = getTabDropIndex(pointerX, tabRects);
+    const indicatorClientX = nextDropIndex < tabItems.length
+      ? tabItems[nextDropIndex].getBoundingClientRect().left
+      : (tabItems.at(-1)?.getBoundingClientRect().right ?? listRect.left);
+
+    tabDropIndex = nextDropIndex;
+    tabDropIndicatorLeft = Math.max(
+      0,
+      Math.min(indicatorClientX - listRect.left, tabList.clientWidth)
+    );
+    isTabDockDropTarget = true;
+  }
+
+  function scheduleOutgoingTransferExpiry(transfer: OutgoingTabTransfer) {
+    if (transfer.expiryTimer) clearTimeout(transfer.expiryTimer);
+    transfer.expiryTimer = setTimeout(() => {
+      if (transfer.detachTimer) clearTimeout(transfer.detachTimer);
+      outgoingTabTransfers.delete(transfer.transferId);
+      if (tabDragPreview?.transferId === transfer.transferId) tabDragPreview = null;
+    }, 30_000);
+  }
+
+  function createOutgoingTabTransfer(
+    tabId: string,
+    screenX: number,
+    screenY: number,
+    previewWidth: number,
+    previewOffsetX: number,
+    previewOffsetY: number
+  ): OutgoingTabTransfer | null {
+    syncActiveTabState();
+    const tab = tabs.find((item) => item.id === tabId);
+    if (!tab) return null;
+
+    const transferId = createTabTransferId();
+    const sourceWindowLabel = getCurrentEditorWindowLabel();
+    const transfer: OutgoingTabTransfer = {
+      transferId,
+      sourceWindowLabel,
+      tab: { ...tab },
+      undoHistory: getUndoHistoryForTab(tab).exportState(),
+      receiverRequested: false,
+      handledInCurrentWindow: false,
+      hasLeftDock: false,
+      screenX,
+      screenY,
+      previewTitle: getDisplayFileName(tab),
+      previewIsDirty: tab.isDirty,
+      previewWidth,
+      previewOffsetX,
+      previewOffsetY,
+      detachTimer: null,
+      expiryTimer: null
+    };
+    outgoingTabTransfers.set(transferId, transfer);
+    scheduleOutgoingTransferExpiry(transfer);
+    draggedTabId = tabId;
+    closeAllDropdown();
+    return transfer;
+  }
+
+  function getTabDockPointFromClient(clientX: number, clientY: number) {
+    const dock = titlebarTabsEl;
+    if (!dock) return null;
+    const rect = dock.getBoundingClientRect();
+    if (!isPointInsideTabDock(clientX, clientY, rect)) return null;
+    return { clientX, clientY };
+  }
+
+  function getTabDockPointFromScreen(screenX: number, screenY: number) {
+    return getTabDockPointFromClient(
+      screenX - window.screenX,
+      screenY - window.screenY
+    );
+  }
+
+  function getTabPointerPayload(transfer: OutgoingTabTransfer): TabPointerDragPayload {
+    return {
+      transferId: transfer.transferId,
+      sourceWindowLabel: transfer.sourceWindowLabel,
+      screenX: transfer.screenX,
+      screenY: transfer.screenY,
+      previewTitle: transfer.previewTitle,
+      previewIsDirty: transfer.previewIsDirty,
+      previewWidth: transfer.previewWidth,
+      previewOffsetX: transfer.previewOffsetX,
+      previewOffsetY: transfer.previewOffsetY
+    };
+  }
+  function updateTabDragPreview(
+    transferId: string,
+    presentation: TabDragPreviewPresentation,
+    pointerX: number,
+    pointerY: number
+  ) {
+    const position = getTabDragPreviewPosition(
+      pointerX,
+      pointerY,
+      presentation.previewOffsetX,
+      presentation.previewOffsetY,
+      window.innerWidth,
+      window.innerHeight
+    );
+    tabDragPreview = position.visible
+      ? { transferId, ...presentation, left: position.left, top: position.top }
+      : null;
+  }
+
+
+  function broadcastTabPointerEvent(
+    eventName: typeof tabPointerDragMoveEvent | typeof tabPointerDragDropEvent,
+    transfer: OutgoingTabTransfer
+  ) {
+    if (!hasTauriRuntime()) return;
+    void emit(eventName, getTabPointerPayload(transfer)).catch((error) => {
+      console.error('Failed to broadcast tab pointer event:', error);
+    });
+  }
+
+  function handleTabPointerDown(event: PointerEvent, tabId: string) {
+    if (event.button !== 0 || !event.isPrimary) return;
+
+    const pointerTarget = event.currentTarget as HTMLElement;
+    const tabItem = pointerTarget.closest<HTMLElement>('[data-tab-id]') ?? pointerTarget;
+    const tabRect = tabItem.getBoundingClientRect();
+
+    pendingPointerTabDrag = {
+      pointerId: event.pointerId,
+      tabId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      lastScreenX: event.screenX,
+      lastScreenY: event.screenY,
+      previewWidth: tabRect.width,
+      previewOffsetX: Math.max(0, Math.min(event.clientX - tabRect.left, tabRect.width)),
+      previewOffsetY: Math.max(0, Math.min(event.clientY - tabRect.top, tabRect.height)),
+      transferId: null
+    };
+    pointerTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handleTabPointerMove(event: PointerEvent) {
+    const pointerDrag = pendingPointerTabDrag;
+    if (!pointerDrag || pointerDrag.pointerId !== event.pointerId) return;
+
+    pointerDrag.lastScreenX = event.screenX;
+    pointerDrag.lastScreenY = event.screenY;
+    if (!pointerDrag.transferId) {
+      const distance = Math.hypot(
+        event.clientX - pointerDrag.startClientX,
+        event.clientY - pointerDrag.startClientY
+      );
+      if (distance < 5) return;
+
+      const transfer = createOutgoingTabTransfer(
+        pointerDrag.tabId,
+        event.screenX,
+        event.screenY,
+        pointerDrag.previewWidth,
+        pointerDrag.previewOffsetX,
+        pointerDrag.previewOffsetY
+      );
+      if (!transfer) return;
+      pointerDrag.transferId = transfer.transferId;
+    }
+
+    event.preventDefault();
+    const transfer = outgoingTabTransfers.get(pointerDrag.transferId);
+    if (!transfer) return;
+    transfer.screenX = event.screenX;
+    transfer.screenY = event.screenY;
+
+    updateTabDragPreview(transfer.transferId, transfer, event.clientX, event.clientY);
+    const dockPoint = getTabDockPointFromClient(event.clientX, event.clientY);
+    if (dockPoint) {
+      updateTabDropTarget(dockPoint.clientX);
+    } else {
+      transfer.hasLeftDock = true;
+      clearTabDropTarget();
+    }
+    broadcastTabPointerEvent(tabPointerDragMoveEvent, transfer);
+  }
+
+  function reorderTabWithinCurrentWindow(tabId: string, dropIndex: number) {
+    syncActiveTabState();
+    const sourceIndex = tabs.findIndex((tab) => tab.id === tabId);
+    if (sourceIndex === -1) return;
+
+    const nextTabs = reorderTabItems(tabs, sourceIndex, dropIndex);
+    if (nextTabs.every((tab, index) => tab.id === tabs[index]?.id)) return;
+    tabs = nextTabs;
+    requestAnimationFrame(() => scrollTabIntoView(tabId));
+  }
+
+  function insertTransferredTab(delivery: TabTransferDelivery): boolean {
+    if (receivedTabTransferIds.has(delivery.transferId)) return true;
+
+    syncActiveTabState();
+    const shouldReplaceBlank = tabs.length === 1 && isCleanUntitledTab(tabs[0]);
+    const receivedTab: EditorTab = {
+      ...delivery.tab,
+      id: shouldReplaceBlank ? tabs[0].id : `tab-${nextTabId++}`
+    };
+    const receivedHistory = EditorUndoHistory.fromState(
+      getTabSnapshot(receivedTab),
+      delivery.undoHistory
+    );
+    receivedTab.isDirty = receivedHistory.isDirty();
+
+    if (shouldReplaceBlank) {
+      undoHistories.delete(tabs[0].id);
+      tabs = [receivedTab];
+    } else {
+      tabs = insertTabItem(tabs, receivedTab, delivery.dropIndex);
+    }
+
+    undoHistories.set(receivedTab.id, receivedHistory);
+    closeAllDropdown();
+    loadTabIntoEditor(receivedTab);
+    receivedTabTransferIds.add(delivery.transferId);
+    requestAnimationFrame(() => scrollTabIntoView(receivedTab.id));
+    return true;
+  }
+
+  function requestIncomingTabTransfer(
+    metadata: TabDragMetadata,
+    dropIndex: number
+  ): Promise<boolean> {
+    if (!hasTauriRuntime()) return Promise.resolve(false);
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        pendingIncomingTransferResolvers.delete(metadata.transferId);
+        resolve(false);
+      }, 3_000);
+      pendingIncomingTransferResolvers.set(metadata.transferId, (received) => {
+        clearTimeout(timeout);
+        pendingIncomingTransferResolvers.delete(metadata.transferId);
+        resolve(received);
+      });
+
+      void emitTo(metadata.sourceWindowLabel, tabTransferRequestEvent, {
+        ...metadata,
+        targetWindowLabel: getCurrentEditorWindowLabel(),
+        dropIndex
+      } satisfies TabTransferRequest).catch((error) => {
+        console.error('Failed to request tab transfer:', error);
+        const resolver = pendingIncomingTransferResolvers.get(metadata.transferId);
+        resolver?.(false);
+      });
+    });
+  }
+
+  async function handleTabTransferRequest(event: TauriEvent<TabTransferRequest>) {
+    const request = event.payload;
+    const transfer = outgoingTabTransfers.get(request.transferId);
+    if (!transfer || transfer.sourceWindowLabel !== request.sourceWindowLabel) return;
+
+    transfer.receiverRequested = true;
+    if (transfer.detachTimer) {
+      clearTimeout(transfer.detachTimer);
+      transfer.detachTimer = null;
+    }
+
+    const currentTab = tabs.find((tab) => tab.id === transfer.tab.id);
+    if (!currentTab) return;
+
+    try {
+      await emitTo(request.targetWindowLabel, tabTransferDeliveryEvent, {
+        transferId: transfer.transferId,
+        sourceWindowLabel: transfer.sourceWindowLabel,
+        tab: transfer.tab,
+        undoHistory: transfer.undoHistory,
+        dropIndex: request.dropIndex
+      } satisfies TabTransferDelivery);
+    } catch (error) {
+      console.error('Failed to deliver tab transfer:', error);
+    }
+  }
+
+  async function handleTabTransferDelivery(event: TauriEvent<TabTransferDelivery>) {
+    const delivery = event.payload;
+    try {
+      if (!insertTransferredTab(delivery)) return;
+      await emitTo(delivery.sourceWindowLabel, tabTransferAcceptedEvent, {
+        transferId: delivery.transferId,
+        targetWindowLabel: getCurrentEditorWindowLabel()
+      } satisfies TabTransferAccepted);
+      pendingIncomingTransferResolvers.get(delivery.transferId)?.(true);
+    } catch (error) {
+      console.error('Failed to receive tab transfer:', error);
+      pendingIncomingTransferResolvers.get(delivery.transferId)?.(false);
+    }
+  }
+
+  async function removeTransferredTabFromSource(tabId: string) {
+    if (!tabs.some((tab) => tab.id === tabId)) return;
+
+    if (tabs.length === 1 && hasTauriRuntime()) {
+      try {
+        await getCurrentWindow().destroy();
+      } catch (error) {
+        console.error('Failed to close empty tab window:', error);
+      }
+      return;
+    }
+
+    closeTabWithoutPrompt(tabId);
+  }
+
+  async function handleTabTransferAccepted(event: TauriEvent<TabTransferAccepted>) {
+    const accepted = event.payload;
+    const transfer = outgoingTabTransfers.get(accepted.transferId);
+    if (!transfer) return;
+
+    transfer.handledInCurrentWindow = true;
+    if (transfer.detachTimer) clearTimeout(transfer.detachTimer);
+    if (transfer.expiryTimer) clearTimeout(transfer.expiryTimer);
+    outgoingTabTransfers.delete(transfer.transferId);
+    await removeTransferredTabFromSource(transfer.tab.id);
+  }
+
+  async function createDetachedTabWindow(transfer: OutgoingTabTransfer) {
+    if (
+      !hasTauriRuntime()
+      || transfer.receiverRequested
+      || transfer.handledInCurrentWindow
+      || !outgoingTabTransfers.has(transfer.transferId)
+    ) {
+      return;
+    }
+
+    const label = `editor-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const searchParams = new URLSearchParams({
+      [tabTransferIdQueryKey]: transfer.transferId,
+      [tabTransferSourceQueryKey]: transfer.sourceWindowLabel
+    });
+    const hasScreenPosition = transfer.screenX !== 0 || transfer.screenY !== 0;
+    const detachedWindow = new WebviewWindow(label, {
+      url: `${window.location.origin}/?${searchParams.toString()}`,
+      title: getDisplayFileName(transfer.tab),
+      width: 800,
+      height: 600,
+      ...(hasScreenPosition
+        ? { x: Math.round(transfer.screenX - 120), y: Math.round(transfer.screenY - 16) }
+        : {}),
+      visible: false,
+      decorations: false,
+      shadow: true
+    });
+
+    void detachedWindow.once('tauri://error', (creationEvent) => {
+      console.error('Failed to create detached tab window:', creationEvent.payload);
+    });
+  }
+
+  function cleanupOutgoingTabTransfer(transfer: OutgoingTabTransfer) {
+    if (transfer.detachTimer) clearTimeout(transfer.detachTimer);
+    if (transfer.expiryTimer) clearTimeout(transfer.expiryTimer);
+    outgoingTabTransfers.delete(transfer.transferId);
+    if (tabDragPreview?.transferId === transfer.transferId) tabDragPreview = null;
+  }
+
+  function suppressDraggedTabClick(tabId: string) {
+    suppressedTabClickId = tabId;
+    setTimeout(() => {
+      if (suppressedTabClickId === tabId) suppressedTabClickId = null;
+    }, 0);
+  }
+
+  function finishTabPointerDrag(event: PointerEvent, cancelled: boolean) {
+    const pointerDrag = pendingPointerTabDrag;
+    if (!pointerDrag || pointerDrag.pointerId !== event.pointerId) return;
+    pendingPointerTabDrag = null;
+
+    const pointerTarget = event.currentTarget as HTMLElement;
+    if (pointerTarget.hasPointerCapture(event.pointerId)) {
+      pointerTarget.releasePointerCapture(event.pointerId);
+    }
+    if (!pointerDrag.transferId) return;
+
+    event.preventDefault();
+    suppressDraggedTabClick(pointerDrag.tabId);
+    const transfer = outgoingTabTransfers.get(pointerDrag.transferId);
+    draggedTabId = null;
+    tabDragPreview = null;
+    if (!transfer) {
+      clearTabDropTarget();
+      return;
+    }
+
+    transfer.screenX = event.screenX || pointerDrag.lastScreenX;
+    transfer.screenY = event.screenY || pointerDrag.lastScreenY;
+    if (cancelled) {
+      transfer.handledInCurrentWindow = true;
+      cleanupOutgoingTabTransfer(transfer);
+      clearTabDropTarget();
+      return;
+    }
+
+    const dockPoint = getTabDockPointFromClient(event.clientX, event.clientY);
+    if (dockPoint) {
+      updateTabDropTarget(dockPoint.clientX);
+      const nextDropIndex = tabDropIndex ?? tabs.length;
+      transfer.handledInCurrentWindow = true;
+      reorderTabWithinCurrentWindow(transfer.tab.id, nextDropIndex);
+      cleanupOutgoingTabTransfer(transfer);
+      clearTabDropTarget();
+      return;
+    }
+
+    transfer.hasLeftDock = true;
+    clearTabDropTarget();
+    if (!hasTauriRuntime()) {
+      cleanupOutgoingTabTransfer(transfer);
+      return;
+    }
+
+    broadcastTabPointerEvent(tabPointerDragDropEvent, transfer);
+    transfer.detachTimer = setTimeout(() => {
+      transfer.detachTimer = null;
+      void createDetachedTabWindow(transfer);
+    }, tabDetachTargetClaimDelayMs);
+  }
+
+  function handleTabPointerUp(event: PointerEvent) {
+    finishTabPointerDrag(event, false);
+  }
+
+  function handleTabPointerCancel(event: PointerEvent) {
+    finishTabPointerDrag(event, true);
+  }
+
+  function handleForeignTabPointerMove(event: TauriEvent<TabPointerDragPayload>) {
+    const pointer = event.payload;
+    if (pointer.sourceWindowLabel === getCurrentEditorWindowLabel()) return;
+    foreignTabDragTransferId = pointer.transferId;
+    updateTabDragPreview(
+      pointer.transferId,
+      pointer,
+      pointer.screenX - window.screenX,
+      pointer.screenY - window.screenY
+    );
+    const dockPoint = getTabDockPointFromScreen(pointer.screenX, pointer.screenY);
+    if (dockPoint) {
+      updateTabDropTarget(dockPoint.clientX);
+    } else {
+      clearTabDropTarget();
+    }
+  }
+
+  function handleForeignTabPointerDrop(event: TauriEvent<TabPointerDragPayload>) {
+    const pointer = event.payload;
+    if (pointer.sourceWindowLabel === getCurrentEditorWindowLabel()) return;
+    if (foreignTabDragTransferId === pointer.transferId) {
+      foreignTabDragTransferId = null;
+    }
+
+    if (tabDragPreview?.transferId === pointer.transferId) tabDragPreview = null;
+    const dockPoint = getTabDockPointFromScreen(pointer.screenX, pointer.screenY);
+    if (!dockPoint) {
+      clearTabDropTarget();
+      return;
+    }
+
+    updateTabDropTarget(dockPoint.clientX);
+    const nextDropIndex = tabDropIndex ?? tabs.length;
+    clearTabDropTarget();
+    void requestIncomingTabTransfer(pointer, nextDropIndex);
+  }
+
+  function handleTabClick(tabId: string) {
+    if (suppressedTabClickId === tabId) {
+      suppressedTabClickId = null;
+      return;
+    }
+    activateTab(tabId);
+  }
+
+  function ensureTabTransferListeners(): Promise<UnlistenFn[]> {
+    if (tabTransferListenersPromise) return tabTransferListenersPromise;
+    const eventWindow = getCurrentWindow();
+    tabTransferListenersPromise = Promise.all([
+      eventWindow.listen<TabTransferRequest>(tabTransferRequestEvent, handleTabTransferRequest),
+      eventWindow.listen<TabTransferDelivery>(tabTransferDeliveryEvent, handleTabTransferDelivery),
+      eventWindow.listen<TabTransferAccepted>(tabTransferAcceptedEvent, handleTabTransferAccepted),
+      eventWindow.listen<TabPointerDragPayload>(tabPointerDragMoveEvent, handleForeignTabPointerMove),
+      eventWindow.listen<TabPointerDragPayload>(tabPointerDragDropEvent, handleForeignTabPointerDrop)
+    ]);
+    return tabTransferListenersPromise;
+  }
+
+  $effect(() => {
+    if (!isBrowser || !hasTauriRuntime() || isSettingsWindow) return;
+
+    let disposed = false;
+    const listeners = ensureTabTransferListeners();
+    return () => {
+      disposed = true;
+      void listeners.then((unlisteners) => {
+        if (!disposed) return;
+        unlisteners.forEach((unlisten) => unlisten());
+      });
+      for (const transfer of outgoingTabTransfers.values()) {
+        if (transfer.detachTimer) clearTimeout(transfer.detachTimer);
+        if (transfer.expiryTimer) clearTimeout(transfer.expiryTimer);
+      }
+      outgoingTabTransfers.clear();
+      for (const resolve of pendingIncomingTransferResolvers.values()) {
+        resolve(false);
+      }
+      pendingIncomingTransferResolvers.clear();
+    };
+  });
   function activateTab(tabId: string) {
     if (tabId === activeTabId) return;
     syncActiveTabState();
@@ -1187,7 +1852,7 @@
         event.preventDefault();
         getCurrentWindow().hide();
       });
-    } else if (label === 'main') {
+    } else {
       let unlistenClose: (() => void) | undefined;
       getCurrentWindow().onCloseRequested(async (event) => {
         event.preventDefault();
@@ -1195,13 +1860,17 @@
         if (isHandlingCloseRequest) return;
         isHandlingCloseRequest = true;
         try {
-          const canClose = await shouldCloseMainWindow();
+          const canClose = await shouldCloseEditorWindow();
           if (!canClose) return;
 
           try {
-            const settingsWin = await WebviewWindow.getByLabel('settings');
-            if (settingsWin) {
-              await settingsWin.destroy();
+            const editorWindows = (await WebviewWindow.getAll())
+              .filter((window) => window.label !== 'settings' && window.label !== label);
+            if (editorWindows.length === 0) {
+              const settingsWin = await WebviewWindow.getByLabel('settings');
+              if (settingsWin) {
+                await settingsWin.destroy();
+              }
             }
           } catch {}
 
@@ -1218,7 +1887,7 @@
     }
   });
 
-  async function shouldCloseMainWindow(): Promise<boolean> {
+  async function shouldCloseEditorWindow(): Promise<boolean> {
     syncActiveTabState();
     const dirtyTabs = untrack(() => tabs.filter((tab) => tab.isDirty));
     if (dirtyTabs.length === 0) return true;
@@ -1636,6 +2305,7 @@
     const heights: number[] = new Array(lineTotal);
     let top = 0;
     let fencedRangeIndex = 0;
+    let activeListMarker: ListMarker | null = null;
 
     for (let lineIndex = 0; lineIndex < lineTotal; lineIndex += 1) {
       const lineStart = offsets[lineIndex] ?? 0;
@@ -1654,9 +2324,32 @@
         ? Math.max(1, contentWidth - (fencedCodeHorizontalPadding * 2))
         : contentWidth;
       const lineText = wrapEnabled ? getLineTextForLayout(content, offsets, lineIndex) : '';
+      const currentListMarker = isFencedCode ? null : getListMarkerAtStart(lineText);
+      if (isFencedCode) activeListMarker = null;
+      if (currentListMarker) activeListMarker = currentListMarker;
+
+      let listPrefixLength = 0;
+      let listLayoutMarker: ListMarker | null = currentListMarker;
+      if (currentListMarker) {
+        listPrefixLength = getListMarkerBodyStart(currentListMarker);
+      } else if (activeListMarker) {
+        const continuationIndent = getMeasuredListContinuationIndent(activeListMarker);
+        if (continuationIndent.length > 0 && lineText.startsWith(continuationIndent)) {
+          listPrefixLength = continuationIndent.length;
+          listLayoutMarker = activeListMarker;
+        } else {
+          activeListMarker = null;
+        }
+      }
+
+      const wrappedText = listLayoutMarker ? lineText.slice(listPrefixLength) : lineText;
+      const wrappedWidth = listLayoutMarker
+        ? Math.max(1, lineContentWidth - measureEditorTextWidth(`${listLayoutMarker.indent}${listLayoutMarker.marker}`))
+        : lineContentWidth;
       const visualLineCount = wrapEnabled
-        ? countWrappedVisualLines(lineText, lineContentWidth)
+        ? countWrappedVisualLines(wrappedText, wrappedWidth)
         : 1;
+      if (!currentListMarker && /^[ \t]*$/.test(lineText)) activeListMarker = null;
       const measuredHeight = measurements.content === content && measurements.context === measurementContext
         ? measurements.heights[lineIndex]
         : null;
@@ -1859,6 +2552,127 @@
     renderCache: documentRenderCache
   }));
   let parsedLines = $derived(documentRender.lines);
+
+  interface RenderListLineLayout {
+    marker: ListMarker;
+    ownerLineIndex: number;
+    prefixLength: number;
+  }
+
+  function getTokenTextLength(token: Token): number {
+    if (token.children?.length) {
+      return token.children.reduce((length, child) => length + getTokenTextLength(child), 0);
+    }
+    return token.text?.length ?? 0;
+  }
+
+  interface RenderListTokenParts {
+    prefixTokens: Token[];
+    bodyTokens: Token[];
+  }
+
+  function getListRenderTokenParts(tokens: Token[], prefixLength: number): RenderListTokenParts | null {
+    if (prefixLength === 0) {
+      return { prefixTokens: [], bodyTokens: tokens };
+    }
+
+    const prefixTokens: Token[] = [];
+    let remaining = prefixLength;
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      const tokenLength = getTokenTextLength(token);
+      if (tokenLength <= remaining) {
+        prefixTokens.push(token);
+        remaining -= tokenLength;
+        if (remaining === 0) {
+          return { prefixTokens, bodyTokens: tokens.slice(index + 1) };
+        }
+        continue;
+      }
+
+      if (token.children?.length) return null;
+      const tokenText = token.text ?? '';
+      const tokenStart = token.start;
+      const prefixText = tokenText.slice(0, remaining);
+      const bodyText = tokenText.slice(remaining);
+      if (prefixText) {
+        prefixTokens.push({
+          ...token,
+          text: prefixText,
+          end: tokenStart === undefined ? token.end : tokenStart + remaining
+        });
+      }
+      const bodyToken: Token = {
+        ...token,
+        text: bodyText,
+        start: tokenStart === undefined ? token.start : tokenStart + remaining
+      };
+      return {
+        prefixTokens,
+        bodyTokens: bodyText ? [bodyToken, ...tokens.slice(index + 1)] : tokens.slice(index + 1)
+      };
+    }
+
+    return remaining === 0 ? { prefixTokens, bodyTokens: [] } : null;
+  }
+
+  function getVisibleRenderListLineLayouts(
+    content: string,
+    offsets: number[],
+    firstLine: number,
+    lastLine: number
+  ): Array<RenderListLineLayout | null> {
+    let owner: { marker: ListMarker; lineIndex: number } | null = null;
+    for (let lineIndex = firstLine - 1; lineIndex >= 0; lineIndex -= 1) {
+      const lineText = getLineTextForLayout(content, offsets, lineIndex);
+      if (/^[ \t]*$/.test(lineText)) break;
+
+      const marker = getListMarkerAtStart(lineText);
+      if (marker) {
+        owner = { marker, lineIndex };
+        break;
+      }
+    }
+
+    const layouts: Array<RenderListLineLayout | null> = [];
+    for (let lineIndex = firstLine; lineIndex <= lastLine; lineIndex += 1) {
+      const lineText = getLineTextForLayout(content, offsets, lineIndex);
+      const marker = getListMarkerAtStart(lineText);
+      if (marker) owner = { marker, lineIndex };
+
+      let layout: RenderListLineLayout | null = null;
+      if (marker) {
+        layout = {
+          marker,
+          ownerLineIndex: lineIndex,
+          prefixLength: getListMarkerBodyStart(marker)
+        };
+      }
+      else if (owner) {
+        const continuationIndent = getMeasuredListContinuationIndent(owner.marker);
+        if (continuationIndent.length > 0 && lineText.startsWith(continuationIndent)) {
+          layout = {
+            marker: owner.marker,
+            ownerLineIndex: owner.lineIndex,
+            prefixLength: continuationIndent.length
+          };
+        } else {
+          owner = null;
+        }
+      }
+      layouts.push(layout);
+
+      if (!marker && /^[ \t]*$/.test(lineText)) owner = null;
+    }
+    return layouts;
+  }
+
+  let renderListLineLayouts = $derived(getVisibleRenderListLineLayouts(
+    fileContent,
+    lineStartOffsets,
+    startLine,
+    endLine
+  ));
 
   const syntaxDiagnosticDelayMs = 500;
 
@@ -2202,8 +3016,10 @@
     const appWindow = getCurrentWindow();
 
     try {
-      await appWindow.setTitle(getCurrentWindowTitle());
-      await appWindow.show();
+      await Promise.all([
+        appWindow.setTitle(getCurrentWindowTitle()),
+        appWindow.show()
+      ]);
       await appWindow.setFocus();
     } catch (err) {
       console.error('Failed to show main window:', err);
@@ -2249,7 +3065,7 @@
 
     isInstallingUpdate = true;
     try {
-      const canRestart = await shouldCloseMainWindow();
+      const canRestart = await shouldCloseEditorWindow();
       if (!canRestart) {
         showTransientStatus(t('update.cancelled'));
         return;
@@ -2366,8 +3182,39 @@
     void refreshInstalledAppVersion();
   }
 
+  async function receiveStartupTabTransfer(): Promise<boolean> {
+    if (!startupTabTransferMetadata) return true;
+
+    try {
+      await ensureTabTransferListeners();
+      const received = await requestIncomingTabTransfer(startupTabTransferMetadata, 0);
+      if (received) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete(tabTransferIdQueryKey);
+        url.searchParams.delete(tabTransferSourceQueryKey);
+        window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      }
+      return received;
+    } catch (error) {
+      console.error('Failed to initialize detached tab window:', error);
+      return false;
+    }
+  }
+
   async function initializeMainWindowAfterStartup() {
-    await loadStartupFiles();
+    if (getCurrentEditorWindowLabel() !== 'main') {
+      void invoke('setup_editor_window_wheel').catch((error) => {
+        console.error('Failed to initialize horizontal wheel for editor window:', error);
+      });
+    }
+    const receivedStartupTransfer = await receiveStartupTabTransfer();
+    if (startupTabTransferMetadata && !receivedStartupTransfer) {
+      await getCurrentWindow().destroy().catch(() => {});
+      return;
+    }
+    if (!startupTabTransferMetadata) {
+      await loadStartupFiles();
+    }
     await showMainWindowAfterStartup();
     void refreshInstalledAppVersion();
     scheduleStartupUpdateCheck();
@@ -2607,6 +3454,13 @@
           ?? getLastFencedCodeContentCaret(block)
           ?? offset;
       }
+    }
+
+    const listLineIndex = findLineIndexForOffset(offset);
+    const listLayout = getRenderListLineLayout(listLineIndex);
+    if (listLayout) {
+      const bodyStart = getRenderListBodyStart(listLineIndex, listLayout);
+      if (offset < bodyStart) return bodyStart;
     }
 
     return offset;
@@ -3004,6 +3858,102 @@
         return nextBodyStart + (offset - oldBodyStart);
       }
     };
+  }
+
+  function getRenderListLineLayout(lineIndex: number): RenderListLineLayout | null {
+    if (lineIndex >= startLine && lineIndex <= endLine) {
+      return renderListLineLayouts[lineIndex - startLine] ?? null;
+    }
+    return getVisibleRenderListLineLayouts(
+      fileContent,
+      lineStartOffsets,
+      lineIndex,
+      lineIndex
+    )[0] ?? null;
+  }
+
+  function getRenderListBodyStart(lineIndex: number, layout: RenderListLineLayout): number {
+    return (lineStartOffsets[lineIndex] ?? 0) + layout.prefixLength;
+  }
+
+  function getRenderListBodyColumnWidth(layout: RenderListLineLayout): number {
+    return Math.max(1, measureEditorTextWidth(`${layout.marker.indent}${layout.marker.marker}`));
+  }
+
+  function getRenderListLineStyle(layout: RenderListLineLayout): string {
+    return `--list-prefix-width: ${getRenderListBodyColumnWidth(layout)}px;`;
+  }
+
+  function handleRenderListBoundaryArrowLeft(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing || event.key !== 'ArrowLeft') return false;
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineIndex = findLineIndexForOffset(start);
+    const layout = getRenderListLineLayout(lineIndex);
+    if (!layout || layout.ownerLineIndex === lineIndex || layout.prefixLength === 0) return false;
+    if (start !== getRenderListBodyStart(lineIndex, layout)) return false;
+
+    const previousLine = getPreviousLineBounds(fileContent, lineStartOffsets[lineIndex] ?? 0);
+    if (!previousLine) return false;
+
+    event.preventDefault();
+    closeActiveUndoGroup();
+    setTextareaSelectionFromContent(previousLine.end, previousLine.end);
+    updateCursorPosition();
+    keepEditorCaretVisibleDuringEdit();
+    return true;
+  }
+
+  function handleRenderListMarkerBackspace(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing || event.key !== 'Backspace') return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineStart = getLineStartOffset(fileContent, start);
+    const lineEnd = getLineEndOffset(fileContent, start);
+    const edit = getListMarkerBackspaceEdit(
+      fileContent.slice(lineStart, lineEnd),
+      start - lineStart
+    );
+    if (!edit) return false;
+
+    event.preventDefault();
+    const nextCaret = lineStart + edit.caret;
+    commitRenderEditorEdit(
+      `${fileContent.slice(0, lineStart)}${edit.text}${fileContent.slice(lineEnd)}`,
+      { start: nextCaret, end: nextCaret }
+    );
+    return true;
+  }
+
+  function handleRenderListContinuationBackspace(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing || event.key !== 'Backspace') return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineIndex = findLineIndexForOffset(start);
+    const layout = getRenderListLineLayout(lineIndex);
+    if (!layout || layout.ownerLineIndex === lineIndex) return false;
+    if (start !== getRenderListBodyStart(lineIndex, layout)) return false;
+
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const previousLine = getPreviousLineBounds(fileContent, lineStart);
+    if (!previousLine) return false;
+
+    event.preventDefault();
+    const nextContent = `${fileContent.slice(0, previousLine.end)}${fileContent.slice(start)}`;
+    commitRenderEditorEdit(nextContent, {
+      start: previousLine.end,
+      end: previousLine.end
+    });
+    return true;
   }
 
   function getLineIndentOffsetDelta(
@@ -3613,11 +4563,14 @@
   }
 
   function handleRenderEditorKeyDown(event: KeyboardEvent) {
+    if (handleRenderListBoundaryArrowLeft(event)) return;
     if (handleRenderListSoftBreakEnter(event)) return;
     if (handleRenderExitEmptyListEnter(event)) return;
     if (handleRenderContinueListEnter(event)) return;
     if (handleRenderListContinuationEnter(event)) return;
     if (handleRenderPreserveIndentEnter(event)) return;
+    if (handleRenderListMarkerBackspace(event)) return;
+    if (handleRenderListContinuationBackspace(event)) return;
     if (handleRenderEmptyIndentedLineBackspace(event)) return;
     if (handleRenderTabIndent(event)) return;
     if (handleRenderIndentBackspace(event)) return;
@@ -4029,7 +4982,7 @@
     // Windows WebView2에서는 가로 휠 조작 시 브라우저 내 wheel 이벤트의 deltaX가 아예 0이 되는 버그가 있습니다.
     // 이를 우회하기 위해 Rust 백엔드에서 WM_MOUSEHWHEEL 메시지를 후킹하여 가로 휠 델타를 직접 수신받습니다.
     const unlistenPromise = hasTauriRuntime()
-      ? listen<number>("native-horizontal-wheel", (event: TauriEvent<number>) => {
+      ? getCurrentWindow().listen<number>("native-horizontal-wheel", (event: TauriEvent<number>) => {
           if (!textareaEl) return;
           const delta = event.payload;
           // OS의 delta 값(보통 120 또는 -120)을 받아 가로 스크롤에 직접 반영
@@ -4059,6 +5012,17 @@
 
     if (e.key === 'Escape') {
       closeAllDropdown();
+      const transfer = getActiveOutgoingTabTransfer();
+      if (pendingPointerTabDrag || transfer) e.preventDefault();
+      pendingPointerTabDrag = null;
+      draggedTabId = null;
+      foreignTabDragTransferId = null;
+      tabDragPreview = null;
+      if (transfer) {
+        transfer.handledInCurrentWindow = true;
+        cleanupOutgoingTabTransfer(transfer);
+      }
+      clearTabDropTarget();
     } else if (!isSettingsWindow && e.ctrlKey && key === 'z') {
       e.preventDefault();
       if (e.shiftKey) {
@@ -4293,6 +5257,18 @@
     if (!lineContent) return null;
 
     const targetOffset = clamp(offsetInLine, 0, lineText.length);
+    const listBody = lineContent.querySelector<HTMLElement>('.list-item-body');
+    const listBodyStart = Number(lineContent.dataset.listBodyStart);
+    if (
+      listBody
+      && Number.isFinite(listBodyStart)
+      && targetOffset === listBodyStart
+      && lineText.length === listBodyStart
+    ) {
+      const bodyRect = listBody.getBoundingClientRect();
+      const lineRect = lineElement.getBoundingClientRect();
+      return new DOMRect(bodyRect.left, lineRect.top, 1, measuredLineHeight);
+    }
     if (lineText.length === 0) {
       const lineRect = lineElement.getBoundingClientRect();
       const lineContentRect = lineContent.getBoundingClientRect();
@@ -4319,6 +5295,11 @@
     if (lineText.length === 0) return 0;
     const lineContent = lineElement.querySelector<HTMLElement>('.line-content');
     if (!lineContent) return 0;
+    const listBodyStart = Number(lineContent.dataset.listBodyStart);
+    const clampToListBody = (offset: number) => Number.isFinite(listBodyStart)
+      ? Math.max(listBodyStart, offset)
+      : offset;
+
 
     const nativeOffset = getNativeCaretTextOffsetAtPoint(
       lineContent,
@@ -4326,10 +5307,10 @@
       clientX,
       clientY
     );
-    if (nativeOffset !== null) return nativeOffset;
+    if (nativeOffset !== null) return clampToListBody(nativeOffset);
 
     const boundaries = createRenderedTextBoundaryIndex(lineContent, lineText.length);
-    return findClosestRenderedTextOffset(
+    return clampToListBody(findClosestRenderedTextOffset(
       lineText.length,
       clientX,
       clientY,
@@ -4338,7 +5319,7 @@
         const boundary = boundaries.getBoundary(offset);
         return boundary ? getRenderedCaretRectAtBoundary(lineElement, boundary) : null;
       }
-    );
+    ));
   }
 
   function getRenderedCaretRectForOffset(offset: number): DOMRect | null {
@@ -5384,7 +6365,12 @@
         <img class="titlebar-app-image" src="/favicon.png" alt="" draggable="false" />
       </div>
 
-      <div class="titlebar-tabs">
+      <div
+        class="titlebar-tabs"
+        class:tab-drop-active={isTabDockDropTarget}
+        bind:this={titlebarTabsEl}
+        role="presentation"
+      >
         <div
           class="tab-list-shell"
           style={`--minimum-tab-width: ${minimumTabWidth}px; --preferred-tab-width: ${preferredTabWidth}px; --tab-list-preferred-width: ${tabListPreferredWidth}px;`}
@@ -5402,6 +6388,7 @@
                 class="tab-item"
                 class:active={tab.id === activeTabId}
                 class:dirty={tab.isDirty}
+                class:dragging={tab.id === draggedTabId}
                 data-tab-id={tab.id}
               >
                 <button
@@ -5409,8 +6396,13 @@
                   class="tab-select"
                   role="tab"
                   aria-selected={tab.id === activeTabId}
+                  draggable="false"
+                  onpointerdown={(event) => handleTabPointerDown(event, tab.id)}
+                  onpointermove={handleTabPointerMove}
+                  onpointerup={handleTabPointerUp}
+                  onpointercancel={handleTabPointerCancel}
                   title={tab.filePath || getDisplayFileName(tab)}
-                  onclick={() => activateTab(tab.id)}
+                  onclick={() => handleTabClick(tab.id)}
                 >
                   {#if tab.isDirty}
                     <span class="tab-dirty-dot" aria-hidden="true"></span>
@@ -5436,6 +6428,12 @@
                 style={`width: ${tabScrollThumbWidth}px; transform: translateX(${tabScrollThumbLeft}px);`}
               ></div>
             </div>
+          {/if}
+          {#if isTabDockDropTarget}
+            <div
+              class="tab-drop-indicator"
+              style={`transform: translateX(${tabDropIndicatorLeft}px);`}
+            ></div>
           {/if}
         </div>
         <div class="tab-strip-actions">
@@ -5528,6 +6526,23 @@
         </button>
       </div>
     </div>
+
+    {#if tabDragPreview}
+      <div
+        class="tab-drag-preview"
+        data-tab-drag-preview
+        aria-hidden="true"
+        style={`width: ${tabDragPreview.previewWidth}px; transform: translate3d(${tabDragPreview.left}px, ${tabDragPreview.top}px, 0);`}
+      >
+        <div class="tab-drag-preview-content">
+          {#if tabDragPreview.previewIsDirty}
+            <span class="tab-dirty-dot"></span>
+          {/if}
+          <span class="tab-title">{tabDragPreview.previewTitle}</span>
+        </div>
+        <span class="tab-drag-preview-close"><X size={14} aria-hidden="true" /></span>
+      </div>
+    {/if}
 
     <!-- 메뉴바 영역 -->
     <nav class="menu-bar">
@@ -5769,8 +6784,55 @@
                 {#each Array(endLine - startLine + 1) as _, idx}
                   {@const lineIdx = startLine + idx}
                   {@const line = parsedLines[idx]}
+                  {@const listLayout = renderListLineLayouts[idx] ?? null}
+                  {@const listTokenParts = listLayout ? getListRenderTokenParts(line?.tokens ?? [], listLayout.prefixLength) : null}
                   {#if line}
-                    <div use:observeRenderedLine class="backdrop-line" data-line-index={lineIdx} class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} class:configuration-rule-line={line.lineKind === 'rule'} class:configuration-negated-rule-line={line.lineKind === 'negated-rule'} class:configuration-section-line={line.lineKind === 'section'} class:translation-source-line={line.lineKind === 'translation-source'} class:translation-target-line={line.lineKind === 'translation-target'} class:translation-empty-line={line.lineKind === 'translation-empty'} class:subject-line={line.lineKind === 'subject'} class:fenced-code-line={line.fencedCodePosition !== undefined} class:fenced-code-start={line.fencedCodePosition === 'start'} class:fenced-code-middle={line.fencedCodePosition === 'middle'} class:fenced-code-end={line.fencedCodePosition === 'end'} class:markdown-heading-line={line.headingLevel !== undefined} class:markdown-heading-divider={line.headingLevel !== undefined && line.headingLevel <= 2 && markdownRenderSettings.showHeadingDividers} class:styled-text-geometry={line.headingLevel !== undefined} style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize}; {getMarkdownHeadingLineStyle(line.headingLevel)}">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
+                    <div
+                      use:observeRenderedLine
+                      class="backdrop-line"
+                      data-line-index={lineIdx}
+                      class:list-item-line={listLayout !== null}
+                      class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1}
+                      class:configuration-rule-line={line.lineKind === 'rule'}
+                      class:configuration-negated-rule-line={line.lineKind === 'negated-rule'}
+                      class:configuration-section-line={line.lineKind === 'section'}
+                      class:translation-source-line={line.lineKind === 'translation-source'}
+                      class:translation-target-line={line.lineKind === 'translation-target'}
+                      class:translation-empty-line={line.lineKind === 'translation-empty'}
+                      class:subject-line={line.lineKind === 'subject'}
+                      class:fenced-code-line={line.fencedCodePosition !== undefined}
+                      class:fenced-code-start={line.fencedCodePosition === 'start'}
+                      class:fenced-code-middle={line.fencedCodePosition === 'middle'}
+                      class:fenced-code-end={line.fencedCodePosition === 'end'}
+                      class:markdown-heading-line={line.headingLevel !== undefined}
+                      class:markdown-heading-divider={line.headingLevel !== undefined && line.headingLevel <= 2 && markdownRenderSettings.showHeadingDividers}
+                      class:styled-text-geometry={line.headingLevel !== undefined}
+                      style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize}; {getMarkdownHeadingLineStyle(line.headingLevel)} {listLayout ? getRenderListLineStyle(listLayout) : ''}"
+                    >
+                      {#each Array(line.indentLevel) as _, i}
+                        <span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>
+                      {/each}
+                      {#if listLayout && listTokenParts}
+                        <span class="line-content list-item-content" data-list-body-start={listLayout.prefixLength}>
+                          <span class="list-item-prefix">
+                            {#each listTokenParts.prefixTokens as token}
+                              {@render renderToken(token)}
+                            {/each}
+                          </span>
+                          <span class="list-item-body">
+                            {#each listTokenParts.bodyTokens as token}
+                              {@render renderToken(token)}
+                            {/each}
+                          </span>
+                        </span>
+                      {:else}
+                        <span class="line-content">
+                          {#each line.tokens as token}
+                            {@render renderToken(token)}
+                          {/each}
+                        </span>
+                      {/if}
+                    </div>
                   {/if}
                 {/each}
               </div>
@@ -6307,6 +7369,55 @@
     border-color: var(--tab-border-color);
   }
 
+  .tab-item.dragging {
+    opacity: 0.55;
+  }
+
+  .tab-item.dragging .tab-select {
+    cursor: grabbing;
+  }
+
+  .tab-drag-preview {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    height: 32px;
+    color: var(--text-color);
+    background-color: var(--bg-tab-active);
+    border: 1px solid var(--tab-border-color);
+    border-radius: 7px;
+    box-sizing: border-box;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.14);
+    opacity: 0.96;
+    overflow: hidden;
+    pointer-events: none;
+    will-change: transform;
+  }
+
+  .tab-drag-preview-content {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0 8px 0 12px;
+    font-family: var(--font-ui);
+    font-size: 0.78rem;
+  }
+
+  .tab-drag-preview-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+  }
+
   .tab-select {
     flex: 1;
     min-width: 0;
@@ -6321,8 +7432,9 @@
     font-family: var(--font-ui);
     font-size: 0.78rem;
     text-align: left;
-    cursor: pointer;
+    cursor: grab;
     outline: none;
+    touch-action: none;
   }
 
   .tab-select:focus-visible,
@@ -6473,6 +7585,19 @@
     opacity: 0.55;
     will-change: transform;
   }
+  .tab-drop-indicator {
+    position: absolute;
+    top: 4px;
+    bottom: 3px;
+    left: 0;
+    z-index: 4;
+    width: 2px;
+    border-radius: 999px;
+    background-color: var(--accent-color);
+    box-shadow: 0 0 0 1px var(--bg-color);
+    pointer-events: none;
+  }
+
 
   .window-control-group {
     display: flex;
@@ -6884,6 +8009,32 @@
   .line-content {
     display: inline;
     color: var(--color-render-text, var(--text-color));
+  }
+
+  .backdrop-line.list-item-line {
+    white-space: normal;
+  }
+
+  .list-item-content {
+    display: grid;
+    grid-template-columns: var(--list-prefix-width) minmax(0, 1fr);
+    align-items: start;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .list-item-prefix {
+    grid-column: 1;
+    white-space: pre;
+  }
+
+  .list-item-body {
+    grid-column: 2;
+    min-width: 0;
+    min-height: 1lh;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: keep-all;
   }
 
   .editor-textarea {

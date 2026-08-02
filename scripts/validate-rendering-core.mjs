@@ -51,6 +51,7 @@ try {
   const documentFormats = await server.ssrLoadModule('/src/lib/document-formats.ts');
   const delimited = await server.ssrLoadModule('/src/lib/delimited-table.ts');
   const budgets = await server.ssrLoadModule('/src/lib/render-budgets.ts');
+  const listMarkers = await server.ssrLoadModule('/src/lib/list-markers.ts');
 
   const offsetSamples = [
     '',
@@ -149,6 +150,14 @@ try {
   assert.strictEqual(renderCache.xml.tokens, cachedTokens, 'XML tokens were rebuilt for an unchanged document');
 
   assert.equal(budgets.MAX_INTERACTIVE_TABLE_CELLS, 2_000);
+  const orderedMarkerEdit = listMarkers.getListMarkerBackspaceEdit('1. body', 3);
+  assert.deepEqual(orderedMarkerEdit, { text: '1body', caret: 1 });
+  const nestedMarkerEdit = listMarkers.getListMarkerBackspaceEdit('    (1) body', 8);
+  assert.deepEqual(nestedMarkerEdit, { text: '    (1body', caret: 6 });
+  const unorderedMarkerEdit = listMarkers.getListMarkerBackspaceEdit('• body', 2);
+  assert.deepEqual(unorderedMarkerEdit, { text: 'body', caret: 0 });
+  assert.equal(listMarkers.getListMarkerBackspaceEdit('1. body', 4), null);
+
   const tableRow = Array.from({ length: 10 }, (_, index) => `value-${index}`).join(',');
   const interactiveTableContent = Array.from({ length: 200 }, () => tableRow).join('\n');
   const oversizedTableContent = `${interactiveTableContent}\n${tableRow}`;
@@ -179,7 +188,7 @@ try {
 
   console.log(
     `Validated render core: CRLF offsets, logarithmic hit testing (${rectCalls} reads), `
-      + `XML range cache (${xmlParseDuration.toFixed(1)}ms), and table copy-on-write.`
+      + `XML range cache (${xmlParseDuration.toFixed(1)}ms), list-marker backspace, and table copy-on-write.`
   );
 } finally {
   await server.close();

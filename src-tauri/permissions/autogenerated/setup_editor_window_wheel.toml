@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-setup-editor-window-wheel"
+description = "Enables the setup_editor_window_wheel command without any pre-configured scope."
+commands.allow = ["setup_editor_window_wheel"]
+
+[[permission]]
+identifier = "deny-setup-editor-window-wheel"
+description = "Denies the setup_editor_window_wheel command without any pre-configured scope."
+commands.deny = ["setup_editor_window_wheel"]
