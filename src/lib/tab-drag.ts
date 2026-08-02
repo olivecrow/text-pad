@@ -53,6 +53,14 @@ export function getTabDragPreviewPosition(
       && pointerY <= viewportHeight
   };
 }
+export function shouldReplaceDetachedWindowPlaceholder(
+  startupTransferId: string | null,
+  incomingTransferId: string,
+  hasSingleCleanUntitledTab: boolean
+): boolean {
+  return hasSingleCleanUntitledTab && startupTransferId === incomingTransferId;
+}
+
 
 
 export function getTabDropIndex(pointerX: number, tabRects: TabDropRect[]): number {

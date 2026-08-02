@@ -31,6 +31,23 @@ try {
 
 
 
+  assert.equal(
+    tabDrag.shouldReplaceDetachedWindowPlaceholder(null, 'incoming', true),
+    false
+  );
+  assert.equal(
+    tabDrag.shouldReplaceDetachedWindowPlaceholder('startup', 'incoming', true),
+    false
+  );
+  assert.equal(
+    tabDrag.shouldReplaceDetachedWindowPlaceholder('incoming', 'incoming', true),
+    true
+  );
+  assert.equal(
+    tabDrag.shouldReplaceDetachedWindowPlaceholder('incoming', 'incoming', false),
+    false
+  );
+
   const rects = [
     { left: 0, width: 100 },
     { left: 100, width: 100 },
@@ -80,7 +97,7 @@ try {
   assert.equal(restoredSavedHistory.isDirty(), false);
 
   console.log(
-    'Validated tab drag: dock bounds, pointer-follow preview, insertion indices, reordering, and undo-state transfer.'
+    'Validated tab drag: dock bounds, pointer-follow preview, blank-tab preservation, insertion indices, reordering, and undo-state transfer.'
   );
 } finally {
   await server.close();

@@ -41,6 +41,7 @@
     insertTabItem,
     isPointInsideTabDock,
     reorderTabItems,
+    shouldReplaceDetachedWindowPlaceholder,
     tabDetachTargetClaimDelayMs,
     type TabDragMetadata
   } from "$lib/tab-drag";
@@ -1280,7 +1281,12 @@
     if (receivedTabTransferIds.has(delivery.transferId)) return true;
 
     syncActiveTabState();
-    const shouldReplaceBlank = tabs.length === 1 && isCleanUntitledTab(tabs[0]);
+    const hasSingleCleanUntitledTab = tabs.length === 1 && isCleanUntitledTab(tabs[0]);
+    const shouldReplaceBlank = shouldReplaceDetachedWindowPlaceholder(
+      startupTabTransferMetadata?.transferId ?? null,
+      delivery.transferId,
+      hasSingleCleanUntitledTab
+    );
     const receivedTab: EditorTab = {
       ...delivery.tab,
       id: shouldReplaceBlank ? tabs[0].id : `tab-${nextTabId++}`
