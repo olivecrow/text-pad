@@ -28,13 +28,12 @@
     getListContinuationIndent,
     getListMarkerAtStart,
     getListMarkerBackspaceEdit,
-    getListMarkerBodyStart,
     getListMarkerForIndentLevel,
     getNextListMarkerLabel,
     renumberFollowingListMarkerSequence,
     type ListMarker
   } from "$lib/list-markers";
-  import { EditorUndoHistory, type EditorSelection, type EditorSnapshot, type EditorUndoHistoryState } from "$lib/editor-undo";
+  import { EditorUndoHistory, EditorUndoWindowBudget, type EditorSelection, type EditorSnapshot, type EditorUndoHistoryState } from "$lib/editor-undo";
   import {
     getTabDragPreviewPosition,
     getTabDropIndex,
@@ -94,6 +93,22 @@
     textareaOffsetToContentOffset,
     type TextOffsetIndex
   } from "$lib/text-offset-index";
+  import { getPreferredNewline, getSnapshotFromTextareaInput } from "$lib/editor-input";
+  import { BoundedLruCache, BoundedRecentSet } from "$lib/bounded-collections";
+  import { getTextChange, type TextChange } from "$lib/text-change";
+  import {
+    createEditorLineLayoutCache,
+    createFencedCodeBlockCache,
+    getEditorLineLayout,
+    getFencedCodeBlockRanges,
+    type FencedCodeBlockRange,
+    type RenderedLineHeightMeasurements,
+    type RenderListLineLayout
+  } from "$lib/editor-layout";
+  import {
+    createBrowserDocumentDiagnosticWorkerClient,
+    DocumentDiagnosticCancelledError
+  } from "$lib/document-diagnostic-client";
   import {
     createRenderedTextBoundaryIndex,
     findClosestRenderedTextOffset,
@@ -200,6 +215,13 @@
   const isBrowser = typeof window !== 'undefined';
   const languagePreferenceKey = 'pref_language';
   const documentRenderCache = createDocumentRenderCache();
+  const editorLineLayoutCache = createEditorLineLayoutCache();
+  const fencedCodeBlockCache = createFencedCodeBlockCache();
+  const documentDiagnosticWorkerClient = isBrowser && typeof Worker !== 'undefined'
+    ? createBrowserDocumentDiagnosticWorkerClient()
+    : null;
+  let documentDiagnosticRequestId = 0;
+
 
   const tabTransferRequestEvent = 'text-pad-tab-transfer-request';
   const tabTransferDeliveryEvent = 'text-pad-tab-transfer-delivery';
@@ -339,6 +361,8 @@
     [initialTab.id, new EditorUndoHistory(getTabSnapshot(initialTab))]
   ]);
   let lastEditorSnapshot: EditorSnapshot = getTabSnapshot(initialTab);
+  const undoWindowBudget = new EditorUndoWindowBudget(128 * 1024 * 1024);
+  undoWindowBudget.touch(initialTab.id);
   let tabs = $state<EditorTab[]>([initialTab]);
   let activeTabId = $state<string>(initialTab.id);
   const minimumTabWidth = 128;
@@ -365,14 +389,15 @@
   let suppressedTabClickId: string | null = null;
   let foreignTabDragTransferId: string | null = null;
   const outgoingTabTransfers = new Map<string, OutgoingTabTransfer>();
-  const receivedTabTransferIds = new Set<string>();
+  const receivedTabTransferIds = new BoundedRecentSet<string>(256);
   const pendingIncomingTransferResolvers = new Map<string, (received: boolean) => void>();
   let tabTransferListenersPromise: Promise<UnlistenFn[]> | null = null;
   const startupTabTransferMetadata = getStartupTabTransferMetadata();
   let filePath = $state<string | null>(initialTab.filePath);
   let fileName = $state<string>(initialTab.fileName);
   let fileContent = $state<string>(initialTab.fileContent);
-  let textOffsetIndex = $derived(createTextOffsetIndex(fileContent));
+  let textOffsetIndex = $state.raw<TextOffsetIndex>(createTextOffsetIndex(initialTab.fileContent));
+  let latestContentChange = $state.raw<TextChange | null>(null);
   let fileEncoding = $state<TextEncoding>(initialTab.encoding);
   let isDirty = $state<boolean>(initialTab.isDirty);
   let isLoading = $state<boolean>(false);
@@ -410,7 +435,7 @@
   let editorTextMeasureCanvas: HTMLCanvasElement | null = null;
   let editorTextMeasureContext: CanvasRenderingContext2D | null = null;
   let editorTextMeasureFont = '';
-  let editorTextWidthCache = new Map<string, number>();
+  let editorTextWidthCache = new BoundedLruCache<string, number>(12000);
   const renderedSelectionHighlightName = 'render-selection';
   const supportsRenderedSelectionHighlight = isBrowser
     && typeof Highlight === 'function'
@@ -647,7 +672,6 @@
   const editorTopPadding = 8;
   const virtualLineOverscan = 8;
   const editorResizeDebounceMs = 80;
-  const editorTextWidthCacheLimit = 12000;
   const delimitedTableReorderDurationMinMs = 50;
   const delimitedTableReorderDurationMaxMs = 2000;
   const delimitedTableReorderDurationStepMs = 50;
@@ -728,17 +752,6 @@
     };
   }
 
-  interface EditorLineLayout {
-    tops: number[];
-    heights: number[];
-    totalHeight: number;
-  }
-
-  interface RenderedLineHeightMeasurements {
-    content: string;
-    context: string;
-    heights: Record<number, number>;
-  }
 
   function getActiveTabIndex(): number {
     return tabs.findIndex((tab) => tab.id === activeTabId);
@@ -759,6 +772,7 @@
       history = new EditorUndoHistory(getTabSnapshot(tab));
       undoHistories.set(tab.id, history);
     }
+    undoWindowBudget.touch(tab.id);
     return history;
   }
 
@@ -771,14 +785,20 @@
       history = new EditorUndoHistory(getCurrentEditorSnapshot());
       undoHistories.set(activeTabId, history);
     }
+    undoWindowBudget.touch(activeTabId);
     return history;
+  }
+
+  function enforceUndoWindowBudget() {
+    undoWindowBudget.enforce(undoHistories, activeTabId);
   }
 
   function resetUndoHistoryForTab(tab: EditorTab) {
     const history = new EditorUndoHistory(getTabSnapshot(tab));
     undoHistories.set(tab.id, history);
+    undoWindowBudget.touch(tab.id);
+    enforceUndoWindowBudget();
   }
-
   function markTabHistorySaved(tabId: string) {
     const tab = tabs.find((item) => item.id === tabId);
     const history = tab ? getUndoHistoryForTab(tab) : undoHistories.get(tabId);
@@ -824,51 +844,6 @@
     textareaEl.selectionEnd = contentOffsetToTextareaOffset(index, end);
   }
 
-  function getSnapshotFromTextareaInput(
-    before: EditorSnapshot,
-    textareaValue: string,
-    textareaSelectionStart: number,
-    textareaSelectionEnd: number
-  ): EditorSnapshot {
-    const beforeOffsetIndex = createTextOffsetIndex(before.content);
-    const beforeTextareaValue = beforeOffsetIndex.textareaValue;
-    let prefixLength = 0;
-    const prefixLimit = Math.min(beforeTextareaValue.length, textareaValue.length);
-
-    while (
-      prefixLength < prefixLimit
-      && beforeTextareaValue[prefixLength] === textareaValue[prefixLength]
-    ) {
-      prefixLength += 1;
-    }
-
-    let suffixLength = 0;
-    while (
-      suffixLength < beforeTextareaValue.length - prefixLength
-      && suffixLength < textareaValue.length - prefixLength
-      && beforeTextareaValue[beforeTextareaValue.length - suffixLength - 1]
-        === textareaValue[textareaValue.length - suffixLength - 1]
-    ) {
-      suffixLength += 1;
-    }
-
-    const beforeTextareaEnd = beforeTextareaValue.length - suffixLength;
-    const afterTextareaEnd = textareaValue.length - suffixLength;
-    const contentStart = textareaOffsetToContentOffset(beforeOffsetIndex, prefixLength);
-    const contentEnd = textareaOffsetToContentOffset(beforeOffsetIndex, beforeTextareaEnd);
-    const newline = getPreferredNewline(before.content, contentStart);
-    const replacement = textareaValue.slice(prefixLength, afterTextareaEnd).replace(/\n/g, newline);
-    const content = `${before.content.slice(0, contentStart)}${replacement}${before.content.slice(contentEnd)}`;
-
-    const contentOffsetIndex = createTextOffsetIndex(content);
-    return {
-      content,
-      selection: {
-        start: textareaOffsetToContentOffset(contentOffsetIndex, textareaSelectionStart),
-        end: textareaOffsetToContentOffset(contentOffsetIndex, textareaSelectionEnd)
-      }
-    };
-  }
 
   function getCurrentEditorSelection(): EditorSelection {
     return getTextareaSelectionInContent();
@@ -950,7 +925,10 @@
     activeTabId = tab.id;
     filePath = tab.filePath;
     fileName = getDisplayFileName(tab);
+    latestContentChange = null;
+    textOffsetIndex = createTextOffsetIndex(tab.fileContent);
     fileContent = tab.fileContent;
+    enforceUndoWindowBudget();
     fileEncoding = tab.encoding;
     isDirty = history.isDirty();
     errorMsg = null;
@@ -1298,6 +1276,7 @@
     receivedTab.isDirty = receivedHistory.isDirty();
 
     if (shouldReplaceBlank) {
+      undoWindowBudget.remove(tabs[0].id);
       undoHistories.delete(tabs[0].id);
       tabs = [receivedTab];
     } else {
@@ -1305,6 +1284,7 @@
     }
 
     undoHistories.set(receivedTab.id, receivedHistory);
+    undoWindowBudget.touch(receivedTab.id);
     closeAllDropdown();
     loadTabIntoEditor(receivedTab);
     receivedTabTransferIds.add(delivery.transferId);
@@ -1596,6 +1576,7 @@
         if (transfer.expiryTimer) clearTimeout(transfer.expiryTimer);
       }
       outgoingTabTransfers.clear();
+      receivedTabTransferIds.clear();
       for (const resolve of pendingIncomingTransferResolvers.values()) {
         resolve(false);
       }
@@ -1647,6 +1628,7 @@
     if (closingIndex === -1) return;
 
     if (tabs.length === 1) {
+      undoWindowBudget.remove(tabId);
       undoHistories.delete(tabId);
       const blankTab = createEditorTab();
       resetUndoHistoryForTab(blankTab);
@@ -1656,6 +1638,7 @@
     }
 
     const nextTabs = tabs.filter((tab) => tab.id !== tabId);
+    undoWindowBudget.remove(tabId);
     undoHistories.delete(tabId);
     tabs = nextTabs;
 
@@ -2179,55 +2162,6 @@
     return content.slice(lineStart, lineEnd);
   }
 
-  interface FencedCodeBlockRange {
-    openingLineStart: number;
-    openingLineEnd: number;
-    contentStart: number;
-    fenceLength: number;
-    closingBoundaryStart?: number;
-    closingLineStart?: number;
-    closingLineEnd?: number;
-    afterBlockStart?: number;
-  }
-
-  function getFencedCodeBlockRanges(content: string, offsets: number[]): FencedCodeBlockRange[] {
-    const ranges: FencedCodeBlockRange[] = [];
-    let activeRange: FencedCodeBlockRange | null = null;
-
-    for (let lineIndex = 0; lineIndex < offsets.length; lineIndex += 1) {
-      const lineStart = offsets[lineIndex] ?? 0;
-      const lineText = getLineTextForLayout(content, offsets, lineIndex);
-      const lineEnd = lineStart + lineText.length;
-
-      if (activeRange) {
-        const closingMatch = lineText.match(/^[ \t]*(`{3,})[ \t]*$/);
-        if (closingMatch?.[1] && closingMatch[1].length >= activeRange.fenceLength) {
-          activeRange.closingBoundaryStart = lineStart > 0 && content[lineStart - 1] === '\n'
-            ? (lineStart > 1 && content[lineStart - 2] === '\r' ? lineStart - 2 : lineStart - 1)
-            : lineStart;
-          activeRange.closingLineStart = lineStart;
-          activeRange.closingLineEnd = lineEnd;
-          activeRange.afterBlockStart = offsets[lineIndex + 1] ?? lineEnd;
-          activeRange = null;
-        }
-        continue;
-      }
-
-      const openingMatch = lineText.match(/^[ \t]*(`{3,})/);
-      if (!openingMatch?.[1]) continue;
-
-      activeRange = {
-        openingLineStart: lineStart,
-        openingLineEnd: lineEnd,
-        contentStart: offsets[lineIndex + 1] ?? lineEnd,
-        fenceLength: openingMatch[1].length
-      };
-      ranges.push(activeRange);
-    }
-
-    return ranges;
-  }
-
   function measureEditorTextEndWidth(text: string, startWidth = 0): number {
     if (!isBrowser || text.length === 0) return startWidth;
 
@@ -2261,140 +2195,12 @@
     return width;
   }
 
-  function countWrappedVisualLines(lineText: string, contentWidth: number): number {
-    if (!isBrowser || contentWidth <= 0 || lineText.length === 0) return 1;
-
-    const segments = lineText.match(/\S+\s*|\s+/g) || [lineText];
-    let visualLineCount = 1;
-    let currentWidth = 0;
-
-    const appendPiece = (piece: string) => {
-      const nextWidth = measureEditorTextEndWidth(piece, currentWidth);
-      if (currentWidth > 0 && nextWidth > contentWidth) {
-        visualLineCount += 1;
-        currentWidth = measureEditorTextEndWidth(piece, 0);
-      } else {
-        currentWidth = nextWidth;
-      }
-    };
-
-    for (const segment of segments) {
-      const segmentWidth = measureEditorTextEndWidth(segment, 0);
-      if (segmentWidth <= contentWidth) {
-        appendPiece(segment);
-        continue;
-      }
-
-      for (const char of Array.from(segment)) {
-        appendPiece(char);
-        if (currentWidth > contentWidth) {
-          visualLineCount += 1;
-          currentWidth = 0;
-        }
-      }
-    }
-
-    return visualLineCount;
-  }
-
-  function getEditorLineLayout(
-    content: string,
-    offsets: number[],
-    contentWidth: number,
-    fencedCodeRanges: FencedCodeBlockRange[],
-    wrapEnabled: boolean,
-    measurements: RenderedLineHeightMeasurements,
-    measurementContext: string
-  ): EditorLineLayout {
-    const lineTotal = offsets.length;
-    const tops: number[] = new Array(lineTotal);
-    const heights: number[] = new Array(lineTotal);
-    let top = 0;
-    let fencedRangeIndex = 0;
-    let activeListMarker: ListMarker | null = null;
-
-    for (let lineIndex = 0; lineIndex < lineTotal; lineIndex += 1) {
-      const lineStart = offsets[lineIndex] ?? 0;
-      let fencedRange = fencedCodeRanges[fencedRangeIndex];
-      while (
-        fencedRange
-        && lineStart > (fencedRange.closingLineStart ?? Number.POSITIVE_INFINITY)
-      ) {
-        fencedRangeIndex += 1;
-        fencedRange = fencedCodeRanges[fencedRangeIndex];
-      }
-      const isFencedCode = !!fencedRange
-        && lineStart >= fencedRange.openingLineStart
-        && lineStart <= (fencedRange.closingLineStart ?? Number.POSITIVE_INFINITY);
-      const lineContentWidth = isFencedCode
-        ? Math.max(1, contentWidth - (fencedCodeHorizontalPadding * 2))
-        : contentWidth;
-      const lineText = wrapEnabled ? getLineTextForLayout(content, offsets, lineIndex) : '';
-      const currentListMarker = isFencedCode ? null : getListMarkerAtStart(lineText);
-      if (isFencedCode) activeListMarker = null;
-      if (currentListMarker) activeListMarker = currentListMarker;
-
-      let listPrefixLength = 0;
-      let listLayoutMarker: ListMarker | null = currentListMarker;
-      if (currentListMarker) {
-        listPrefixLength = getListMarkerBodyStart(currentListMarker);
-      } else if (activeListMarker) {
-        const continuationIndent = getMeasuredListContinuationIndent(activeListMarker);
-        if (continuationIndent.length > 0 && lineText.startsWith(continuationIndent)) {
-          listPrefixLength = continuationIndent.length;
-          listLayoutMarker = activeListMarker;
-        } else {
-          activeListMarker = null;
-        }
-      }
-
-      const wrappedText = listLayoutMarker ? lineText.slice(listPrefixLength) : lineText;
-      const wrappedWidth = listLayoutMarker
-        ? Math.max(1, lineContentWidth - measureEditorTextWidth(`${listLayoutMarker.indent}${listLayoutMarker.marker}`))
-        : lineContentWidth;
-      const visualLineCount = wrapEnabled
-        ? countWrappedVisualLines(wrappedText, wrappedWidth)
-        : 1;
-      if (!currentListMarker && /^[ \t]*$/.test(lineText)) activeListMarker = null;
-      const measuredHeight = measurements.content === content && measurements.context === measurementContext
-        ? measurements.heights[lineIndex]
-        : null;
-      const height = measuredHeight ?? Math.max(measuredLineHeight, visualLineCount * measuredLineHeight);
-
-      tops[lineIndex] = top;
-      heights[lineIndex] = height;
-      top += height;
-    }
-
-    return { tops, heights, totalHeight: top };
-  }
-
-  function findLineIndexForLayoutOffset(layout: EditorLineLayout, offset: number): number {
-    if (layout.tops.length === 0) return 0;
-
-    const safeOffset = Math.max(0, offset);
-    let low = 0;
-    let high = layout.tops.length - 1;
-
-    while (low <= high) {
-      const mid = Math.floor((low + high) / 2);
-      const top = layout.tops[mid] ?? 0;
-      const bottom = top + (layout.heights[mid] ?? measuredLineHeight);
-
-      if (safeOffset >= top && safeOffset < bottom) return mid;
-      if (safeOffset < top) high = mid - 1;
-      else low = mid + 1;
-    }
-
-    return Math.max(0, Math.min(low, layout.tops.length - 1));
-  }
-
   function getRenderLineTop(lineIndex: number): number {
-    return renderLineLayout.tops[lineIndex] ?? lineIndex * measuredLineHeight;
+    return renderLineLayout.getLineTop(lineIndex);
   }
 
   function getRenderLineHeight(lineIndex: number): number {
-    return renderLineLayout.heights[lineIndex] ?? measuredLineHeight;
+    return renderLineLayout.getLineHeight(lineIndex);
   }
 
   function parseDelimitedTableWithinBudget(
@@ -2411,8 +2217,13 @@
     && lineStartOffsets.length <= MAX_ENHANCED_RENDER_LINES
   );
   let fencedCodeBlocks = $derived(
-    isEnhancedDocumentWithinBudget
-      ? getFencedCodeBlockRanges(fileContent, lineStartOffsets)
+    isRenderMode && isEnhancedDocumentWithinBudget
+      ? getFencedCodeBlockRanges(
+          fencedCodeBlockCache,
+          fileContent,
+          lineStartOffsets,
+          latestContentChange
+        )
       : []
   );
   let lineCount = $derived(lineStartOffsets.length);
@@ -2454,15 +2265,21 @@
     JSON.stringify(documentFeatureSettings),
     JSON.stringify(markdownRenderSettings)
   ].join('|'));
-  let renderLineLayout = $derived(getEditorLineLayout(
-    fileContent,
+  let renderLineLayout = $derived(getEditorLineLayout(editorLineLayoutCache, {
+    content: fileContent,
     lineStartOffsets,
-    renderWrapContentWidth,
-    fencedCodeBlocks,
-    isRenderMode && isEnhancedDocumentWithinBudget,
-    renderedLineHeightMeasurements,
-    renderedLineMeasurementContext
-  ));
+    contentWidth: renderWrapContentWidth,
+    fencedCodeRanges: fencedCodeBlocks,
+    wrapEnabled: isRenderMode && isEnhancedDocumentWithinBudget,
+    measurements: renderedLineHeightMeasurements,
+    measurementContext: renderedLineMeasurementContext,
+    measuredLineHeight,
+    fencedCodeHorizontalPadding,
+    measureTextEndWidth: measureEditorTextEndWidth,
+    measureTextWidth: measureEditorTextWidth,
+    getListContinuationIndent: getMeasuredListContinuationIndent,
+    change: latestContentChange
+  }));
   let shouldShowNativeRenderText = $derived(isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling);
   let shouldRenderHighlightLayer = $derived(isRenderMode && isEnhancedDocumentWithinBudget && !shouldShowNativeRenderText);
 
@@ -2520,11 +2337,11 @@
   // 가상화 범위 계산
   let startLine = $derived(Math.max(
     0,
-    findLineIndexForLayoutOffset(renderLineLayout, scrollTop - editorTopPadding) - virtualLineOverscan
+    renderLineLayout.findLineIndex(scrollTop - editorTopPadding) - virtualLineOverscan
   ));
   let endLine = $derived(Math.min(
     lineCount - 1,
-    findLineIndexForLayoutOffset(renderLineLayout, scrollTop + clientHeight - editorTopPadding) + virtualLineOverscan
+    renderLineLayout.findLineIndex(scrollTop + clientHeight - editorTopPadding) + virtualLineOverscan
   ));
 
   // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
@@ -2555,15 +2372,11 @@
     renderEnabled: isActiveDocumentRenderEnabled,
     featureSettings: documentFeatureSettings,
     markdownSettings: markdownRenderSettings,
-    renderCache: documentRenderCache
+    renderCache: documentRenderCache,
+    contentChange: latestContentChange
   }));
   let parsedLines = $derived(documentRender.lines);
 
-  interface RenderListLineLayout {
-    marker: ListMarker;
-    ownerLineIndex: number;
-    prefixLength: number;
-  }
 
   function getTokenTextLength(token: Token): number {
     if (token.children?.length) {
@@ -2622,63 +2435,9 @@
     return remaining === 0 ? { prefixTokens, bodyTokens: [] } : null;
   }
 
-  function getVisibleRenderListLineLayouts(
-    content: string,
-    offsets: number[],
-    firstLine: number,
-    lastLine: number
-  ): Array<RenderListLineLayout | null> {
-    let owner: { marker: ListMarker; lineIndex: number } | null = null;
-    for (let lineIndex = firstLine - 1; lineIndex >= 0; lineIndex -= 1) {
-      const lineText = getLineTextForLayout(content, offsets, lineIndex);
-      if (/^[ \t]*$/.test(lineText)) break;
-
-      const marker = getListMarkerAtStart(lineText);
-      if (marker) {
-        owner = { marker, lineIndex };
-        break;
-      }
-    }
-
-    const layouts: Array<RenderListLineLayout | null> = [];
-    for (let lineIndex = firstLine; lineIndex <= lastLine; lineIndex += 1) {
-      const lineText = getLineTextForLayout(content, offsets, lineIndex);
-      const marker = getListMarkerAtStart(lineText);
-      if (marker) owner = { marker, lineIndex };
-
-      let layout: RenderListLineLayout | null = null;
-      if (marker) {
-        layout = {
-          marker,
-          ownerLineIndex: lineIndex,
-          prefixLength: getListMarkerBodyStart(marker)
-        };
-      }
-      else if (owner) {
-        const continuationIndent = getMeasuredListContinuationIndent(owner.marker);
-        if (continuationIndent.length > 0 && lineText.startsWith(continuationIndent)) {
-          layout = {
-            marker: owner.marker,
-            ownerLineIndex: owner.lineIndex,
-            prefixLength: continuationIndent.length
-          };
-        } else {
-          owner = null;
-        }
-      }
-      layouts.push(layout);
-
-      if (!marker && /^[ \t]*$/.test(lineText)) owner = null;
-    }
-    return layouts;
-  }
-
-  let renderListLineLayouts = $derived(getVisibleRenderListLineLayouts(
-    fileContent,
-    lineStartOffsets,
-    startLine,
-    endLine
-  ));
+  let renderListLineLayouts = $derived(
+    renderLineLayout.listLayouts.slice(startLine, endLine + 1)
+  );
 
   const syntaxDiagnosticDelayMs = 500;
 
@@ -2686,7 +2445,10 @@
     const content = fileContent;
     const pathOrName = filePath || fileName;
     const format = activeDocumentFormat;
-    const featureSettings = documentFeatureSettings;
+    const featureSettings = normalizeDocumentFeatureSettings(documentFeatureSettings);
+    const requestLocale = locale;
+    const requestId = ++documentDiagnosticRequestId;
+    documentDiagnosticWorkerClient?.cancel();
 
     if (
       !isEnhancedDocumentWithinBudget
@@ -2698,10 +2460,41 @@
     }
 
     const timer = setTimeout(() => {
-      documentDiagnostic = getDocumentDiagnostic(content, { pathOrName, featureSettings, locale });
+      if (!documentDiagnosticWorkerClient) {
+        documentDiagnostic = getDocumentDiagnostic(content, {
+          pathOrName,
+          featureSettings,
+          locale: requestLocale
+        });
+        return;
+      }
+
+      void documentDiagnosticWorkerClient.diagnose({
+        requestId,
+        content,
+        pathOrName,
+        featureSettings,
+        locale: requestLocale
+      }).then((response) => {
+        if (response.requestId === documentDiagnosticRequestId) {
+          documentDiagnostic = response.diagnostic;
+        }
+      }).catch((error) => {
+        if (error instanceof DocumentDiagnosticCancelledError) return;
+        if (requestId !== documentDiagnosticRequestId) return;
+        console.error('Document diagnostic worker failed:', error);
+        documentDiagnostic = getDocumentDiagnostic(content, {
+          pathOrName,
+          featureSettings,
+          locale: requestLocale
+        });
+      });
     }, syntaxDiagnosticDelayMs);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      documentDiagnosticWorkerClient?.cancel();
+    };
   });
 
   // 줄 높이 실측 로직
@@ -2754,9 +2547,6 @@
     if (cachedWidth !== undefined) return cachedWidth;
 
     const width = context.measureText(text).width;
-    if (editorTextWidthCache.size > editorTextWidthCacheLimit) {
-      editorTextWidthCache.clear();
-    }
     editorTextWidthCache.set(text, width);
     return width;
   }
@@ -3516,7 +3306,17 @@
     scheduleRenderedSelectionHighlight();
   }
 
-  function updateEditorStateForSnapshot(snapshot: EditorSnapshot) {
+  function updateEditorStateForSnapshot(
+    snapshot: EditorSnapshot,
+    suppliedChange?: TextChange | null,
+    suppliedOffsetIndex?: TextOffsetIndex
+  ) {
+    const contentChange = suppliedChange === undefined
+      ? getTextChange(fileContent, snapshot.content)
+      : suppliedChange;
+    latestContentChange = contentChange;
+    textOffsetIndex = suppliedOffsetIndex
+      ?? (contentChange ? createTextOffsetIndex(snapshot.content) : getTextOffsetIndex(snapshot.content));
     fileContent = snapshot.content;
     fileName = filePath ? fileName : getFirstLineTitle(fileContent);
     isDirty = getActiveUndoHistory().isDirty();
@@ -3532,8 +3332,13 @@
     });
   }
 
-  function applyEditorSnapshot(snapshot: EditorSnapshot, selectionAlreadyApplied = false) {
-    updateEditorStateForSnapshot(snapshot);
+  function applyEditorSnapshot(
+    snapshot: EditorSnapshot,
+    selectionAlreadyApplied = false,
+    change?: TextChange | null,
+    offsetIndex?: TextOffsetIndex
+  ) {
+    updateEditorStateForSnapshot(snapshot, change, offsetIndex);
 
     if (selectionAlreadyApplied) {
       updateCursorPosition();
@@ -3558,10 +3363,18 @@
       selectionAlreadyApplied?: boolean;
       keepRenderCaretVisible?: boolean;
       syncRenderCaretAfterUpdate?: boolean;
+      change?: TextChange | null;
+      offsetIndex?: TextOffsetIndex;
     } = {}
   ) {
+    const change = options.change === undefined
+      ? getTextChange(before.content, after.content)
+      : options.change;
+    const offsetIndex = options.offsetIndex
+      ?? (change ? createTextOffsetIndex(after.content) : getTextOffsetIndex(after.content));
     const history = getActiveUndoHistory();
-    history.record(before, after, { mergeKey: options.mergeKey ?? null });
+    history.record(before, after, { mergeKey: options.mergeKey ?? null, change });
+    enforceUndoWindowBudget();
 
     if (
       options.syncRenderCaretAfterUpdate
@@ -3569,7 +3382,7 @@
       && isRenderMode
       && isActiveDocumentRenderEnabled
     ) {
-      updateEditorStateForSnapshot(after);
+      updateEditorStateForSnapshot(after, change, offsetIndex);
       void tick().then(() => {
         updateCursorPosition();
         syncActiveTabState();
@@ -3581,7 +3394,7 @@
       });
       return;
     }
-    applyEditorSnapshot(after, options.selectionAlreadyApplied ?? false);
+    applyEditorSnapshot(after, options.selectionAlreadyApplied ?? false, change, offsetIndex);
     if (options.keepRenderCaretVisible) {
       keepEditorCaretVisibleDuringEdit();
     } else {
@@ -3641,14 +3454,22 @@
     pendingNativeInput = null;
 
     const before = pendingInput?.before ?? lastEditorSnapshot;
-    const after = getSnapshotFromTextareaInput(before, target.value, target.selectionStart, target.selectionEnd);
+    const inputResult = getSnapshotFromTextareaInput(
+      before,
+      getTextOffsetIndex(before.content),
+      target.value,
+      target.selectionStart,
+      target.selectionEnd
+    );
     const inputType = pendingInput?.inputType ?? 'input';
     const mergeKey = getNativeInputMergeKey(inputType, before, pendingInput?.isComposing ?? isComposingEditorText);
 
-    commitEditorEdit(before, after, {
+    commitEditorEdit(before, inputResult.snapshot, {
       mergeKey,
       selectionAlreadyApplied: true,
-      syncRenderCaretAfterUpdate: true
+      syncRenderCaretAfterUpdate: true,
+      change: inputResult.change,
+      offsetIndex: inputResult.offsetIndex
     });
   }
 
@@ -3739,6 +3560,7 @@
   });
 
   onDestroy(() => {
+    documentDiagnosticWorkerClient?.dispose();
     renderedLineResizeObserver?.disconnect();
     renderedLineResizeObserver = null;
     if (renderedSelectionHighlightFrame !== null) {
@@ -3867,15 +3689,7 @@
   }
 
   function getRenderListLineLayout(lineIndex: number): RenderListLineLayout | null {
-    if (lineIndex >= startLine && lineIndex <= endLine) {
-      return renderListLineLayouts[lineIndex - startLine] ?? null;
-    }
-    return getVisibleRenderListLineLayouts(
-      fileContent,
-      lineStartOffsets,
-      lineIndex,
-      lineIndex
-    )[0] ?? null;
+    return renderLineLayout.listLayouts[lineIndex] ?? null;
   }
 
   function getRenderListBodyStart(lineIndex: number, layout: RenderListLineLayout): number {
@@ -4073,19 +3887,6 @@
     return null;
   }
 
-  function getPreferredNewline(text: string, offset: number): string {
-    const previousLineBreak = offset <= 0 ? -1 : text.lastIndexOf('\n', offset - 1);
-    if (previousLineBreak >= 0) {
-      return previousLineBreak > 0 && text[previousLineBreak - 1] === '\r' ? '\r\n' : '\n';
-    }
-
-    const nextLineBreak = text.indexOf('\n', offset);
-    if (nextLineBreak >= 0) {
-      return nextLineBreak > 0 && text[nextLineBreak - 1] === '\r' ? '\r\n' : '\n';
-    }
-
-    return '\n';
-  }
 
   function getLineEndingLabel(text: string): string {
     const lineEndings = new Set<string>();
@@ -5566,7 +5367,11 @@
   }
 
   function applyInlineColorPreview(start: number, end: number, nextValue: string) {
-    fileContent = `${fileContent.slice(0, start)}${nextValue}${fileContent.slice(end)}`;
+    const beforeContent = fileContent;
+    const nextContent = `${beforeContent.slice(0, start)}${nextValue}${beforeContent.slice(end)}`;
+    latestContentChange = getTextChange(beforeContent, nextContent);
+    textOffsetIndex = createTextOffsetIndex(nextContent);
+    fileContent = nextContent;
     inlineColorPickerValue = nextValue;
     pendingInlineColorReplacement = { start, end: start + nextValue.length };
     fileName = filePath ? fileName : getFirstLineTitle(fileContent);

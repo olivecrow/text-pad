@@ -23,8 +23,10 @@ import {
 } from './structured-rendering';
 import { translate, type AppLocale, type TranslationKey } from './i18n';
 import {
+  createLineOrientedRenderCache,
   getLineOrientedFormatDiagnostic,
   parseLineOrientedFormat,
+  type LineOrientedRenderCache,
   type LineOrientedFormatId
 } from './line-oriented-formats';
 import type { MarkdownRenderSettings } from './markdown-settings';
@@ -45,6 +47,15 @@ import {
   parseSpecializedTextFormat,
   type SpecializedTextFormatId
 } from './specialized-text-formats';
+import {
+  createLineStateCheckpointCache,
+  getLineStateAt,
+  prepareLineStateCheckpointCache,
+  storeLineStateCheckpoint,
+  type LineStateCheckpointCache
+} from './line-state-checkpoints';
+import type { TextChange } from './text-change';
+
 
 export type ParsedLine = StructuredParsedLine;
 
@@ -127,12 +138,25 @@ export interface DocumentRenderResult {
 
 export type DocumentLineRange = StructuredDocumentLineRange;
 
-export interface DocumentRenderCache {
-  xml: XmlRenderCache;
+interface JsonCommentState {
+  inBlockComment: boolean;
 }
 
+export interface DocumentRenderCache {
+  xml: XmlRenderCache;
+  plain: LineStateCheckpointCache<TokenizeState | null>;
+  lineOriented: LineOrientedRenderCache;
+  jsonc: LineStateCheckpointCache<JsonCommentState>;
+  yaml: LineStateCheckpointCache<YamlBlockScalarState | null>;
+}
 export function createDocumentRenderCache(): DocumentRenderCache {
-  return { xml: createXmlRenderCache() };
+  return {
+    xml: createXmlRenderCache(),
+    plain: createLineStateCheckpointCache<TokenizeState | null>(),
+    lineOriented: createLineOrientedRenderCache(),
+    jsonc: createLineStateCheckpointCache<JsonCommentState>(),
+    yaml: createLineStateCheckpointCache<YamlBlockScalarState | null>()
+  };
 }
 
 interface ParseDocumentOptions {
@@ -144,6 +168,7 @@ interface ParseDocumentOptions {
   featureSettings?: DocumentFeatureSettings;
   markdownSettings?: MarkdownRenderSettings;
   renderCache?: DocumentRenderCache;
+  contentChange?: TextChange | null;
 }
 
 const cBlockComment: BlockCommentRule = { start: '/*', end: '*/' };
@@ -860,22 +885,67 @@ function parsePlainLine(
   };
 }
 
+function cloneTokenizeState(state: TokenizeState | null): TokenizeState | null {
+  return state ? { ...state } : null;
+}
+
 function parsePlainLines(
   content: string,
   tabSize: number,
   comments: CommentSyntax | null,
   lineStartOffsets: number[],
-  lineRange: DocumentLineRange
+  lineRange: DocumentLineRange,
+  cache?: LineStateCheckpointCache<TokenizeState | null>,
+  contentChange?: TextChange | null
 ): ParsedLine[] {
   let state: TokenizeState | null = null;
   const parsedLines: ParsedLine[] = [];
 
-  for (let idx = 0; idx <= lineRange.endLine; idx++) {
+  if (cache) {
+    prepareLineStateCheckpointCache(
+      cache,
+      content,
+      JSON.stringify(comments ?? null),
+      lineStartOffsets,
+      null,
+      cloneTokenizeState,
+      contentChange
+    );
+    state = getLineStateAt(
+      cache,
+      lineRange.startLine,
+      null,
+      cloneTokenizeState,
+      (lineIndex, lineState) => parsePlainLine(
+        getLineText(content, lineStartOffsets, lineIndex),
+        lineIndex,
+        tabSize,
+        comments,
+        lineState,
+        lineStartOffsets[lineIndex] ?? 0
+      ).state
+    );
+  } else {
+    for (let lineIndex = 0; lineIndex < lineRange.startLine; lineIndex += 1) {
+      state = parsePlainLine(
+        getLineText(content, lineStartOffsets, lineIndex),
+        lineIndex,
+        tabSize,
+        comments,
+        state,
+        lineStartOffsets[lineIndex] ?? 0
+      ).state;
+    }
+  }
+
+  for (let idx = lineRange.startLine; idx <= lineRange.endLine; idx++) {
     const lineText = getLineText(content, lineStartOffsets, idx);
     const parsed = parsePlainLine(lineText, idx, tabSize, comments, state, lineStartOffsets[idx] ?? 0);
     state = parsed.state;
-    if (idx >= lineRange.startLine) {
-      parsedLines.push(parsed.line);
+    parsedLines.push(parsed.line);
+    if (cache) {
+      cache.visitedLineCount += 1;
+      storeLineStateCheckpoint(cache, idx + 1, state, cloneTokenizeState);
     }
   }
 
@@ -1020,17 +1090,107 @@ function findNextJsonSignificant(content: string, start: number, allowComments: 
   return i;
 }
 
+function cloneJsonCommentState(state: JsonCommentState): JsonCommentState {
+  return { inBlockComment: state.inBlockComment };
+}
+
+function advanceJsonCommentState(lineText: string, previous: JsonCommentState): JsonCommentState {
+  let inBlockComment = previous.inBlockComment;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < lineText.length; index += 1) {
+    const char = lineText[index];
+    const next = lineText[index + 1];
+    if (inBlockComment) {
+      if (char === '*' && next === '/') {
+        inBlockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '/' && next === '/') break;
+    if (char === '/' && next === '*') {
+      inBlockComment = true;
+      index += 1;
+    }
+  }
+
+  return { inBlockComment };
+}
+
+function getJsonCommentStateAtRange(
+  content: string,
+  lineStartOffsets: number[],
+  lineRange: DocumentLineRange,
+  cache: LineStateCheckpointCache<JsonCommentState> | undefined,
+  contentChange?: TextChange | null
+): JsonCommentState | undefined {
+  if (!cache) return undefined;
+  const initialState = { inBlockComment: false };
+  prepareLineStateCheckpointCache(
+    cache,
+    content,
+    'jsonc',
+    lineStartOffsets,
+    initialState,
+    cloneJsonCommentState,
+    contentChange
+  );
+  const rangeState = getLineStateAt(
+    cache,
+    lineRange.startLine,
+    initialState,
+    cloneJsonCommentState,
+    (lineIndex, state) => advanceJsonCommentState(
+      getLineText(content, lineStartOffsets, lineIndex),
+      state
+    )
+  );
+  let state = rangeState;
+  for (let lineIndex = lineRange.startLine; lineIndex <= lineRange.endLine; lineIndex += 1) {
+    state = advanceJsonCommentState(getLineText(content, lineStartOffsets, lineIndex), state);
+    cache.visitedLineCount += 1;
+    storeLineStateCheckpoint(cache, lineIndex + 1, state, cloneJsonCommentState);
+  }
+  return rangeState;
+}
+
 function scanJsonTokens(
   content: string,
   range?: { start: number; end: number },
-  allowComments = false
+  allowComments = false,
+  initialCommentState?: JsonCommentState
 ): FlatToken[] {
   const tokens: FlatToken[] = [];
-  let i = allowComments ? 0 : range ? Math.max(0, Math.min(range.start, content.length)) : 0;
+  let i = allowComments && !initialCommentState
+    ? 0
+    : range ? Math.max(0, Math.min(range.start, content.length)) : 0;
+  let inBlockComment = allowComments && (initialCommentState?.inBlockComment ?? false);
   const scanEnd = range ? Math.min(range.end, content.length) : content.length;
 
   while (i < scanEnd) {
     const char = content[i];
+
+    if (inBlockComment) {
+      const start = i;
+      const end = content.indexOf('*/', i);
+      i = end === -1 ? content.length : end + 2;
+      inBlockComment = end === -1;
+      const token = { type: 'comment', text: content.slice(start, i), start, end: i } satisfies FlatToken;
+      if (shouldKeepFlatToken(token, range)) tokens.push(token);
+      continue;
+    }
 
     if (isJsonWhitespaceChar(char)) {
       const start = i;
@@ -1049,6 +1209,7 @@ function scanJsonTokens(
       } else {
         const end = content.indexOf('*/', i + 2);
         i = end === -1 ? content.length : end + 2;
+        inBlockComment = end === -1;
       }
       const token = { type: 'comment', text: content.slice(start, i), start, end: i } satisfies FlatToken;
       if (shouldKeepFlatToken(token, range)) tokens.push(token);
@@ -1440,68 +1601,128 @@ function scanYamlLineTokens(
   return { startsBlockScalar };
 }
 
+function cloneYamlBlockScalarState(state: YamlBlockScalarState | null): YamlBlockScalarState | null {
+  return state ? { ...state } : null;
+}
+
+function scanYamlLineWithState(
+  lineText: string,
+  lineStartOffset: number,
+  tabSize: number,
+  blockScalarState: YamlBlockScalarState | null,
+  shouldEmit: boolean,
+  tokens: FlatToken[]
+): YamlBlockScalarState | null {
+  const indentInfo = getIndentInfo(lineText, tabSize);
+  const trimmedLineLength = lineText.trim().length;
+  let nextState = cloneYamlBlockScalarState(blockScalarState);
+
+  if (nextState) {
+    if (trimmedLineLength === 0) {
+      if (shouldEmit && lineText.length > 0) {
+        tokens.push({
+          type: 'string',
+          text: lineText,
+          start: lineStartOffset,
+          end: lineStartOffset + lineText.length
+        });
+      }
+      return nextState;
+    }
+
+    if (nextState.contentIndentColumns === null) {
+      if (indentInfo.indentColumns > nextState.parentIndentColumns) {
+        nextState.contentIndentColumns = indentInfo.indentColumns;
+      } else {
+        nextState = null;
+      }
+    }
+
+    if (
+      nextState
+      && nextState.contentIndentColumns !== null
+      && indentInfo.indentColumns >= nextState.contentIndentColumns
+    ) {
+      if (shouldEmit) {
+        tokens.push({
+          type: 'string',
+          text: lineText,
+          start: lineStartOffset,
+          end: lineStartOffset + lineText.length
+        });
+      }
+      return nextState;
+    }
+  }
+
+  const lineResult = scanYamlLineTokens(lineText, lineStartOffset, shouldEmit, tokens);
+  return lineResult.startsBlockScalar
+    ? { parentIndentColumns: indentInfo.indentColumns, contentIndentColumns: null }
+    : null;
+}
+
 function scanYamlTokens(
   content: string,
   tabSize: number,
   lineStartOffsets: number[],
-  lineRange: DocumentLineRange
+  lineRange: DocumentLineRange,
+  cache?: LineStateCheckpointCache<YamlBlockScalarState | null>,
+  contentChange?: TextChange | null
 ): FlatToken[] {
   const tokens: FlatToken[] = [];
   let blockScalarState: YamlBlockScalarState | null = null;
 
-  for (let lineIndex = 0; lineIndex <= lineRange.endLine; lineIndex += 1) {
+  if (cache) {
+    prepareLineStateCheckpointCache(
+      cache,
+      content,
+      `yaml:${tabSize}`,
+      lineStartOffsets,
+      null,
+      cloneYamlBlockScalarState,
+      contentChange
+    );
+    blockScalarState = getLineStateAt(
+      cache,
+      lineRange.startLine,
+      null,
+      cloneYamlBlockScalarState,
+      (lineIndex, state) => scanYamlLineWithState(
+        getLineText(content, lineStartOffsets, lineIndex),
+        lineStartOffsets[lineIndex] ?? 0,
+        tabSize,
+        state,
+        false,
+        tokens
+      )
+    );
+  } else {
+    for (let lineIndex = 0; lineIndex < lineRange.startLine; lineIndex += 1) {
+      blockScalarState = scanYamlLineWithState(
+        getLineText(content, lineStartOffsets, lineIndex),
+        lineStartOffsets[lineIndex] ?? 0,
+        tabSize,
+        blockScalarState,
+        false,
+        tokens
+      );
+    }
+  }
+
+  for (let lineIndex = lineRange.startLine; lineIndex <= lineRange.endLine; lineIndex += 1) {
     const lineText = getLineText(content, lineStartOffsets, lineIndex);
     const lineStartOffset = lineStartOffsets[lineIndex] ?? 0;
-    const shouldEmit = lineIndex >= lineRange.startLine;
-    const indentInfo = getIndentInfo(lineText, tabSize);
-    const trimmedLineLength = lineText.trim().length;
-
-    if (blockScalarState) {
-      if (trimmedLineLength === 0) {
-        if (shouldEmit && lineText.length > 0) {
-          tokens.push({
-            type: 'string',
-            text: lineText,
-            start: lineStartOffset,
-            end: lineStartOffset + lineText.length
-          });
-        }
-        continue;
-      }
-
-      if (blockScalarState.contentIndentColumns === null) {
-        if (indentInfo.indentColumns > blockScalarState.parentIndentColumns) {
-          blockScalarState.contentIndentColumns = indentInfo.indentColumns;
-        } else {
-          blockScalarState = null;
-        }
-      }
-
-      if (
-        blockScalarState
-        && blockScalarState.contentIndentColumns !== null
-        && indentInfo.indentColumns >= blockScalarState.contentIndentColumns
-      ) {
-        if (shouldEmit) {
-          tokens.push({
-            type: 'string',
-            text: lineText,
-            start: lineStartOffset,
-            end: lineStartOffset + lineText.length
-          });
-        }
-        continue;
-      }
-
-      blockScalarState = null;
-    }
-
-    const lineResult = scanYamlLineTokens(lineText, lineStartOffset, shouldEmit, tokens);
-    if (lineResult.startsBlockScalar) {
-      blockScalarState = {
-        parentIndentColumns: indentInfo.indentColumns,
-        contentIndentColumns: null
-      };
+    blockScalarState = scanYamlLineWithState(
+      lineText,
+      lineStartOffset,
+      tabSize,
+      blockScalarState,
+      true,
+      tokens
+    );
+    if (cache) {
+      cache.visitedLineCount += 1;
+      storeLineStateCheckpoint(cache, lineIndex + 1, blockScalarState, cloneYamlBlockScalarState);
     }
   }
 
@@ -1808,11 +2029,20 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
   }
 
   if (format.id === 'json' || format.id === 'jsonc' || format.id === 'jsonlines') {
+    const jsonCommentState = format.id === 'jsonc'
+      ? getJsonCommentStateAtRange(
+          content,
+          options.lineStartOffsets,
+          lineRange,
+          options.renderCache?.jsonc,
+          options.contentChange
+        )
+      : undefined;
     return {
       format,
       lines: splitFlatTokensIntoLines(
         content,
-        scanJsonTokens(content, lineRangeOffsets, format.id === 'jsonc'),
+        scanJsonTokens(content, lineRangeOffsets, format.id === 'jsonc', jsonCommentState),
         options.tabSize,
         options.lineStartOffsets,
         lineRange,
@@ -1863,7 +2093,14 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
       format,
       lines: splitFlatTokensIntoLines(
         content,
-        scanYamlTokens(content, options.tabSize, options.lineStartOffsets, lineRange),
+        scanYamlTokens(
+          content,
+          options.tabSize,
+          options.lineStartOffsets,
+          lineRange,
+          options.renderCache?.yaml,
+          options.contentChange
+        ),
         options.tabSize,
         options.lineStartOffsets,
         lineRange,
@@ -1881,7 +2118,9 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
         lineStartOffsets: options.lineStartOffsets,
         lineRange,
         hideMarkdownHeadingMarkers: options.markdownSettings?.hideHeadingMarkers ?? true,
-        commentSyntax: format.commentSyntax || null
+        commentSyntax: format.commentSyntax || null,
+        renderCache: options.renderCache?.lineOriented,
+        contentChange: options.contentChange
       }),
       diagnostic: null
     };
@@ -1894,7 +2133,9 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
       options.tabSize,
       format.commentSyntax || null,
       options.lineStartOffsets,
-      lineRange
+      lineRange,
+      options.renderCache?.plain,
+      options.contentChange
     ),
     diagnostic: null
   };

@@ -12,6 +12,14 @@ import {
   type ParsedLine
 } from './structured-rendering';
 import type { MarkdownHeadingLevel } from './markdown-settings';
+import {
+  createLineStateCheckpointCache,
+  getLineStateAt,
+  prepareLineStateCheckpointCache,
+  storeLineStateCheckpoint,
+  type LineStateCheckpointCache
+} from './line-state-checkpoints';
+import type { TextChange } from './text-change';
 
 export type LineOrientedFormatId =
   | 'markdown'
@@ -30,12 +38,20 @@ export interface LineFormatDiagnosticPosition {
   offset: number;
 }
 
+export type LineOrientedRenderCache = LineStateCheckpointCache<TokenizeState | null>;
+
+export function createLineOrientedRenderCache(): LineOrientedRenderCache {
+  return createLineStateCheckpointCache<TokenizeState | null>();
+}
+
 interface ParseLineOrientedFormatOptions {
   tabSize: number;
   lineStartOffsets: number[];
   lineRange: DocumentLineRange;
   hideMarkdownHeadingMarkers: boolean;
   commentSyntax?: CommentSyntax | null;
+  renderCache?: LineOrientedRenderCache;
+  contentChange?: TextChange | null;
 }
 
 const iniCommentSyntax: CommentSyntax = {
@@ -351,77 +367,138 @@ function parseSubtitleLine(line: string, lineStartOffset: number, format: LineOr
   return null;
 }
 
-export function parseLineOrientedFormat(
+function parseLineOrientedLine(
   content: string,
   format: LineOrientedFormatId,
-  options: ParseLineOrientedFormatOptions
-): ParsedLine[] {
-  let state: TokenizeState | null = null;
-  const parsedLines: ParsedLine[] = [];
+  options: ParseLineOrientedFormatOptions,
+  lineIndex: number,
+  state: TokenizeState | null
+): { line: ParsedLine; state: TokenizeState | null } {
+  const lineText = getLineText(content, options.lineStartOffsets, lineIndex);
+  const lineStartOffset = options.lineStartOffsets[lineIndex] ?? 0;
+  let tokens: Token[];
+  let headingLevel: MarkdownHeadingLevel | undefined;
+  let fencedCodePosition;
 
-  for (let lineIndex = 0; lineIndex <= options.lineRange.endLine; lineIndex += 1) {
-    const lineText = getLineText(content, options.lineStartOffsets, lineIndex);
-    const lineStartOffset = options.lineStartOffsets[lineIndex] ?? 0;
-    let tokens: Token[];
-    let headingLevel: MarkdownHeadingLevel | undefined;
-    let fencedCodePosition;
-
-    if (format === 'markdown') {
-      const heading = state
-        ? null
-        : parseMarkdownHeading(lineText, lineStartOffset, options.hideMarkdownHeadingMarkers);
-      if (heading) {
-        tokens = heading.tokens;
-        headingLevel = heading.headingLevel;
-      } else if (state || /^[ \t]*\x60{3,}/u.test(lineText) || lineText.includes('<!--')) {
-        const tokenized = tokenizeLineWithState(lineText, { comments: options.commentSyntax, state });
-        tokens = tokenized.tokens;
-        state = tokenized.state;
-        fencedCodePosition = tokenized.fencedCodePosition;
-        annotateTokenOffsets(tokens, lineStartOffset);
-      } else {
-        tokens = parseMarkdownTextLine(lineText, lineStartOffset);
-      }
-    } else if (format === 'ini' || format === 'conf' || format === 'properties' || format === 'dotenv') {
-      tokens = parseConfigLine(lineText, lineStartOffset, format);
-    } else if (format === 'log') {
-      const logTokens = parseLogLine(lineText, lineStartOffset);
-      if (logTokens) {
-        tokens = logTokens;
-      } else {
-        const tokenized = tokenizeLineWithState(lineText, { state });
-        tokens = tokenized.tokens;
-        state = tokenized.state;
-        fencedCodePosition = tokenized.fencedCodePosition;
-        annotateTokenOffsets(tokens, lineStartOffset);
-      }
-    } else if (format === 'srt' || format === 'webvtt' || format === 'lrc') {
-      const subtitleTokens = parseSubtitleLine(lineText, lineStartOffset, format);
-      if (subtitleTokens) {
-        tokens = subtitleTokens;
-      } else {
-        const tokenized = tokenizeLineWithState(lineText, { state });
-        tokens = tokenized.tokens;
-        state = tokenized.state;
-        fencedCodePosition = tokenized.fencedCodePosition;
-        annotateTokenOffsets(tokens, lineStartOffset);
-      }
-    } else {
+  if (format === 'markdown') {
+    const heading = state
+      ? null
+      : parseMarkdownHeading(lineText, lineStartOffset, options.hideMarkdownHeadingMarkers);
+    if (heading) {
+      tokens = heading.tokens;
+      headingLevel = heading.headingLevel;
+    } else if (state || /^[ \t]*\x60{3,}/u.test(lineText) || lineText.includes('<!--')) {
       const tokenized = tokenizeLineWithState(lineText, { comments: options.commentSyntax, state });
       tokens = tokenized.tokens;
       state = tokenized.state;
       fencedCodePosition = tokenized.fencedCodePosition;
       annotateTokenOffsets(tokens, lineStartOffset);
+    } else {
+      tokens = parseMarkdownTextLine(lineText, lineStartOffset);
     }
+  } else if (format === 'ini' || format === 'conf' || format === 'properties' || format === 'dotenv') {
+    tokens = parseConfigLine(lineText, lineStartOffset, format);
+  } else if (format === 'log') {
+    const logTokens = parseLogLine(lineText, lineStartOffset);
+    if (logTokens) {
+      tokens = logTokens;
+    } else {
+      const tokenized = tokenizeLineWithState(lineText, { state });
+      tokens = tokenized.tokens;
+      state = tokenized.state;
+      fencedCodePosition = tokenized.fencedCodePosition;
+      annotateTokenOffsets(tokens, lineStartOffset);
+    }
+  } else if (format === 'srt' || format === 'webvtt' || format === 'lrc') {
+    const subtitleTokens = parseSubtitleLine(lineText, lineStartOffset, format);
+    if (subtitleTokens) {
+      tokens = subtitleTokens;
+    } else {
+      const tokenized = tokenizeLineWithState(lineText, { state });
+      tokens = tokenized.tokens;
+      state = tokenized.state;
+      fencedCodePosition = tokenized.fencedCodePosition;
+      annotateTokenOffsets(tokens, lineStartOffset);
+    }
+  } else {
+    const tokenized = tokenizeLineWithState(lineText, { comments: options.commentSyntax, state });
+    tokens = tokenized.tokens;
+    state = tokenized.state;
+    fencedCodePosition = tokenized.fencedCodePosition;
+    annotateTokenOffsets(tokens, lineStartOffset);
+  }
 
-    if (lineIndex >= options.lineRange.startLine) {
-      parsedLines.push({
-        id: lineIndex,
-        ...getIndentInfo(lineText, options.tabSize),
-        tokens,
-        headingLevel,
-        fencedCodePosition
-      });
+  return {
+    line: {
+      id: lineIndex,
+      ...getIndentInfo(lineText, options.tabSize),
+      tokens,
+      headingLevel,
+      fencedCodePosition
+    },
+    state
+  };
+}
+
+function cloneTokenizeState(state: TokenizeState | null): TokenizeState | null {
+  return state ? { ...state } : null;
+}
+
+export function parseLineOrientedFormat(
+  content: string,
+  format: LineOrientedFormatId,
+  options: ParseLineOrientedFormatOptions
+): ParsedLine[] {
+  const parsedLines: ParsedLine[] = [];
+  const cache = options.renderCache;
+  let state: TokenizeState | null = null;
+
+  if (cache) {
+    const context = JSON.stringify([
+      format,
+      options.tabSize,
+      options.hideMarkdownHeadingMarkers,
+      options.commentSyntax ?? null
+    ]);
+    prepareLineStateCheckpointCache(
+      cache,
+      content,
+      context,
+      options.lineStartOffsets,
+      null,
+      cloneTokenizeState,
+      options.contentChange
+    );
+    state = getLineStateAt(
+      cache,
+      options.lineRange.startLine,
+      null,
+      cloneTokenizeState,
+      (lineIndex, lineState) => parseLineOrientedLine(
+        content,
+        format,
+        options,
+        lineIndex,
+        lineState
+      ).state
+    );
+  } else {
+    for (let lineIndex = 0; lineIndex < options.lineRange.startLine; lineIndex += 1) {
+      state = parseLineOrientedLine(content, format, options, lineIndex, state).state;
+    }
+  }
+
+  for (
+    let lineIndex = options.lineRange.startLine;
+    lineIndex <= options.lineRange.endLine;
+    lineIndex += 1
+  ) {
+    const parsed = parseLineOrientedLine(content, format, options, lineIndex, state);
+    state = parsed.state;
+    parsedLines.push(parsed.line);
+    if (cache) {
+      cache.visitedLineCount += 1;
+      storeLineStateCheckpoint(cache, lineIndex + 1, state, cloneTokenizeState);
     }
   }
 
