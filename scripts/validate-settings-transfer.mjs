@@ -55,13 +55,13 @@ try {
 
   const serialized = transfer.serializeSettingsFile(
     current,
-    '0.4.0',
+    '0.5.0',
     new Date('2026-08-03T00:00:00.000Z')
   );
   const document = JSON.parse(serialized);
   assert.equal(document.format, 'text-pad-settings');
   assert.equal(document.schemaVersion, 1);
-  assert.equal(document.appVersion, '0.4.0');
+  assert.equal(document.appVersion, '0.5.0');
   assert.equal(document.exportedAt, '2026-08-03T00:00:00.000Z');
 
   const roundTrip = transfer.parseSettingsFile(serialized, current);
