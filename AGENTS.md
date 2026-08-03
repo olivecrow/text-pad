@@ -44,6 +44,7 @@
 - 프론트엔드 변경 후에는 `npm run check`를 우선 실행한다.
 - 프론트엔드, 정적 자산, 설정, Rust 백엔드처럼 앱 내용이 바뀌는 작업은 마지막에 `.agents/skills/text-pad-signed-build/SKILL.md`를 읽고 `npm run tauri:build:signed`를 실행한다.
 - 서명 빌드는 종료 코드 0과 새 `text-pad.exe`, MSI, NSIS, 각 업데이터 `.sig`를 모두 확인해야 완료다.
+- 실제 Tauri 앱으로 개발 결과를 시험하거나 최신 빌드를 열 때는 `.agents/skills/text-pad-run-latest-build/SKILL.md`를 읽고 현재 작업 트리의 `src-tauri/target/release/text-pad.exe`를 절대 경로로 실행한다. 앱 이름이나 등록된 설치본 실행 기능을 사용하지 말고, 실제 프로세스 경로가 이 파일과 정확히 같은지 확인한 뒤에만 UI 테스트를 진행한다.
 - `npm run tauri build` 직접 실행과 `npm run tauri build -- --no-bundle`은 진단용일 뿐 최종 빌드 근거로 사용하지 않는다.
 - 단순 문서나 저장소 지침만 수정한 경우에는 서명 빌드를 생략할 수 있다.
 - 개인키, 암호, 복호화 결과, `TAURI_SIGNING_PRIVATE_KEY*` 값을 출력하거나 커밋하지 않고, 기존 업데이터 키를 임의로 재생성하지 않는다.

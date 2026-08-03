@@ -5,7 +5,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { emit, emitTo, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { Braces, ChevronDown, Code2, Copy, Download, FileCode2, FileText, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, Table2, X } from "@lucide/svelte";
+  import { Braces, ChevronDown, Code2, Copy, Download, FileCode2, FileText, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, Table2, Upload, X } from "@lucide/svelte";
   import {
     configurableDocumentFormatCategories,
     configurableDocumentFormats,
@@ -109,6 +109,12 @@
     createBrowserDocumentDiagnosticWorkerClient,
     DocumentDiagnosticCancelledError
   } from "$lib/document-diagnostic-client";
+  import {
+    parseSettingsFile,
+    serializeSettingsFile,
+    type AppSettingsSnapshot,
+    type SettingsImportErrorReason
+  } from "$lib/settings-transfer";
   import {
     createRenderedTextBoundaryIndex,
     findClosestRenderedTextOffset,
@@ -448,6 +454,9 @@
   type FormatSettingsView = `format:${DocumentFormatId}`;
   type FormatCategorySettingsView = `category:${DocumentFormatCategoryId}`;
   type SettingsView = 'general' | 'sourceAppearance' | 'renderAppearance' | 'renderEditing' | FormatCategorySettingsView | FormatSettingsView;
+  type SettingsTransferStatus = { kind: 'success' | 'warning' | 'error'; message: string };
+  let settingsTransferStatus = $state<SettingsTransferStatus | null>(null);
+  let isSettingsTransferBusy = $state<boolean>(false);
   let activeSettingsView = $state<SettingsView>('general');
   let isSourceSettingsExpanded = $state<boolean>(true);
   let isRenderSettingsExpanded = $state<boolean>(true);
@@ -2075,6 +2084,138 @@
       window.removeEventListener('storage', handleStorageChange);
     };
   });
+
+  function getCurrentSettingsSnapshot(): AppSettingsSnapshot {
+    return {
+      general: {
+        language: languagePreference,
+        theme: themeMode
+      },
+      source: {
+        fontSize: sourceFontSize
+      },
+      render: {
+        fontSize: renderFontSize,
+        indentWidth: tabSize,
+        fontFamily: renderFontFamily,
+        editing: {
+          autoPair: renderAutoPairEditing,
+          autoSymbols: renderAutoSymbolSubstitution,
+          preserveIndent: renderPreserveIndentOnEnter
+        },
+        colors: {
+          light: { ...lightColors },
+          dark: { ...darkColors }
+        },
+        formats: {
+          features: normalizeDocumentFeatureSettings(documentFeatureSettings),
+          markdown: normalizeMarkdownRenderSettings(markdownRenderSettings),
+          table: {
+            highlightHeader: delimitedTableHighlightHeader,
+            showRowIndices: delimitedTableShowRowIndices,
+            animateReorder: delimitedTableAnimateReorder,
+            reorderDurationMs: delimitedTableReorderDurationMs
+          }
+        }
+      }
+    };
+  }
+
+  function applySettingsSnapshot(settings: AppSettingsSnapshot) {
+    languagePreference = settings.general.language;
+    themeMode = settings.general.theme;
+    sourceFontSize = settings.source.fontSize;
+    renderFontSize = settings.render.fontSize;
+    tabSize = settings.render.indentWidth;
+    renderFontFamily = settings.render.fontFamily;
+    renderAutoPairEditing = settings.render.editing.autoPair;
+    renderAutoSymbolSubstitution = settings.render.editing.autoSymbols;
+    renderPreserveIndentOnEnter = settings.render.editing.preserveIndent;
+    lightColors = { ...settings.render.colors.light };
+    darkColors = { ...settings.render.colors.dark };
+    documentFeatureSettings = normalizeDocumentFeatureSettings(settings.render.formats.features);
+    markdownRenderSettings = normalizeMarkdownRenderSettings(settings.render.formats.markdown);
+    delimitedTableHighlightHeader = settings.render.formats.table.highlightHeader;
+    delimitedTableShowRowIndices = settings.render.formats.table.showRowIndices;
+    delimitedTableAnimateReorder = settings.render.formats.table.animateReorder;
+    delimitedTableReorderDurationMs = normalizeDelimitedTableReorderDuration(
+      settings.render.formats.table.reorderDurationMs
+    );
+  }
+
+  function getSettingsImportErrorMessage(reason: SettingsImportErrorReason): string {
+    const keys: Record<SettingsImportErrorReason, TranslationKey> = {
+      invalid_json: 'settings.transfer.error.invalidJson',
+      invalid_structure: 'settings.transfer.error.invalidStructure',
+      unsupported_format: 'settings.transfer.error.unsupportedFormat',
+      file_too_large: 'settings.transfer.error.fileTooLarge'
+    };
+    return t(keys[reason]);
+  }
+
+  async function handleExportSettings() {
+    if (isSettingsTransferBusy) return;
+    isSettingsTransferBusy = true;
+    settingsTransferStatus = null;
+    try {
+      const savedFile = await invoke<SavedFile | null>('save_file_dialog', {
+        defaultName: 'text-pad-settings.json',
+        content: serializeSettingsFile(getCurrentSettingsSnapshot(), installedAppVersion),
+        encoding: 'utf8',
+        filters: [{ name: t('settings.transfer.jsonFilter'), extensions: ['json'] }]
+      });
+      if (savedFile) {
+        settingsTransferStatus = {
+          kind: 'success',
+          message: t('settings.transfer.exportSuccess')
+        };
+      }
+    } catch (error) {
+      settingsTransferStatus = {
+        kind: 'error',
+        message: localizeError('error.saveFile', error)
+      };
+    } finally {
+      isSettingsTransferBusy = false;
+    }
+  }
+
+  async function handleImportSettings() {
+    if (isSettingsTransferBusy) return;
+    isSettingsTransferBusy = true;
+    settingsTransferStatus = null;
+    try {
+      const openedFile = await invoke<OpenedFile | null>('open_file_dialog', {
+        filters: [{ name: t('settings.transfer.jsonFilter'), extensions: ['json'] }]
+      });
+      if (!openedFile) return;
+
+      const result = parseSettingsFile(openedFile.content, getCurrentSettingsSnapshot());
+      if (!result.ok) {
+        settingsTransferStatus = {
+          kind: 'error',
+          message: getSettingsImportErrorMessage(result.reason)
+        };
+        return;
+      }
+
+      applySettingsSnapshot(result.settings);
+      await tick();
+      settingsTransferStatus = result.newerVersion
+        ? { kind: 'warning', message: t('settings.transfer.importNewer', { count: result.applied }) }
+        : result.skipped > 0
+          ? { kind: 'warning', message: t('settings.transfer.importPartial', { count: result.applied, skipped: result.skipped }) }
+          : { kind: 'success', message: t('settings.transfer.importSuccess', { count: result.applied }) };
+    } catch (error) {
+      settingsTransferStatus = {
+        kind: 'error',
+        message: localizeError('error.readFile', error)
+      };
+    } finally {
+      isSettingsTransferBusy = false;
+    }
+  }
+
 
   function normalizeHexColor(value: string): string | null {
     const trimmed = value.trim();
@@ -5762,6 +5903,41 @@
             </div>
             <p class="settings-category-note">{t('settings.languageDescription')}</p>
           </div>
+          <div class="settings-section">
+            <h4 class="section-title">{t('settings.transfer.title')}</h4>
+            <p class="settings-category-note">{t('settings.transfer.description')}</p>
+            <div class="settings-transfer-actions">
+              <button
+                type="button"
+                class="settings-transfer-button"
+                disabled={isSettingsTransferBusy}
+                onclick={() => void handleImportSettings()}
+              >
+                <Upload size={15} aria-hidden="true"/>
+                {t('settings.transfer.import')}
+              </button>
+              <button
+                type="button"
+                class="settings-transfer-button"
+                disabled={isSettingsTransferBusy}
+                onclick={() => void handleExportSettings()}
+              >
+                <Download size={15} aria-hidden="true"/>
+                {t('settings.transfer.export')}
+              </button>
+            </div>
+            {#if settingsTransferStatus}
+              <p
+                class="settings-transfer-status"
+                class:warning={settingsTransferStatus.kind === 'warning'}
+                class:error={settingsTransferStatus.kind === 'error'}
+                role={settingsTransferStatus.kind === 'error' ? 'alert' : 'status'}
+                aria-live="polite"
+              >
+                {settingsTransferStatus.message}
+              </p>
+            {/if}
+          </div>
         {:else if activeSettingsView === 'sourceAppearance'}
           <div class="settings-section">
             <h4 class="section-title">{t('settings.fontSettings')}</h4>
@@ -8218,6 +8394,69 @@
     font-size: 0.8rem;
     line-height: 1.45;
   }
+
+  .settings-transfer-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .settings-transfer-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    min-height: 30px;
+    padding: 0.35rem 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-window);
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+
+  .settings-transfer-button:hover:not(:disabled) {
+    background: var(--bg-menu-hover);
+  }
+
+  .settings-transfer-button:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 2px;
+  }
+
+  .settings-transfer-button:disabled {
+    cursor: wait;
+    opacity: 0.55;
+  }
+
+  .settings-transfer-status {
+    margin: 0;
+    color: #16753c;
+    font-size: 0.78rem;
+    line-height: 1.4;
+  }
+
+  .settings-transfer-status.warning {
+    color: #946200;
+  }
+
+  .settings-transfer-status.error {
+    color: var(--error-text, #b91c1c);
+  }
+  :global(.theme-dark) .settings-transfer-status {
+    color: #86efac;
+  }
+
+  :global(.theme-dark) .settings-transfer-status.warning {
+    color: #fde68a;
+  }
+
+  :global(.theme-dark) .settings-transfer-status.error {
+    color: #fca5a5;
+  }
+
 
   .color-picker-wrapper {
     display: flex;

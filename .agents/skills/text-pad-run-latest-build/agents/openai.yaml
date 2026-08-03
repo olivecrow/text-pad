@@ -1,0 +1,4 @@
+interface:
+  display_name: "text-pad 최신 빌드 실행"
+  short_description: "현재 작업 트리의 최신 Windows 빌드를 정확한 경로로 실행·검증"
+  default_prompt: "Use $text-pad-run-latest-build to launch and verify the newest local text-pad build for real-app testing."

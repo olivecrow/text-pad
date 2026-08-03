@@ -7,7 +7,7 @@
     "dev": "vite dev",
     "build": "npm run validate:formats && vite build",
     "preview": "vite preview",
-    "check": "npm run validate:formats && npm run test:formats && npm run test:rendering && npm run test:tabs && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check": "npm run validate:formats && npm run test:formats && npm run test:rendering && npm run test:tabs && npm run test:settings && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "validate:i18n": "node scripts/validate-i18n.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "licenses": "node scripts/generate-runtime-notices.mjs",
@@ -16,7 +16,8 @@
     "validate:formats": "node scripts/validate-supported-formats.mjs",
     "test:formats": "node scripts/validate-format-samples.mjs",
     "test:tabs": "node scripts/validate-tab-drag.mjs",
-    "test:rendering": "node scripts/validate-rendering-core.mjs"
+    "test:rendering": "node scripts/validate-rendering-core.mjs",
+    "test:settings": "node scripts/validate-settings-transfer.mjs"
   },
   "license": "MIT",
   "dependencies": {
