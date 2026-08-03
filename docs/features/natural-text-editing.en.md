@@ -308,6 +308,17 @@ The current arrow substitutions apply after the user types a standalone trigger 
 - Do not substitute when there is an active selection or an IME composition is in progress.
 - Record the string replacement and trailing space together as one Undo action.
 
+## Text duplication
+
+`Ctrl+D` is the same duplication command in source mode and render mode while the editor has focus.
+
+- With no selection, duplicate the entire source line containing the caret immediately below it. Move the caret to the same column on the duplicated line.
+- When the current line already has a line ending, preserve that line's LF or CRLF. For the final line, insert the document's preferred line ending between the original and duplicate.
+- With a single-line selection, insert only the selected string immediately after the selection and select the newly inserted copy. For example, duplicating the selected `BC` in `ABCD` produces `ABCBCD`.
+- With a multi-line selection, do not expand to whole lines. Insert the exact selected source range, including any selected line endings, immediately after the selection and make the new copy the resulting selection.
+- Do not intercept the shortcut during IME composition or while focus is outside the editor, such as in a settings input.
+- Record the complete line or selection duplication as one independent Undo action. Undo and Redo restore the caret or selection from before and after the edit.
+
 ## Undo and Redo
 
 An application with custom editing features should use one history system as the source of truth instead of mixing browser Undo history with application state.
@@ -319,7 +330,7 @@ An application with custom editing features should use one history system as the
 - Each record stores the source range that actually changed, the before and after strings, and the before and after selections.
 - Consecutive character insertion, Backspace, and Delete operations merge when they continue at the same location within one second.
 - An IME composition, including Korean text composition, is recorded as one ordinary input group from composition start to composition end.
-- Paste, cut, menu deletion, newline insertion, automatic pairing, backtick code-block expansion and fence disabling, indentation, and list-marker conversion are each independent actions with a clear semantic boundary.
+- Paste, cut, menu deletion, newline insertion, line or selection duplication, automatic pairing, backtick code-block expansion and fence disabling, indentation, and list-marker conversion are each independent actions with a clear semantic boundary.
 - Caret movement, selection changes, focus changes, mode switching, and setting changes do not alter source text and therefore create no history record.
 - Starting a new application-defined edit closes any active ordinary-input group.
 - Starting a new edit after Undo discards the Redo history after the current position.
@@ -346,6 +357,8 @@ An editor that overlays a rendered backdrop and a real input element must manage
 Several features can respond to the same key, so evaluate the most specific context first.
 
 The current render-mode priority is:
+
+The common `Ctrl+D` editing shortcut is handled first as an independent duplication command in both source and render modes. The priority below applies to render-mode editing-assistance input without Ctrl, Alt, or Meta.
 
 1. Block deletion selections that include only part of a fenced-code delimiter
 2. Disable fenced-block syntax on Backspace from the immediately following line

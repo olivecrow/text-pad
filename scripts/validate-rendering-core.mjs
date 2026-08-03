@@ -54,6 +54,7 @@ try {
   const listMarkers = await server.ssrLoadModule('/src/lib/list-markers.ts');
   const textChanges = await server.ssrLoadModule('/src/lib/text-change.ts');
   const editorInput = await server.ssrLoadModule('/src/lib/editor-input.ts');
+  const editorDuplication = await server.ssrLoadModule('/src/lib/editor-duplication.ts');
   const editorLayout = await server.ssrLoadModule('/src/lib/editor-layout.ts');
   const boundedCollections = await server.ssrLoadModule('/src/lib/bounded-collections.ts');
   const editorUndo = await server.ssrLoadModule('/src/lib/editor-undo.ts');
@@ -234,6 +235,74 @@ try {
   const inputHistory = new editorUndo.EditorUndoHistory(nativeBefore);
   inputHistory.record(nativeBefore, nativeInput.snapshot, { change: nativeInput.change });
   assert.deepEqual(inputHistory.undo(nativeInput.snapshot), nativeBefore);
+
+  const selectedDuplication = editorDuplication.getEditorDuplicationEdit(
+    'ABCD',
+    { start: 1, end: 3 },
+    '\n'
+  );
+  assert.deepEqual(selectedDuplication, {
+    content: 'ABCBCD',
+    selection: { start: 3, end: 5 }
+  });
+
+  const lfLineDuplication = editorDuplication.getEditorDuplicationEdit(
+    'ABCD\nnext',
+    { start: 2, end: 2 },
+    '\n'
+  );
+  assert.deepEqual(lfLineDuplication, {
+    content: 'ABCD\nABCD\nnext',
+    selection: { start: 7, end: 7 }
+  });
+
+  const crlfLineDuplication = editorDuplication.getEditorDuplicationEdit(
+    'ABCD\r\nnext',
+    { start: 2, end: 2 },
+    '\r\n'
+  );
+  assert.deepEqual(crlfLineDuplication, {
+    content: 'ABCD\r\nABCD\r\nnext',
+    selection: { start: 8, end: 8 }
+  });
+
+  const finalLineDuplication = editorDuplication.getEditorDuplicationEdit(
+    'before\nABCD',
+    { start: 9, end: 9 },
+    '\n'
+  );
+  assert.deepEqual(finalLineDuplication, {
+    content: 'before\nABCD\nABCD',
+    selection: { start: 14, end: 14 }
+  });
+
+  const emptyLineDuplication = editorDuplication.getEditorDuplicationEdit(
+    '',
+    { start: 0, end: 0 },
+    '\n'
+  );
+  assert.deepEqual(emptyLineDuplication, {
+    content: '\n',
+    selection: { start: 1, end: 1 }
+  });
+
+  const duplicationHistory = new editorUndo.EditorUndoHistory({
+    content: 'ABCD',
+    selection: { start: 1, end: 3 }
+  });
+  duplicationHistory.record(
+    { content: 'ABCD', selection: { start: 1, end: 3 } },
+    selectedDuplication,
+    { change: textChanges.getTextChange('ABCD', selectedDuplication.content) }
+  );
+  assert.deepEqual(duplicationHistory.undo(selectedDuplication), {
+    content: 'ABCD',
+    selection: { start: 1, end: 3 }
+  });
+  assert.deepEqual(
+    duplicationHistory.redo({ content: 'ABCD', selection: { start: 1, end: 3 } }),
+    selectedDuplication
+  );
 
   const mergePrefix = 'x'.repeat(100_000);
   const mergeInitial = {
@@ -582,7 +651,7 @@ try {
     `Validated render core: CRLF offsets, logarithmic hit testing (${rectCalls} reads), `
       + `XML range cache (${xmlParseDuration.toFixed(1)}ms), 250k-line uniform layout (${uniformDuration.toFixed(1)}ms), `
       + `incremental layout/parser checkpoints, shared input diffs, bounded caches/undo, worker cancellation, `
-      + `auto-pair right-context rules, list-marker backspace, and table copy-on-write.`
+      + `auto-pair right-context rules, editor duplication, list-marker backspace, and table copy-on-write.`
   );
 } finally {
   await server.close();

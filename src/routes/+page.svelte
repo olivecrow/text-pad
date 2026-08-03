@@ -94,6 +94,7 @@
     type TextOffsetIndex
   } from "$lib/text-offset-index";
   import { getPreferredNewline, getSnapshotFromTextareaInput } from "$lib/editor-input";
+  import { getEditorDuplicationEdit } from "$lib/editor-duplication";
   import { BoundedLruCache, BoundedRecentSet } from "$lib/bounded-collections";
   import {
     canInsertAutoPairAt,
@@ -3625,6 +3626,21 @@
     commitManualEditorEdit(nextContent, nextSelection, { keepRenderCaretVisible: true });
   }
 
+  function duplicateEditorSelectionOrLine(): boolean {
+    if (!textareaEl || document.activeElement !== textareaEl) return false;
+
+    const selection = getTextareaSelectionInContent();
+    const edit = getEditorDuplicationEdit(
+      fileContent,
+      selection,
+      getPreferredNewline(fileContent, selection.start)
+    );
+    commitManualEditorEdit(edit.content, edit.selection, {
+      keepRenderCaretVisible: isRenderMode
+    });
+    return true;
+  }
+
   function commitDelimitedTableEdit(
     nextDocument: DelimitedTableDocument,
     options: { mergeKey?: string | null } = {}
@@ -5048,6 +5064,16 @@
     } else if (!isSettingsWindow && e.ctrlKey && key === 'y') {
       e.preventDefault();
       performRedo();
+    } else if (
+      !isSettingsWindow
+      && e.ctrlKey
+      && !e.shiftKey
+      && !e.altKey
+      && !e.metaKey
+      && !e.isComposing
+      && key === 'd'
+    ) {
+      if (duplicateEditorSelectionOrLine()) e.preventDefault();
     } else if (e.ctrlKey && key === 'n') {
       e.preventDefault();
       handleNewFile();
