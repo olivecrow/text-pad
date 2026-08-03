@@ -95,6 +95,14 @@
   } from "$lib/text-offset-index";
   import { getPreferredNewline, getSnapshotFromTextareaInput } from "$lib/editor-input";
   import { BoundedLruCache, BoundedRecentSet } from "$lib/bounded-collections";
+  import {
+    canInsertAutoPairAt,
+    createDefaultAutoPairAllowedFollowingStrings,
+    maximumAutoPairAllowedFollowingStringCount,
+    maximumAutoPairAllowedFollowingStringLength,
+    normalizeAutoPairAllowedFollowingString,
+    parseAutoPairAllowedFollowingStrings
+  } from "$lib/auto-pair";
   import { getTextChange, type TextChange } from "$lib/text-change";
   import {
     createEditorLineLayoutCache,
@@ -476,6 +484,16 @@
   // 렌더 모드 상태
   let isRenderMode = $state<boolean>(true); // 기본값은 렌더 모드
   let renderAutoPairEditing = $state<boolean>(true);
+  let renderAutoPairAllowedFollowingStrings = $state<string[]>(createDefaultAutoPairAllowedFollowingStrings());
+  let renderAutoPairAllowedFollowingStringDraft = $state<string>('');
+  let normalizedRenderAutoPairAllowedFollowingStringDraft = $derived(
+    normalizeAutoPairAllowedFollowingString(renderAutoPairAllowedFollowingStringDraft)
+  );
+  let canAddRenderAutoPairAllowedFollowingString = $derived(
+    normalizedRenderAutoPairAllowedFollowingStringDraft !== null
+    && !renderAutoPairAllowedFollowingStrings.includes(normalizedRenderAutoPairAllowedFollowingStringDraft)
+    && renderAutoPairAllowedFollowingStrings.length < maximumAutoPairAllowedFollowingStringCount
+  );
   let renderAutoSymbolSubstitution = $state<boolean>(true);
   let renderPreserveIndentOnEnter = $state<boolean>(true);
   let delimitedTableHighlightHeader = $state<boolean>(true);
@@ -665,7 +683,37 @@
     "'": "'",
     '`': '`'
   };
+  const renderAutoPairAllowedFollowingStringsPreferenceKey = 'pref_render_auto_pair_allowed_following_strings';
   const renderAutoClosingCharacters = new Set(Object.values(renderAutoClosingPairs));
+
+  function addRenderAutoPairAllowedFollowingString() {
+    const value = normalizedRenderAutoPairAllowedFollowingStringDraft;
+    if (
+      !value
+      || renderAutoPairAllowedFollowingStrings.includes(value)
+      || renderAutoPairAllowedFollowingStrings.length >= maximumAutoPairAllowedFollowingStringCount
+    ) {
+      return;
+    }
+
+    renderAutoPairAllowedFollowingStrings = [...renderAutoPairAllowedFollowingStrings, value];
+    renderAutoPairAllowedFollowingStringDraft = '';
+  }
+
+  function removeRenderAutoPairAllowedFollowingString(value: string) {
+    renderAutoPairAllowedFollowingStrings = renderAutoPairAllowedFollowingStrings.filter(
+      (candidate) => candidate !== value
+    );
+  }
+
+  function handleRenderAutoPairAllowedFollowingStringKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Enter' || event.isComposing) return;
+    event.preventDefault();
+    if (canAddRenderAutoPairAllowedFollowingString) {
+      addRenderAutoPairAllowedFollowingString();
+    }
+  }
+
   const renderAutoSubstitutions: Record<string, string> = {
     '-->': '→',
     '<--': '←',
@@ -1753,6 +1801,9 @@
     if (savedTabSize) tabSize = parseInt(savedTabSize, 10);
 
     renderAutoPairEditing = localStorage.getItem('pref_render_auto_pair_editing') !== 'false';
+    renderAutoPairAllowedFollowingStrings = parseAutoPairAllowedFollowingStrings(
+      localStorage.getItem(renderAutoPairAllowedFollowingStringsPreferenceKey)
+    );
     renderAutoSymbolSubstitution = localStorage.getItem('pref_render_auto_symbol_substitution') !== 'false';
     renderPreserveIndentOnEnter = localStorage.getItem('pref_render_preserve_indent_on_enter') !== 'false';
     delimitedTableHighlightHeader = localStorage.getItem('pref_delimited_table_highlight_header') !== 'false';
@@ -1819,6 +1870,11 @@
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_font_size', renderFontSize.toString()); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_tab_size', tabSize.toString()); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_pair_editing', renderAutoPairEditing ? 'true' : 'false'); });
+  $effect(() => {
+    if (isBrowser && canPersistPreferences) {
+      localStorage.setItem(renderAutoPairAllowedFollowingStringsPreferenceKey, JSON.stringify(renderAutoPairAllowedFollowingStrings));
+    }
+  });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_symbol_substitution', renderAutoSymbolSubstitution ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_preserve_indent_on_enter', renderPreserveIndentOnEnter ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_highlight_header', delimitedTableHighlightHeader ? 'true' : 'false'); });
@@ -2055,6 +2111,9 @@
     if (e.key === 'pref_render_font_size' && e.newValue) renderFontSize = parseInt(e.newValue, 10);
     if (e.key === 'pref_tab_size' && e.newValue) tabSize = parseInt(e.newValue, 10);
     if (e.key === 'pref_render_auto_pair_editing' && e.newValue) renderAutoPairEditing = e.newValue !== 'false';
+    if (e.key === renderAutoPairAllowedFollowingStringsPreferenceKey) {
+      renderAutoPairAllowedFollowingStrings = parseAutoPairAllowedFollowingStrings(e.newValue);
+    }
     if (e.key === 'pref_render_auto_symbol_substitution' && e.newValue) renderAutoSymbolSubstitution = e.newValue !== 'false';
     if (e.key === 'pref_render_preserve_indent_on_enter' && e.newValue) renderPreserveIndentOnEnter = e.newValue !== 'false';
     if (e.key === 'pref_delimited_table_highlight_header' && e.newValue) delimitedTableHighlightHeader = e.newValue !== 'false';
@@ -2100,6 +2159,7 @@
         fontFamily: renderFontFamily,
         editing: {
           autoPair: renderAutoPairEditing,
+          autoPairAllowedFollowingStrings: [...renderAutoPairAllowedFollowingStrings],
           autoSymbols: renderAutoSymbolSubstitution,
           preserveIndent: renderPreserveIndentOnEnter
         },
@@ -2129,6 +2189,7 @@
     tabSize = settings.render.indentWidth;
     renderFontFamily = settings.render.fontFamily;
     renderAutoPairEditing = settings.render.editing.autoPair;
+    renderAutoPairAllowedFollowingStrings = [...settings.render.editing.autoPairAllowedFollowingStrings];
     renderAutoSymbolSubstitution = settings.render.editing.autoSymbols;
     renderPreserveIndentOnEnter = settings.render.editing.preserveIndent;
     lightColors = { ...settings.render.colors.light };
@@ -4402,6 +4463,18 @@
     const { start, end } = getTextareaSelectionInContent();
     if (start !== end) return false;
 
+    if (renderAutoClosingCharacters.has(event.key) && fileContent[start] === event.key) {
+      event.preventDefault();
+      closeActiveUndoGroup();
+      const nextCaret = start + event.key.length;
+      setTextareaSelectionFromContent(nextCaret, nextCaret);
+      updateCursorPosition();
+      keepEditorCaretVisibleDuringEdit();
+      return true;
+    }
+
+    if (!canInsertAutoPairAt(fileContent, start, renderAutoPairAllowedFollowingStrings)) return false;
+
     if (
       event.key === '`'
       && start >= 2
@@ -4424,16 +4497,6 @@
         });
         return true;
       }
-    }
-
-    if (renderAutoClosingCharacters.has(event.key) && fileContent[start] === event.key) {
-      event.preventDefault();
-      closeActiveUndoGroup();
-      const nextCaret = start + event.key.length;
-      setTextareaSelectionFromContent(nextCaret, nextCaret);
-      updateCursorPosition();
-      keepEditorCaretVisibleDuringEdit();
-      return true;
     }
 
     const closingChar = renderAutoClosingPairs[event.key];
@@ -6106,6 +6169,60 @@
                 <span class="settings-check-description">{t('settings.autoPair.description')}</span>
               </span>
             </label>
+            <div
+              class="auto-pair-following-settings"
+              class:disabled={!renderAutoPairEditing}
+              aria-disabled={!renderAutoPairEditing}
+            >
+              <div class="auto-pair-following-heading">
+                <span class="settings-check-title">{t('settings.autoPair.followingTitle')}</span>
+                <span class="settings-check-description">{t('settings.autoPair.followingDescription')}</span>
+              </div>
+              <div class="auto-pair-following-list" role="list">
+                <span class="auto-pair-following-chip fixed" role="listitem">
+                  <span>{t('settings.autoPair.whitespace')}</span>
+                  <span class="auto-pair-following-fixed-label">{t('settings.autoPair.alwaysAllowed')}</span>
+                </span>
+                {#each renderAutoPairAllowedFollowingStrings as value (value)}
+                  <span class="auto-pair-following-chip" role="listitem">
+                    <code>{value}</code>
+                    <button
+                      type="button"
+                      class="auto-pair-following-remove"
+                      aria-label={t('settings.autoPair.removeFollowingString', { value })}
+                      title={t('settings.autoPair.removeFollowingString', { value })}
+                      disabled={!renderAutoPairEditing}
+                      onclick={() => removeRenderAutoPairAllowedFollowingString(value)}
+                    >
+                      <X size={12} aria-hidden="true" />
+                    </button>
+                  </span>
+                {/each}
+              </div>
+              <div class="auto-pair-following-add-row">
+                <input
+                  id="render-auto-pair-allowed-following-string-window"
+                  class="auto-pair-following-input"
+                  type="text"
+                  maxlength={maximumAutoPairAllowedFollowingStringLength}
+                  autocomplete="off"
+                  aria-label={t('settings.autoPair.followingInputLabel')}
+                  placeholder={t('settings.autoPair.followingPlaceholder')}
+                  disabled={!renderAutoPairEditing || renderAutoPairAllowedFollowingStrings.length >= maximumAutoPairAllowedFollowingStringCount}
+                  bind:value={renderAutoPairAllowedFollowingStringDraft}
+                  onkeydown={handleRenderAutoPairAllowedFollowingStringKeydown}
+                />
+                <button
+                  type="button"
+                  class="auto-pair-following-add"
+                  disabled={!renderAutoPairEditing || !canAddRenderAutoPairAllowedFollowingString}
+                  onclick={addRenderAutoPairAllowedFollowingString}
+                >
+                  <Plus size={13} aria-hidden="true" />
+                  {t('settings.autoPair.addFollowingString')}
+                </button>
+              </div>
+            </div>
             <label class="settings-check-row" for="render-auto-symbol-substitution-window">
               <input
                 id="render-auto-symbol-substitution-window"
@@ -8286,6 +8403,134 @@
   .settings-check-description {
     color: var(--text-muted);
     font-size: 0.78rem;
+  }
+
+  .auto-pair-following-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    margin: -0.1rem 0 0.15rem 26px;
+    padding: 0.65rem 0.75rem;
+    border-left: 2px solid var(--border-color);
+    background: var(--bg-window);
+  }
+
+  .auto-pair-following-settings.disabled {
+    opacity: 0.55;
+  }
+
+  .auto-pair-following-heading {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .auto-pair-following-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .auto-pair-following-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    max-width: 100%;
+    min-height: 24px;
+    padding: 0.1rem 0.2rem 0.1rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: var(--bg-editor);
+    color: var(--text-color);
+    font-size: 0.76rem;
+  }
+
+  .auto-pair-following-chip.fixed {
+    gap: 0.4rem;
+    padding-right: 0.5rem;
+  }
+
+  .auto-pair-following-chip code {
+    overflow-wrap: anywhere;
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 0.76rem;
+  }
+
+  .auto-pair-following-fixed-label {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+  }
+
+  .auto-pair-following-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .auto-pair-following-remove:hover:not(:disabled) {
+    background: var(--bg-menu-hover);
+    color: var(--text-color);
+  }
+
+  .auto-pair-following-add-row {
+    display: flex;
+    gap: 0.4rem;
+    max-width: 360px;
+  }
+
+  .auto-pair-following-input {
+    flex: 1;
+    min-width: 0;
+    height: 28px;
+    box-sizing: border-box;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    outline: none;
+    background: var(--bg-editor);
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 0.78rem;
+  }
+
+  .auto-pair-following-input:focus {
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 1px var(--accent-color);
+  }
+
+  .auto-pair-following-add {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    min-width: 62px;
+    height: 28px;
+    padding: 0 0.55rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-editor);
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 0.76rem;
+    cursor: pointer;
+  }
+
+  .auto-pair-following-add:hover:not(:disabled) {
+    background: var(--bg-menu-hover);
+  }
+
+  .auto-pair-following-add:disabled,
+  .auto-pair-following-remove:disabled,
+  .auto-pair-following-input:disabled {
+    cursor: not-allowed;
   }
 
   .settings-duration-row {

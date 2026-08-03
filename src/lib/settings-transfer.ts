@@ -4,6 +4,7 @@ import {
   type DocumentFeatureSettings
 } from './document-formats';
 import { isAppLocale, type LanguagePreference } from './i18n';
+import { normalizeAutoPairAllowedFollowingStrings } from './auto-pair';
 import {
   markdownHeadingLevels,
   normalizeMarkdownRenderSettings,
@@ -49,6 +50,7 @@ export interface AppSettingsSnapshot {
     fontFamily: string;
     editing: {
       autoPair: boolean;
+      autoPairAllowedFollowingStrings: string[];
       autoSymbols: boolean;
       preserveIndent: boolean;
     };
@@ -142,7 +144,10 @@ function cloneSettings(settings: AppSettingsSnapshot): AppSettingsSnapshot {
     source: { ...settings.source },
     render: {
       ...settings.render,
-      editing: { ...settings.render.editing },
+      editing: {
+        ...settings.render.editing,
+        autoPairAllowedFollowingStrings: [...settings.render.editing.autoPairAllowedFollowingStrings]
+      },
       colors: {
         light: { ...settings.render.colors.light },
         dark: { ...settings.render.colors.dark }
@@ -328,6 +333,12 @@ function migrateLegacySettings(candidate: UnknownRecord): UnknownRecord {
   assignLegacyValue(render, 'indentWidth', candidate, 'tabSize');
   assignLegacyValue(render, 'fontFamily', candidate, 'renderFontFamily');
   assignLegacyValue(editing, 'autoPair', candidate, 'renderAutoPairEditing');
+  assignLegacyValue(
+    editing,
+    'autoPairAllowedFollowingStrings',
+    candidate,
+    'renderAutoPairAllowedFollowingStrings'
+  );
   assignLegacyValue(editing, 'autoSymbols', candidate, 'renderAutoSymbolSubstitution');
   assignLegacyValue(editing, 'preserveIndent', candidate, 'renderPreserveIndentOnEnter');
   assignLegacyValue(colors, 'light', candidate, 'lightColors');
@@ -399,8 +410,19 @@ function applySettingsCandidate(
 
   const editing = getSection(render, 'editing', statistics);
   if (editing) {
-    markUnknownKeys(editing, ['autoPair', 'autoSymbols', 'preserveIndent'], statistics);
+    markUnknownKeys(
+      editing,
+      ['autoPair', 'autoPairAllowedFollowingStrings', 'autoSymbols', 'preserveIndent'],
+      statistics
+    );
     applyValue(editing, 'autoPair', normalizeBoolean, (value) => settings.render.editing.autoPair = value, statistics);
+    applyValue(
+      editing,
+      'autoPairAllowedFollowingStrings',
+      normalizeAutoPairAllowedFollowingStrings,
+      (value) => settings.render.editing.autoPairAllowedFollowingStrings = value,
+      statistics
+    );
     applyValue(editing, 'autoSymbols', normalizeBoolean, (value) => settings.render.editing.autoSymbols = value, statistics);
     applyValue(editing, 'preserveIndent', normalizeBoolean, (value) => settings.render.editing.preserveIndent = value, statistics);
   }

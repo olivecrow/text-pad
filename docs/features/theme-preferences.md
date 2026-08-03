@@ -49,6 +49,7 @@ CSV/TSV 표의 첫 행 강조, 행 번호 표시, 행·열 이동 애니메이�
 - `pref_delimited_table_reorder_duration_ms`: CSV/TSV 행·열 이동 시간. 50~2,000밀리초 범위에서 50밀리초 단위로 저장한다.
 - `pref_render_font_family`: 렌더 모드 글꼴 선택.
 - `pref_render_auto_pair_editing`: 렌더 모드 쌍 문자 자동 입력과 삭제 사용 여부.
+- `pref_render_auto_pair_allowed_following_strings`: 렌더 모드에서 캐럿 오른쪽에 있어도 새 자동 쌍 입력을 허용하는 사용자 편집 문자열 목록의 JSON 배열. 공백은 이 값과 무관하게 항상 허용한다.
 - `pref_render_auto_symbol_substitution`: 렌더 모드 화살표 기호 자동 변환 사용 여부.
 - `pref_render_preserve_indent_on_enter`: 렌더 모드 줄바꿈 시 들여쓰기 유지 사용 여부.
 - `pref_document_format_features`: 파일 형식별 렌더 표시와 렌더 편집 사용 여부. JSON 문자열 형태로 저장하며, 각 형식 식별자 아래에 `render`와 `edit` 값을 둔다.

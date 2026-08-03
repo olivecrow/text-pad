@@ -58,6 +58,7 @@ try {
   const boundedCollections = await server.ssrLoadModule('/src/lib/bounded-collections.ts');
   const editorUndo = await server.ssrLoadModule('/src/lib/editor-undo.ts');
   const diagnosticClient = await server.ssrLoadModule('/src/lib/document-diagnostic-client.ts');
+  const autoPair = await server.ssrLoadModule('/src/lib/auto-pair.ts');
 
   const offsetSamples = [
     '',
@@ -144,6 +145,22 @@ try {
     xmlParseDuration < 1_500,
     `large XML visible-range parse took ${xmlParseDuration.toFixed(1)}ms`
   );
+
+  assert.deepEqual(autoPair.createDefaultAutoPairAllowedFollowingStrings(), ['=', ':']);
+  assert.deepEqual(autoPair.parseAutoPairAllowedFollowingStrings(null), ['=', ':']);
+  assert.deepEqual(autoPair.parseAutoPairAllowedFollowingStrings('[]'), []);
+  assert.deepEqual(autoPair.parseAutoPairAllowedFollowingStrings('["=","="," : "]'), ['=', ':']);
+  assert.deepEqual(autoPair.parseAutoPairAllowedFollowingStrings('{broken'), ['=', ':']);
+  assert.equal(autoPair.canInsertAutoPairAt('', 0, ['=', ':']), true);
+  assert.equal(autoPair.canInsertAutoPairAt('body', 0, ['=', ':']), false);
+  assert.equal(autoPair.canInsertAutoPairAt(' body', 0, []), true);
+  assert.equal(autoPair.canInsertAutoPairAt('\tbody', 0, []), true);
+  assert.equal(autoPair.canInsertAutoPairAt('\nbody', 0, []), true);
+  assert.equal(autoPair.canInsertAutoPairAt('=body', 0, ['=', ':']), true);
+  assert.equal(autoPair.canInsertAutoPairAt(': body', 0, ['=', ':']), true);
+  assert.equal(autoPair.canInsertAutoPairAt('=> body', 0, ['=>']), true);
+  assert.equal(autoPair.canInsertAutoPairAt('prefix value', 7, ['value']), true);
+  assert.equal(autoPair.canInsertAutoPairAt('prefix value', 7, []), false);
 
   const cachedTokens = renderCache.xml.tokens;
   documentFormats.parseDocumentForRender(xmlContent, {
@@ -552,7 +569,7 @@ try {
     `Validated render core: CRLF offsets, logarithmic hit testing (${rectCalls} reads), `
       + `XML range cache (${xmlParseDuration.toFixed(1)}ms), 250k-line uniform layout (${uniformDuration.toFixed(1)}ms), `
       + `incremental layout/parser checkpoints, shared input diffs, bounded caches/undo, worker cancellation, `
-      + `list-marker backspace, and table copy-on-write.`
+      + `auto-pair right-context rules, list-marker backspace, and table copy-on-write.`
   );
 } finally {
   await server.close();

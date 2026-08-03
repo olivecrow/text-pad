@@ -33,7 +33,12 @@ try {
       fontSize: 12,
       indentWidth: 4,
       fontFamily: 'nanum-gothic',
-      editing: { autoPair: true, autoSymbols: true, preserveIndent: true },
+      editing: {
+        autoPair: true,
+        autoPairAllowedFollowingStrings: ['=', ':'],
+        autoSymbols: true,
+        preserveIndent: true
+      },
       colors: { light: lightColors, dark: darkColors },
       formats: {
         features: documentFormats.createDefaultDocumentFeatureSettings(),
@@ -71,6 +76,7 @@ try {
     renderFontSize: 18,
     tabSize: 8,
     renderAutoPairEditing: false,
+    renderAutoPairAllowedFollowingStrings: [';', '=>'],
     delimitedTableReorderDurationMs: 188
   }), current);
   assert.equal(legacy.ok, true);
@@ -80,6 +86,7 @@ try {
   assert.equal(legacy.settings.render.fontSize, 18);
   assert.equal(legacy.settings.render.indentWidth, 8);
   assert.equal(legacy.settings.render.editing.autoPair, false);
+  assert.deepEqual(legacy.settings.render.editing.autoPairAllowedFollowingStrings, [';', '=>']);
   assert.equal(legacy.settings.render.formats.table.reorderDurationMs, 200);
   assert.equal(legacy.settings.render.formats.table.showRowIndices, true);
 
@@ -91,7 +98,11 @@ try {
       render: {
         fontSize: 500,
         fontFamily: 'future-font',
-        editing: { autoSymbols: false, futureEditing: 'value' },
+        editing: {
+          autoPairAllowedFollowingStrings: ['valid', 1],
+          autoSymbols: false,
+          futureEditing: 'value'
+        },
         colors: { light: { renderBg: '#aabbcc', codeText: 'not-a-color', futureColor: '#ffffff' } },
         formats: {
           features: {
@@ -113,6 +124,7 @@ try {
   assert.equal(future.settings.render.fontSize, 72);
   assert.equal(future.settings.render.fontFamily, 'nanum-gothic');
   assert.equal(future.settings.render.editing.autoSymbols, false);
+  assert.deepEqual(future.settings.render.editing.autoPairAllowedFollowingStrings, ['=', ':']);
   assert.equal(future.settings.render.colors.light.renderBg, '#AABBCC');
   assert.equal(future.settings.render.colors.light.codeText, '#0284C7');
   assert.equal(future.settings.render.formats.features.json.render, false);
