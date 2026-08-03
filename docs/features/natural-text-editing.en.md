@@ -65,9 +65,10 @@ The current pairs are:
 The behavioral contract is:
 
 - Apply pairing only when the setting is enabled and there is a collapsed caret with no selection.
-- Typing one opening character inserts both characters and moves the caret between them.
+- Create a new automatic pair only when the caret is at the end of the text or the text to its right begins with whitespace or a configured exception string. Whitespace is always an exception and cannot be removed. The default configurable exception strings are `=` and `:`; users can add or remove other strings in the render-mode editing settings.
+- In an allowed right-side context, typing one opening character inserts both characters and moves the caret between them. When disallowed text is to the right, automatic pairing does not intervene and the `textarea` default behavior inserts only the typed character.
 - If the character at the caret is the same closing bracket, quote, or backtick that the user types, leave the source unchanged and move the caret past that character. Typing `"` twice therefore leaves only `""` with the caret after the closing quote.
-- When three backticks are typed after optional indentation at the start of a line, the third input expands them into an opening fence, an empty code line, a closing fence, and a following line with the same indentation, while leaving the caret inside the empty code line. A collapsed caret immediately after the closing fence maps to the first editable position on the following line instead of the hidden fence line. Preserve the existing newline convention and indentation.
+- When three backticks are typed after optional indentation at the start of a line and the right-side context allows a new automatic pair, the third input expands them into an opening fence, an empty code line, a closing fence, and a following line with the same indentation, while leaving the caret inside the empty code line. A collapsed caret immediately after the closing fence maps to the first editable position on the following line instead of the hidden fence line. Preserve the existing newline convention and indentation.
 - With an active selection, the current implementation does not wrap the selection and instead uses default input behavior. Selection wrapping requires a separate behavioral contract and validation before it can be added.
 - Pressing Backspace between an empty automatic pair removes both the opening and closing characters.
 - In repeated-character contexts such as `"""` or `(()`, do not guess that surrounding characters belong to the same pair when an outer closing character cannot be confirmed.
@@ -113,6 +114,15 @@ The current recognized forms are:
 - Unordered marker: `- `, `* `, `+ `, `• `
 
 `-`, `*`, and `+` are widely used lightweight-markup markers, while `•` is common in ordinary documents. Whitespace between the marker and body is treated as part of the marker and preserved when continuing the list. Identical text in the middle of a line is not treated as a list marker.
+
+### Rendered body cell and boundary editing
+
+- In render mode, a recognized list line is laid out as a two-column grid with a marker cell and a body cell. The body cell is a real layout region with its own wrapping width, not text positioned by drawing spaces after the marker.
+- First-line body text, soft-wrapped display rows, and `Shift+Enter` continuation lines all use the same left edge of the body cell. Leading whitespace on a continuation line remains only as source-compatible structure and is neither editable body whitespace nor an indentation level in render mode, so it does not produce an indentation guide. Only guides for the actual nesting depth of the list item remain visible.
+- Clicking the marker cell or the structural area of a continuation line clamps a collapsed caret to the body start. A collapsed caret cannot remain in that structural area, and `ArrowLeft` at a continuation body start moves to the previous line end without traversing structural spaces.
+- Pressing `Backspace` at the body start of a marker line removes the marker's last visible character together with its following structural gap. Therefore `1. body` removes the period first and becomes `1body`, ending list treatment, while `• body` becomes `body` in one action.
+- Pressing `Backspace` at a continuation body start removes the preceding newline and continuation structure together, joining the body to the previous line.
+- Removing a marker-tail character and joining a continuation line are each one Undo action.
 
 ### Indentation depth and marker style
 
@@ -298,6 +308,17 @@ The current arrow substitutions apply after the user types a standalone trigger 
 - Do not substitute when there is an active selection or an IME composition is in progress.
 - Record the string replacement and trailing space together as one Undo action.
 
+## Text duplication
+
+`Ctrl+D` is the same duplication command in source mode and render mode while the editor has focus.
+
+- With no selection, duplicate the entire source line containing the caret immediately below it. Move the caret to the same column on the duplicated line.
+- When the current line already has a line ending, preserve that line's LF or CRLF. For the final line, insert the document's preferred line ending between the original and duplicate.
+- With a single-line selection, insert only the selected string immediately after the selection and select the newly inserted copy. For example, duplicating the selected `BC` in `ABCD` produces `ABCBCD`.
+- With a multi-line selection, do not expand to whole lines. Insert the exact selected source range, including any selected line endings, immediately after the selection and make the new copy the resulting selection.
+- Do not intercept the shortcut during IME composition or while focus is outside the editor, such as in a settings input.
+- Record the complete line or selection duplication as one independent Undo action. Undo and Redo restore the caret or selection from before and after the edit.
+
 ## Undo and Redo
 
 An application with custom editing features should use one history system as the source of truth instead of mixing browser Undo history with application state.
@@ -309,7 +330,7 @@ An application with custom editing features should use one history system as the
 - Each record stores the source range that actually changed, the before and after strings, and the before and after selections.
 - Consecutive character insertion, Backspace, and Delete operations merge when they continue at the same location within one second.
 - An IME composition, including Korean text composition, is recorded as one ordinary input group from composition start to composition end.
-- Paste, cut, menu deletion, newline insertion, automatic pairing, backtick code-block expansion and fence disabling, indentation, and list-marker conversion are each independent actions with a clear semantic boundary.
+- Paste, cut, menu deletion, newline insertion, line or selection duplication, automatic pairing, backtick code-block expansion and fence disabling, indentation, and list-marker conversion are each independent actions with a clear semantic boundary.
 - Caret movement, selection changes, focus changes, mode switching, and setting changes do not alter source text and therefore create no history record.
 - Starting a new application-defined edit closes any active ordinary-input group.
 - Starting a new edit after Undo discards the Redo history after the current position.
@@ -324,11 +345,11 @@ An editor that overlays a rendered backdrop and a real input element must manage
 - Do not estimate horizontal indent-guide positions with character units such as CSS `ch`, which can differ from the width of actual spaces. Measure the actual width of each indentation block in the current render font so every guide remains on its corresponding leading whitespace even with a proportional font.
 - Use the same word-breaking rules for soft wrapping, and never add display wraps to source text.
 - While resize-driven wrapping calculations are unstable, prefer the real input text over an outdated rendered backdrop.
-- Preserve syntax highlighting during selection, and draw the selection background from the rendered layer's actual glyph boundaries so its position cannot drift from the text. A selection that mixes proportional and monospace text follows the width of each rendered font.
-- Take custom-caret and click positions from the actual DOM ranges of the rendered text nodes after the browser completes layout, rather than recalculating them from character counts or average glyph widths. Skip empty rendered nodes at a line end and use the right edge of the last real glyph so the caret remains visible at the end of a source line and at the end of the document.
+- Preserve syntax highlighting during selection, and draw the selection background from the rendered layer's actual glyph boundaries so its position cannot drift from the text. A selection that mixes proportional and monospace text follows the width of each rendered font. If a selection contains only newlines or blank lines and produces no rendered glyph range, keep the native `textarea` selection background; hide it only after at least one custom range is registered.
+- Take custom-caret and click positions from the actual DOM ranges of the rendered text nodes after the browser completes layout, rather than recalculating them from character counts or average glyph widths. Use the range's horizontal position, vertical position, and height directly without snapping them back to an estimated line grid or replacing the height. For list bodies, exclude layout-only whitespace between the marker and body cells from coordinate mapping and use only the text ranges inside the body cell. Prefer the browser's native point-to-caret mapping and use a binary search over nearby DOM ranges only as a fallback. Never allocate or scan every character boundary in a long line. Skip empty rendered nodes at a line end and use the right edge of the last real glyph so the caret remains visible at the end of a source line and at the end of the document.
 - Measure each visible source line after its final soft wrapping and use that height to position the next source line and its line number. Width estimates are only an initial virtualization fallback for offscreen lines and are replaced with measured heights when those lines enter the viewport.
 - Render inline code and fenced backtick code blocks with a monospace font by default while keeping the body text's font size and line height. Hide inline-code delimiters only when the backticks contain at least one non-whitespace character; show the backticks for an empty or whitespace-only inline-code span so its empty state remains visible. Hide the complete opening and closing fence lines of multi-line code blocks in render mode, while preserving their layout space for source-position mapping and preventing a collapsed caret from remaining inside hidden syntax. Use only about 12px of each hidden fence line for the block's top and bottom fill padding, inset the fill about 12px from both horizontal editor edges, and keep about 12px of inner padding between the fill edges and code text. Draw a multi-line code block as one continuous filled background from its opening fence through its closing fence without a separate outline, and keep code text and rendered selection highlights above the fill. Treat the default code text color as the lowest-priority fallback so syntax colors for brackets, list markers, strings, numbers, and similar tokens remain visible, and use a less saturated default code text color in the dark theme. Allow the code background and default code text colors to be changed independently for the light and dark themes. Even when proportional and monospace text share a line, calculate click mapping and caret placement from the actual rendered DOM ranges.
-- Convert positions in both directions between Windows CRLF source text and the browser `textarea` selection offsets normalized to LF.
+- Convert positions in both directions between Windows CRLF source text and the browser `textarea` selection offsets normalized to LF. Build line-start and CRLF-position indexes once per source revision and use binary search for conversions instead of rescanning from the document start on every input event.
 - Use the same source-to-display position conversion for editing, Undo, Redo, and tab restoration.
 
 ## Input-handling priority
@@ -336,6 +357,8 @@ An editor that overlays a rendered backdrop and a real input element must manage
 Several features can respond to the same key, so evaluate the most specific context first.
 
 The current render-mode priority is:
+
+The common `Ctrl+D` editing shortcut is handled first as an independent duplication command in both source and render modes. The priority below applies to render-mode editing-assistance input without Ctrl, Alt, or Meta.
 
 1. Block deletion selections that include only part of a fenced-code delimiter
 2. Disable fenced-block syntax on Backspace from the immediately following line
@@ -345,13 +368,15 @@ The current render-mode priority is:
 6. Continue a list marker and renumber following items on Enter
 7. Create the next item and renumber following items from a list continuation line on Enter
 8. Preserve indentation on Enter for a general line
-9. Join an otherwise empty automatically indented line on Backspace
-10. Indent or outdent lines with Tab or Shift+Tab
-11. Delete leading indentation with Backspace
-12. Delete an empty automatic pair with Backspace
-13. Apply a context-aware substitution confirmed by Space
-14. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
-15. Fall back to default `textarea` input when none of the conditions match
+9. Remove the marker-tail character with Backspace at a list body start
+10. Join a list continuation line with Backspace at its body start
+11. Join an otherwise empty automatically indented line on Backspace
+12. Indent or outdent lines with Tab or Shift+Tab
+13. Delete leading indentation with Backspace
+14. Delete an empty automatic pair with Backspace
+15. Apply a context-aware substitution confirmed by Space
+16. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
+17. Fall back to default `textarea` input when none of the conditions match
 
 Do not chain one editing-assistance helper from inside another. The top-level input path selects exactly one feature by priority, and that feature records the final source text and selection only once.
 

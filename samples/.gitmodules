@@ -1,0 +1,4 @@
+[submodule "vendor/example-theme"]
+	path = vendor/example-theme
+	url = https://example.com/example-theme.git
+	branch = stable

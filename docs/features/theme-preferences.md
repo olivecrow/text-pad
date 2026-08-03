@@ -4,6 +4,22 @@
 
 CSV/TSV 표의 첫 행 강조, 행 번호 표시, 행·열 이동 애니메이션 사용 여부와 이동 시간도 같은 저장소에 보관하며, 이 설정들은 원문 파일 내용에 포함하지 않는다.
 
+## JSON 내보내기와 가져오기
+
+설정 파일은 사용자가 읽을 수 있는 JSON이며 최상위에 다음 정보를 둔다.
+
+- `format`: 다른 JSON 문서와 구분하는 고정 식별자 `text-pad-settings`.
+- `schemaVersion`: 설정 파일 구조 버전. 현재 버전은 `1`이다.
+- `appVersion`, `exportedAt`: 내보낸 앱 버전과 UTC 시각을 나타내는 참고 메타데이터.
+- `settings`: 일반, 원문 모드, 렌더 모드와 형식별 설정을 담는 실제 설정 객체.
+
+가져오기는 현재 설정을 기준으로 파일에 있는 알려진 항목만 덮어쓴다. 이전 버전 파일에 새 설정이 없으면 현재 값을 유지하고, 더 새로운 버전에만 있는 낯선 항목은 건너뛴다. 값은 적용 전에 종류와 허용 범위를 검사하며, 잘못된 값 하나 때문에 전체 가져오기가 중단되거나 앱이 크래시해서는 안 된다.
+
+버전이 없는 초기 형태는 `languagePreference`, `themeMode`, `sourceFontSize` 같은 기존 상태 이름을 가진 평면 객체로 간주해 현재 구조로 옮긴다. 새 설정을 추가할 때는 `src/lib/settings-transfer.ts`의 스냅샷 형식, 내보내기 값, 가져오기 정규화와 호환성 검증을 같은 변경에서 함께 확장한다.
+
+설정 파일은 JSON 파싱 전에 UTF-8 기준 1 MiB로 제한한다. 제품 식별자가 다르거나 JSON·설정 구조가 올바르지 않으면 아무 설정도 바꾸지 않고 오류를 표시한다.
+
+
 ## 표시 언어
 
 `languagePreference`는 사용자가 고른 표시 언어 상태다. `system`이면 `navigator.languages`에서 찾은 지원 언어를 사용하고, 지원 언어가 없으면 영어를 사용한다. 특정 언어 코드를 저장한 경우에는 시스템 언어보다 해당 선택을 우선한다.
@@ -33,6 +49,7 @@ CSV/TSV 표의 첫 행 강조, 행 번호 표시, 행·열 이동 애니메이�
 - `pref_delimited_table_reorder_duration_ms`: CSV/TSV 행·열 이동 시간. 50~2,000밀리초 범위에서 50밀리초 단위로 저장한다.
 - `pref_render_font_family`: 렌더 모드 글꼴 선택.
 - `pref_render_auto_pair_editing`: 렌더 모드 쌍 문자 자동 입력과 삭제 사용 여부.
+- `pref_render_auto_pair_allowed_following_strings`: 렌더 모드에서 캐럿 오른쪽에 있어도 새 자동 쌍 입력을 허용하는 사용자 편집 문자열 목록의 JSON 배열. 공백은 이 값과 무관하게 항상 허용한다.
 - `pref_render_auto_symbol_substitution`: 렌더 모드 화살표 기호 자동 변환 사용 여부.
 - `pref_render_preserve_indent_on_enter`: 렌더 모드 줄바꿈 시 들여쓰기 유지 사용 여부.
 - `pref_document_format_features`: 파일 형식별 렌더 표시와 렌더 편집 사용 여부. JSON 문자열 형태로 저장하며, 각 형식 식별자 아래에 `render`와 `edit` 값을 둔다.

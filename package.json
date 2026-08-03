@@ -1,20 +1,23 @@
 {
   "name": "text-pad",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
     "build": "npm run validate:formats && vite build",
     "preview": "vite preview",
-    "check": "npm run validate:formats && npm run test:formats && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check": "npm run validate:formats && npm run test:formats && npm run test:rendering && npm run test:tabs && npm run test:settings && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "validate:i18n": "node scripts/validate-i18n.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "licenses": "node scripts/generate-runtime-notices.mjs",
     "tauri:build:signed": "pwsh -NoProfile -File scripts/build-signed-update.ps1",
     "tauri": "tauri",
     "validate:formats": "node scripts/validate-supported-formats.mjs",
-    "test:formats": "node scripts/validate-format-samples.mjs"
+    "test:formats": "node scripts/validate-format-samples.mjs",
+    "test:tabs": "node scripts/validate-tab-drag.mjs",
+    "test:rendering": "node scripts/validate-rendering-core.mjs",
+    "test:settings": "node scripts/validate-settings-transfer.mjs"
   },
   "license": "MIT",
   "dependencies": {
@@ -24,6 +27,9 @@
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
+    "fast-xml-parser": "^5.10.1",
+    "jsonc-parser": "^3.3.1",
+    "smol-toml": "^1.7.1",
     "yaml": "^2.9.0"
   },
   "devDependencies": {

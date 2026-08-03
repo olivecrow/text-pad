@@ -337,3 +337,29 @@ export function renumberFollowingListMarkerSequence(
   if (!changed) return text;
   return `${text.slice(0, firstLineStart)}${transformed}${text.slice(offset)}`;
 }
+
+export interface ListMarkerBackspaceEdit {
+  text: string;
+  caret: number;
+}
+
+export function getListMarkerBodyStart(marker: ListMarker): number {
+  return marker.indent.length + marker.marker.length;
+}
+
+export function getListMarkerBackspaceEdit(
+  lineText: string,
+  caret: number
+): ListMarkerBackspaceEdit | null {
+  const marker = getListMarkerAtStart(lineText);
+  if (!marker || caret !== getListMarkerBodyStart(marker)) return null;
+
+  const markerSyntaxLength = marker.marker.length - marker.spacing.length;
+  if (markerSyntaxLength <= 0) return null;
+
+  const removeStart = marker.indent.length + markerSyntaxLength - 1;
+  return {
+    text: `${lineText.slice(0, removeStart)}${lineText.slice(caret)}`,
+    caret: removeStart
+  };
+}

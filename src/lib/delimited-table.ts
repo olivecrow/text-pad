@@ -249,10 +249,11 @@ export function updateDelimitedTableCell(
   columnIndex: number,
   value: string
 ): DelimitedTableDocument {
-  const rows = cloneRows(document);
+  const rows = [...document.rows];
   const columnCount = Math.max(getDelimitedTableColumnCount(document), columnIndex + 1);
-  rows[rowIndex] = padRow(rows[rowIndex] ?? [], columnCount);
-  rows[rowIndex][columnIndex] = value;
+  const updatedRow = padRow(rows[rowIndex] ?? [], columnCount);
+  updatedRow[columnIndex] = value;
+  rows[rowIndex] = updatedRow;
   return withRows(document, rows);
 }
 

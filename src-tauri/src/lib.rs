@@ -8,6 +8,19 @@ use file_commands::{
     ApprovedFilePaths,
 };
 
+#[tauri::command]
+fn setup_editor_window_wheel(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        return windows_wheel::setup_horizontal_wheel_hook(window);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        Ok(())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let window_state_flags = tauri_plugin_window_state::StateFlags::SIZE
@@ -46,6 +59,7 @@ pub fn run() {
             open_file_paths,
             save_file_dialog,
             write_file_content,
+            setup_editor_window_wheel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

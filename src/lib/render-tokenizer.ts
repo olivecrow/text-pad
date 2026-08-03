@@ -25,6 +25,13 @@ export interface Token {
     | 'timestamp'
     | 'keyword'
     | 'link'
+    | 'pattern'
+    | 'attribute'
+    | 'owner'
+    | 'tag'
+    | 'directive'
+    | 'hash'
+    | 'host'
     | 'invalid';
   text?: string;
   children?: Token[];

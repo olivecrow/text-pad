@@ -1,17 +1,86 @@
 {
-  "version": 1,
+  "version": 2,
   "formats": [
     { "id": "plain", "extensions": ["txt", "text"], "sample": "samples/plain-notes.text" },
     { "id": "markdown", "extensions": ["md", "markdown"], "sample": "samples/markdown-guide.md" },
     { "id": "json", "extensions": ["json"], "sample": "samples/app-settings.json" },
+    {
+      "id": "jsonc",
+      "extensions": ["jsonc"],
+      "fileNames": ["tsconfig.json", "jsconfig.json"],
+      "pathPatterns": ["**/.vscode/settings.json", "**/.vscode/tasks.json", "**/.vscode/launch.json"],
+      "sample": "samples/settings.jsonc"
+    },
     { "id": "jsonlines", "extensions": ["jsonl", "ndjson"], "sample": "samples/events.jsonl" },
+    { "id": "xml", "extensions": ["xml", "xsd", "xsl", "xslt", "rss", "atom"], "sample": "samples/catalog.xml" },
+    { "id": "gettext", "extensions": ["po", "pot"], "sample": "samples/messages.po" },
     { "id": "csv", "extensions": ["csv"], "sample": "samples/sample-orders.csv" },
     { "id": "tsv", "extensions": ["tsv"], "sample": "samples/sprint-board.tsv" },
     { "id": "yaml", "extensions": ["yaml", "yml"], "sample": "samples/deployment.yaml" },
+    {
+      "id": "toml",
+      "extensions": ["toml"],
+      "fileNames": ["Cargo.lock", "poetry.lock"],
+      "sample": "samples/project.toml"
+    },
     { "id": "ini", "extensions": ["ini", "cfg"], "sample": "samples/app-config.ini" },
     { "id": "conf", "extensions": ["conf"], "sample": "samples/service.conf" },
     { "id": "properties", "extensions": ["properties"], "sample": "samples/messages.properties" },
-    { "id": "dotenv", "extensions": ["env"], "sample": "samples/example.env" },
+    {
+      "id": "dotenv",
+      "extensions": ["env"],
+      "fileNamePatterns": [".env.*"],
+      "sample": "samples/example.env"
+    },
+    {
+      "id": "gitignore",
+      "extensions": ["gitignore"],
+      "pathPatterns": ["**/.git/info/exclude", "**/.git/info/sparse-checkout", "**/.config/git/ignore"],
+      "sample": "samples/.gitignore"
+    },
+    {
+      "id": "gitattributes",
+      "extensions": ["gitattributes"],
+      "pathPatterns": ["**/.git/info/attributes"],
+      "sample": "samples/.gitattributes"
+    },
+    {
+      "id": "gitconfig",
+      "extensions": ["gitconfig", "gitmodules"],
+      "pathPatterns": ["**/.git/config", "**/.git/config.worktree"],
+      "sample": "samples/.gitmodules"
+    },
+    { "id": "editorconfig", "extensions": ["editorconfig"], "sample": "samples/.editorconfig" },
+    { "id": "npmrc", "extensions": ["npmrc"], "sample": "samples/.npmrc" },
+    { "id": "dockerignore", "extensions": ["dockerignore"], "sample": "samples/.dockerignore" },
+    {
+      "id": "ignore",
+      "extensions": ["ignore", "npmignore", "prettierignore", "eslintignore", "stylelintignore", "helmignore", "vercelignore", "cursorignore", "rgignore", "fdignore"],
+      "sample": "samples/.ignore"
+    },
+    { "id": "codeowners", "extensions": [], "fileNames": ["CODEOWNERS"], "sample": "samples/CODEOWNERS" },
+    {
+      "id": "gitmessage",
+      "extensions": ["gitmessage"],
+      "fileNames": ["COMMIT_EDITMSG", "MERGE_MSG", "TAG_EDITMSG", "SQUASH_MSG"],
+      "sample": "samples/.gitmessage"
+    },
+    { "id": "gitmailmap", "extensions": ["mailmap"], "sample": "samples/.mailmap" },
+    { "id": "gitblame", "extensions": [], "fileNames": [".git-blame-ignore-revs"], "sample": "samples/.git-blame-ignore-revs" },
+    { "id": "registry", "extensions": ["reg"], "sample": "samples/preferences.reg" },
+    {
+      "id": "sshconfig",
+      "extensions": [],
+      "fileNames": ["ssh_config", "sshd_config"],
+      "pathPatterns": ["**/.ssh/config", "**/etc/ssh/ssh_config", "**/etc/ssh/sshd_config"],
+      "sample": "samples/ssh_config"
+    },
+    {
+      "id": "systemd",
+      "extensions": ["service", "socket", "timer", "target", "path", "mount", "automount", "swap", "slice", "scope", "network", "netdev", "link"],
+      "sample": "samples/text-pad.service"
+    },
+    { "id": "hosts", "extensions": [], "fileNames": ["hosts"], "sample": "samples/hosts" },
     { "id": "log", "extensions": ["log"], "sample": "samples/activity.log" },
     { "id": "srt", "extensions": ["srt"], "sample": "samples/captions.srt" },
     { "id": "webvtt", "extensions": ["vtt"], "sample": "samples/captions.vtt" },

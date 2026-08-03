@@ -1,0 +1,9 @@
+Windows Registry Editor Version 5.00
+
+; text-pad preferences
+[HKEY_CURRENT_USER\Software\text-pad]
+"Theme"="dark"
+"FontSize"=dword:0000000e
+"Accent"=hex:25,63,be
+"RecentIds"=hex:01,02,03,\
+  04,05

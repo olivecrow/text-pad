@@ -1,0 +1,5 @@
+# Shared ignore rules
+.cache/
+dist/**
+*.tmp
+!dist/README.txt

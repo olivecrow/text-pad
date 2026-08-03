@@ -3,13 +3,14 @@
   import { invoke } from "@tauri-apps/api/core";
   import { PhysicalPosition } from "@tauri-apps/api/dpi";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
+  import { emit, emitTo, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
   import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { Braces, ChevronDown, Code2, Copy, Download, FileCode2, FileText, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, Table2, X } from "@lucide/svelte";
+  import { Braces, ChevronDown, Code2, Copy, Download, FileCode2, FileText, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, Table2, Upload, X } from "@lucide/svelte";
   import {
     configurableDocumentFormatCategories,
     configurableDocumentFormats,
     createDefaultDocumentFeatureSettings,
+    createDocumentRenderCache,
     getDocumentDiagnostic,
     getDocumentFormatForContent,
     getSuggestedFileExtensionForContent,
@@ -26,12 +27,23 @@
     formatListMarker,
     getListContinuationIndent,
     getListMarkerAtStart,
+    getListMarkerBackspaceEdit,
     getListMarkerForIndentLevel,
     getNextListMarkerLabel,
     renumberFollowingListMarkerSequence,
     type ListMarker
   } from "$lib/list-markers";
-  import { EditorUndoHistory, type EditorSelection, type EditorSnapshot } from "$lib/editor-undo";
+  import { EditorUndoHistory, EditorUndoWindowBudget, type EditorSelection, type EditorSnapshot, type EditorUndoHistoryState } from "$lib/editor-undo";
+  import {
+    getTabDragPreviewPosition,
+    getTabDropIndex,
+    insertTabItem,
+    isPointInsideTabDock,
+    reorderTabItems,
+    shouldReplaceDetachedWindowPlaceholder,
+    tabDetachTargetClaimDelayMs,
+    type TabDragMetadata
+  } from "$lib/tab-drag";
   import {
     createDefaultMarkdownRenderSettings,
     markdownHeadingLevels,
@@ -70,12 +82,64 @@
     type DelimitedTableDocument,
     type DelimitedTableSeparator
   } from "$lib/delimited-table";
+  import {
+    MAX_ENHANCED_RENDER_CHARS,
+    MAX_ENHANCED_RENDER_LINES,
+    MAX_INTERACTIVE_TABLE_CELLS
+  } from "$lib/render-budgets";
+  import {
+    contentOffsetToTextareaOffset,
+    createTextOffsetIndex,
+    textareaOffsetToContentOffset,
+    type TextOffsetIndex
+  } from "$lib/text-offset-index";
+  import { getPreferredNewline, getSnapshotFromTextareaInput } from "$lib/editor-input";
+  import { getEditorDuplicationEdit } from "$lib/editor-duplication";
+  import { BoundedLruCache, BoundedRecentSet } from "$lib/bounded-collections";
+  import {
+    canInsertAutoPairAt,
+    createDefaultAutoPairAllowedFollowingStrings,
+    maximumAutoPairAllowedFollowingStringCount,
+    maximumAutoPairAllowedFollowingStringLength,
+    normalizeAutoPairAllowedFollowingString,
+    parseAutoPairAllowedFollowingStrings
+  } from "$lib/auto-pair";
+  import { getTextChange, type TextChange } from "$lib/text-change";
+  import {
+    createEditorLineLayoutCache,
+    createFencedCodeBlockCache,
+    getEditorLineLayout,
+    getFencedCodeBlockRanges,
+    getRenderListIndentGuideCount,
+    type FencedCodeBlockRange,
+    type RenderedLineHeightMeasurements,
+    type RenderListLineLayout
+  } from "$lib/editor-layout";
+  import {
+    createBrowserDocumentDiagnosticWorkerClient,
+    DocumentDiagnosticCancelledError
+  } from "$lib/document-diagnostic-client";
+  import {
+    parseSettingsFile,
+    serializeSettingsFile,
+    type AppSettingsSnapshot,
+    type SettingsImportErrorReason
+  } from "$lib/settings-transfer";
+  import {
+    createRenderedTextBoundaryIndex,
+    findClosestRenderedTextOffset,
+    getNativeCaretTextOffsetAtPoint,
+    type RenderedTextBoundary
+  } from "$lib/rendered-text-geometry";
+
+  type TextEncoding = 'utf8' | 'utf8Bom' | 'utf16Le' | 'utf16Be';
 
   interface EditorTab {
     id: string;
     filePath: string | null;
     fileName: string;
     fileContent: string;
+    encoding: TextEncoding;
     isDirty: boolean;
     scrollTop: number;
     scrollLeft: number;
@@ -86,20 +150,102 @@
     caretOffset: number;
   }
 
+  interface TabTransferPayload {
+    transferId: string;
+    sourceWindowLabel: string;
+    tab: EditorTab;
+    undoHistory: EditorUndoHistoryState;
+  }
+
+  interface TabTransferRequest extends TabDragMetadata {
+    targetWindowLabel: string;
+    dropIndex: number;
+  }
+
+  interface TabTransferDelivery extends TabTransferPayload {
+    dropIndex: number;
+  }
+
+  interface TabTransferAccepted {
+    transferId: string;
+    targetWindowLabel: string;
+  }
+
+  interface TabDragPreviewPresentation {
+    previewTitle: string;
+    previewIsDirty: boolean;
+    previewWidth: number;
+    previewOffsetX: number;
+    previewOffsetY: number;
+  }
+
+  interface OutgoingTabTransfer extends TabTransferPayload, TabDragPreviewPresentation {
+    receiverRequested: boolean;
+    handledInCurrentWindow: boolean;
+    hasLeftDock: boolean;
+    screenX: number;
+    screenY: number;
+    detachTimer: ReturnType<typeof setTimeout> | null;
+    expiryTimer: ReturnType<typeof setTimeout> | null;
+  }
+
+  interface TabPointerDragPayload extends TabDragMetadata, TabDragPreviewPresentation {
+    screenX: number;
+    screenY: number;
+  }
+
+  interface PendingPointerTabDrag {
+    pointerId: number;
+    tabId: string;
+    startClientX: number;
+    startClientY: number;
+    lastScreenX: number;
+    lastScreenY: number;
+    previewWidth: number;
+    previewOffsetX: number;
+    previewOffsetY: number;
+    transferId: string | null;
+  }
+
+  interface TabDragPreview extends TabDragPreviewPresentation {
+    transferId: string;
+    left: number;
+    top: number;
+  }
+
+
   interface OpenedFile {
     path: string;
     content: string;
+    encoding: TextEncoding;
+  }
+
+  interface SavedFile {
+    path: string;
+    encoding: TextEncoding;
   }
 
   let nextTabId = 1;
   let nextUntitledNumber = 1;
   const invalidFileNameCharsPattern = /[<>:"/\\|?*\x00-\x1F]/g;
   const isBrowser = typeof window !== 'undefined';
-  const maxEnhancedRenderChars = 2 * 1024 * 1024;
-  const maxEnhancedRenderLines = 100_000;
-  const maxDelimitedTableCells = 50_000;
   const languagePreferenceKey = 'pref_language';
+  const documentRenderCache = createDocumentRenderCache();
+  const editorLineLayoutCache = createEditorLineLayoutCache();
+  const fencedCodeBlockCache = createFencedCodeBlockCache();
+  const documentDiagnosticWorkerClient = isBrowser && typeof Worker !== 'undefined'
+    ? createBrowserDocumentDiagnosticWorkerClient()
+    : null;
+  let documentDiagnosticRequestId = 0;
 
+
+  const tabTransferRequestEvent = 'text-pad-tab-transfer-request';
+  const tabTransferDeliveryEvent = 'text-pad-tab-transfer-delivery';
+  const tabTransferAcceptedEvent = 'text-pad-tab-transfer-accepted';
+  const tabPointerDragMoveEvent = 'text-pad-tab-pointer-move';
+  const tabPointerDragDropEvent = 'text-pad-tab-pointer-drop';
+  const tabTransferIdQueryKey = 'tabTransferId';
+  const tabTransferSourceQueryKey = 'tabTransferSource';
   function getInitialLanguagePreference(): LanguagePreference {
     if (!isBrowser) return 'system';
     const savedPreference = localStorage.getItem(languagePreferenceKey);
@@ -121,6 +267,22 @@
     return '__TAURI_INTERNALS__' in runtimeWindow || '__TAURI__' in runtimeWindow;
   }
 
+  function getStartupTabTransferMetadata(): TabDragMetadata | null {
+    if (!isBrowser) return null;
+    const searchParams = new URLSearchParams(window.location.search);
+    const transferId = searchParams.get(tabTransferIdQueryKey);
+    const sourceWindowLabel = searchParams.get(tabTransferSourceQueryKey);
+    return transferId && sourceWindowLabel ? { transferId, sourceWindowLabel } : null;
+  }
+
+  function getCurrentEditorWindowLabel(): string {
+    if (!hasTauriRuntime()) return 'browser';
+    try {
+      return getCurrentWindow().label;
+    } catch {
+      return 'browser';
+    }
+  }
   function getInitialIsSettingsWindow(): boolean {
     if (!hasTauriRuntime()) return false;
 
@@ -180,7 +342,7 @@
     return tab.filePath ? tab.fileName : getUnsavedFileNameFromContent(tab.fileContent);
   }
 
-  function createEditorTab(options: Partial<Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent' | 'isDirty'>> = {}): EditorTab {
+  function createEditorTab(options: Partial<Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent' | 'encoding' | 'isDirty'>> = {}): EditorTab {
     const nextFileContent = options.fileContent ?? "";
     const nextFilePath = options.filePath ?? null;
     return {
@@ -188,6 +350,7 @@
       filePath: nextFilePath,
       fileName: options.fileName ?? (nextFilePath ? getFileNameFromPath(nextFilePath) : getNextUntitledFileName()),
       fileContent: nextFileContent,
+      encoding: options.encoding ?? 'utf8',
       isDirty: options.isDirty ?? false,
       scrollTop: 0,
       scrollLeft: 0,
@@ -214,12 +377,44 @@
     [initialTab.id, new EditorUndoHistory(getTabSnapshot(initialTab))]
   ]);
   let lastEditorSnapshot: EditorSnapshot = getTabSnapshot(initialTab);
+  const undoWindowBudget = new EditorUndoWindowBudget(128 * 1024 * 1024);
+  undoWindowBudget.touch(initialTab.id);
   let tabs = $state<EditorTab[]>([initialTab]);
   let activeTabId = $state<string>(initialTab.id);
+  const minimumTabWidth = 128;
+  const preferredTabWidth = 150;
+  const tabItemGap = 2;
+  let tabListEl = $state<HTMLDivElement | null>(null);
+  let titlebarTabsEl = $state<HTMLDivElement | null>(null);
+  let isTabStripOverflowing = $state(false);
+  let isTabOverflowMenuOpen = $state(false);
+  let hiddenTabIds = $state<string[]>([]);
+  let tabScrollThumbWidth = $state(0);
+  let tabScrollThumbLeft = $state(0);
+  let hiddenTabs = $derived(tabs.filter((tab) => hiddenTabIds.includes(tab.id)));
+  let tabListPreferredWidth = $derived(
+    tabs.length * preferredTabWidth + Math.max(0, tabs.length - 1) * tabItemGap
+  );
 
+  let draggedTabId = $state<string | null>(null);
+  let tabDropIndex = $state<number | null>(null);
+  let tabDropIndicatorLeft = $state(0);
+  let isTabDockDropTarget = $state(false);
+  let pendingPointerTabDrag: PendingPointerTabDrag | null = null;
+  let tabDragPreview = $state<TabDragPreview | null>(null);
+  let suppressedTabClickId: string | null = null;
+  let foreignTabDragTransferId: string | null = null;
+  const outgoingTabTransfers = new Map<string, OutgoingTabTransfer>();
+  const receivedTabTransferIds = new BoundedRecentSet<string>(256);
+  const pendingIncomingTransferResolvers = new Map<string, (received: boolean) => void>();
+  let tabTransferListenersPromise: Promise<UnlistenFn[]> | null = null;
+  const startupTabTransferMetadata = getStartupTabTransferMetadata();
   let filePath = $state<string | null>(initialTab.filePath);
   let fileName = $state<string>(initialTab.fileName);
   let fileContent = $state<string>(initialTab.fileContent);
+  let textOffsetIndex = $state.raw<TextOffsetIndex>(createTextOffsetIndex(initialTab.fileContent));
+  let latestContentChange = $state.raw<TextChange | null>(null);
+  let fileEncoding = $state<TextEncoding>(initialTab.encoding);
   let isDirty = $state<boolean>(initialTab.isDirty);
   let isLoading = $state<boolean>(false);
   let errorMsg = $state<string | null>(null);
@@ -245,17 +440,19 @@
   let editorCaretColor = $state<string>('var(--color-render-text, var(--text-color))');
   let editorCursorStyle = $state<string>('text');
   let hasEditorSelection = $state<boolean>(false);
+  let hasRenderedSelectionHighlight = $state<boolean>(false);
   let steadyEditorCaretVisible = $state<boolean>(false);
   let steadyEditorCaretCollapsed = $state<boolean>(true);
   let steadyEditorCaretLeft = $state<number>(12);
   let steadyEditorCaretTop = $state<number>(8);
+  let steadyEditorCaretHeight = $state<number>(22);
   let steadyEditorCaretTimer: ReturnType<typeof setTimeout> | null = null;
   let steadyEditorCaretBlinkKey = $state<number>(0);
   let isEditorFocused = $state<boolean>(false);
   let editorTextMeasureCanvas: HTMLCanvasElement | null = null;
   let editorTextMeasureContext: CanvasRenderingContext2D | null = null;
   let editorTextMeasureFont = '';
-  let editorTextWidthCache = new Map<string, number>();
+  let editorTextWidthCache = new BoundedLruCache<string, number>(12000);
   const renderedSelectionHighlightName = 'render-selection';
   const supportsRenderedSelectionHighlight = isBrowser
     && typeof Highlight === 'function'
@@ -268,15 +465,18 @@
   type FormatSettingsView = `format:${DocumentFormatId}`;
   type FormatCategorySettingsView = `category:${DocumentFormatCategoryId}`;
   type SettingsView = 'general' | 'sourceAppearance' | 'renderAppearance' | 'renderEditing' | FormatCategorySettingsView | FormatSettingsView;
+  type SettingsTransferStatus = { kind: 'success' | 'warning' | 'error'; message: string };
+  let settingsTransferStatus = $state<SettingsTransferStatus | null>(null);
+  let isSettingsTransferBusy = $state<boolean>(false);
   let activeSettingsView = $state<SettingsView>('general');
   let isSourceSettingsExpanded = $state<boolean>(true);
   let isRenderSettingsExpanded = $state<boolean>(true);
   let expandedFormatCategories = $state<Record<DocumentFormatCategoryId, boolean>>({
     document: true,
     structured: true,
+    project: true,
     table: true,
-    subtitle: true,
-    code: true
+    subtitle: true
   });
   let hasCenteredSettingsWindowThisSession = false;
 
@@ -287,6 +487,16 @@
   // 렌더 모드 상태
   let isRenderMode = $state<boolean>(true); // 기본값은 렌더 모드
   let renderAutoPairEditing = $state<boolean>(true);
+  let renderAutoPairAllowedFollowingStrings = $state<string[]>(createDefaultAutoPairAllowedFollowingStrings());
+  let renderAutoPairAllowedFollowingStringDraft = $state<string>('');
+  let normalizedRenderAutoPairAllowedFollowingStringDraft = $derived(
+    normalizeAutoPairAllowedFollowingString(renderAutoPairAllowedFollowingStringDraft)
+  );
+  let canAddRenderAutoPairAllowedFollowingString = $derived(
+    normalizedRenderAutoPairAllowedFollowingStringDraft !== null
+    && !renderAutoPairAllowedFollowingStrings.includes(normalizedRenderAutoPairAllowedFollowingStringDraft)
+    && renderAutoPairAllowedFollowingStrings.length < maximumAutoPairAllowedFollowingStringCount
+  );
   let renderAutoSymbolSubstitution = $state<boolean>(true);
   let renderPreserveIndentOnEnter = $state<boolean>(true);
   let delimitedTableHighlightHeader = $state<boolean>(true);
@@ -476,7 +686,37 @@
     "'": "'",
     '`': '`'
   };
+  const renderAutoPairAllowedFollowingStringsPreferenceKey = 'pref_render_auto_pair_allowed_following_strings';
   const renderAutoClosingCharacters = new Set(Object.values(renderAutoClosingPairs));
+
+  function addRenderAutoPairAllowedFollowingString() {
+    const value = normalizedRenderAutoPairAllowedFollowingStringDraft;
+    if (
+      !value
+      || renderAutoPairAllowedFollowingStrings.includes(value)
+      || renderAutoPairAllowedFollowingStrings.length >= maximumAutoPairAllowedFollowingStringCount
+    ) {
+      return;
+    }
+
+    renderAutoPairAllowedFollowingStrings = [...renderAutoPairAllowedFollowingStrings, value];
+    renderAutoPairAllowedFollowingStringDraft = '';
+  }
+
+  function removeRenderAutoPairAllowedFollowingString(value: string) {
+    renderAutoPairAllowedFollowingStrings = renderAutoPairAllowedFollowingStrings.filter(
+      (candidate) => candidate !== value
+    );
+  }
+
+  function handleRenderAutoPairAllowedFollowingStringKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Enter' || event.isComposing) return;
+    event.preventDefault();
+    if (canAddRenderAutoPairAllowedFollowingString) {
+      addRenderAutoPairAllowedFollowingString();
+    }
+  }
+
   const renderAutoSubstitutions: Record<string, string> = {
     '-->': '→',
     '<--': '←',
@@ -492,7 +732,6 @@
   const editorTopPadding = 8;
   const virtualLineOverscan = 8;
   const editorResizeDebounceMs = 80;
-  const editorTextWidthCacheLimit = 12000;
   const delimitedTableReorderDurationMinMs = 50;
   const delimitedTableReorderDurationMaxMs = 2000;
   const delimitedTableReorderDurationStepMs = 50;
@@ -573,17 +812,6 @@
     };
   }
 
-  interface EditorLineLayout {
-    tops: number[];
-    heights: number[];
-    totalHeight: number;
-  }
-
-  interface RenderedLineHeightMeasurements {
-    content: string;
-    context: string;
-    heights: Record<number, number>;
-  }
 
   function getActiveTabIndex(): number {
     return tabs.findIndex((tab) => tab.id === activeTabId);
@@ -604,6 +832,7 @@
       history = new EditorUndoHistory(getTabSnapshot(tab));
       undoHistories.set(tab.id, history);
     }
+    undoWindowBudget.touch(tab.id);
     return history;
   }
 
@@ -616,14 +845,20 @@
       history = new EditorUndoHistory(getCurrentEditorSnapshot());
       undoHistories.set(activeTabId, history);
     }
+    undoWindowBudget.touch(activeTabId);
     return history;
+  }
+
+  function enforceUndoWindowBudget() {
+    undoWindowBudget.enforce(undoHistories, activeTabId);
   }
 
   function resetUndoHistoryForTab(tab: EditorTab) {
     const history = new EditorUndoHistory(getTabSnapshot(tab));
     undoHistories.set(tab.id, history);
+    undoWindowBudget.touch(tab.id);
+    enforceUndoWindowBudget();
   }
-
   function markTabHistorySaved(tabId: string) {
     const tab = tabs.find((item) => item.id === tabId);
     const history = tab ? getUndoHistoryForTab(tab) : undoHistories.get(tabId);
@@ -648,94 +883,27 @@
     });
   }
 
-  function getTextareaValueFromContent(content: string): string {
-    return content.replace(/\r\n/g, '\n');
-  }
-
-  function contentOffsetToTextareaOffset(content: string, offset: number): number {
-    const targetOffset = clamp(offset, 0, content.length);
-    let textareaOffset = 0;
-
-    for (let contentOffset = 0; contentOffset < targetOffset; contentOffset += 1) {
-      if (content[contentOffset] === '\r' && content[contentOffset + 1] === '\n') continue;
-      textareaOffset += 1;
-    }
-
-    return textareaOffset;
-  }
-
-  function textareaOffsetToContentOffset(content: string, offset: number): number {
-    const targetOffset = Math.max(0, offset);
-    let textareaOffset = 0;
-
-    for (let contentOffset = 0; contentOffset < content.length; contentOffset += 1) {
-      if (textareaOffset >= targetOffset) return contentOffset;
-      if (content[contentOffset] === '\r' && content[contentOffset + 1] === '\n') continue;
-      textareaOffset += 1;
-    }
-
-    return content.length;
+  function getTextOffsetIndex(content: string): TextOffsetIndex {
+    return textOffsetIndex.content === content ? textOffsetIndex : createTextOffsetIndex(content);
   }
 
   function getTextareaSelectionInContent(content = fileContent): EditorSelection {
     if (!textareaEl) return { start: caretOffset, end: caretOffset };
 
     return {
-      start: textareaOffsetToContentOffset(content, textareaEl.selectionStart),
-      end: textareaOffsetToContentOffset(content, textareaEl.selectionEnd)
+      start: textareaOffsetToContentOffset(getTextOffsetIndex(content), textareaEl.selectionStart),
+      end: textareaOffsetToContentOffset(getTextOffsetIndex(content), textareaEl.selectionEnd)
     };
   }
 
   function setTextareaSelectionFromContent(start: number, end: number, content = fileContent) {
     if (!textareaEl) return;
 
-    textareaEl.selectionStart = contentOffsetToTextareaOffset(content, start);
-    textareaEl.selectionEnd = contentOffsetToTextareaOffset(content, end);
+    const index = getTextOffsetIndex(content);
+    textareaEl.selectionStart = contentOffsetToTextareaOffset(index, start);
+    textareaEl.selectionEnd = contentOffsetToTextareaOffset(index, end);
   }
 
-  function getSnapshotFromTextareaInput(
-    before: EditorSnapshot,
-    textareaValue: string,
-    textareaSelectionStart: number,
-    textareaSelectionEnd: number
-  ): EditorSnapshot {
-    const beforeTextareaValue = getTextareaValueFromContent(before.content);
-    let prefixLength = 0;
-    const prefixLimit = Math.min(beforeTextareaValue.length, textareaValue.length);
-
-    while (
-      prefixLength < prefixLimit
-      && beforeTextareaValue[prefixLength] === textareaValue[prefixLength]
-    ) {
-      prefixLength += 1;
-    }
-
-    let suffixLength = 0;
-    while (
-      suffixLength < beforeTextareaValue.length - prefixLength
-      && suffixLength < textareaValue.length - prefixLength
-      && beforeTextareaValue[beforeTextareaValue.length - suffixLength - 1]
-        === textareaValue[textareaValue.length - suffixLength - 1]
-    ) {
-      suffixLength += 1;
-    }
-
-    const beforeTextareaEnd = beforeTextareaValue.length - suffixLength;
-    const afterTextareaEnd = textareaValue.length - suffixLength;
-    const contentStart = textareaOffsetToContentOffset(before.content, prefixLength);
-    const contentEnd = textareaOffsetToContentOffset(before.content, beforeTextareaEnd);
-    const newline = getPreferredNewline(before.content, contentStart);
-    const replacement = textareaValue.slice(prefixLength, afterTextareaEnd).replace(/\n/g, newline);
-    const content = `${before.content.slice(0, contentStart)}${replacement}${before.content.slice(contentEnd)}`;
-
-    return {
-      content,
-      selection: {
-        start: textareaOffsetToContentOffset(content, textareaSelectionStart),
-        end: textareaOffsetToContentOffset(content, textareaSelectionEnd)
-      }
-    };
-  }
 
   function getCurrentEditorSelection(): EditorSelection {
     return getTextareaSelectionInContent();
@@ -777,6 +945,7 @@
       filePath,
       fileName: nextFileName,
       fileContent,
+      encoding: fileEncoding,
       isDirty: nextIsDirty,
       scrollTop,
       scrollLeft,
@@ -816,12 +985,664 @@
     activeTabId = tab.id;
     filePath = tab.filePath;
     fileName = getDisplayFileName(tab);
+    latestContentChange = null;
+    textOffsetIndex = createTextOffsetIndex(tab.fileContent);
     fileContent = tab.fileContent;
+    enforceUndoWindowBudget();
+    fileEncoding = tab.encoding;
     isDirty = history.isDirty();
     errorMsg = null;
     restoreEditorView(tab);
   }
 
+  function updateTabStripMetrics() {
+    const tabList = tabListEl;
+    if (!tabList || tabList.clientWidth <= 0) return;
+
+    const viewportWidth = tabList.clientWidth;
+    const contentWidth = tabList.scrollWidth;
+    const maxScrollLeft = Math.max(0, contentWidth - viewportWidth);
+    const nextIsOverflowing = maxScrollLeft > 1;
+
+    isTabStripOverflowing = nextIsOverflowing;
+    if (!nextIsOverflowing) {
+      isTabOverflowMenuOpen = false;
+      hiddenTabIds = [];
+      tabScrollThumbWidth = viewportWidth;
+      tabScrollThumbLeft = 0;
+      return;
+    }
+
+    const nextThumbWidth = Math.max(32, viewportWidth * (viewportWidth / contentWidth));
+    const scrollProgress = Math.min(1, Math.max(0, tabList.scrollLeft / maxScrollLeft));
+    tabScrollThumbWidth = nextThumbWidth;
+    tabScrollThumbLeft = scrollProgress * (viewportWidth - nextThumbWidth);
+
+    const visibleLeft = tabList.scrollLeft;
+    const visibleRight = visibleLeft + viewportWidth;
+    const nextHiddenTabIds = Array.from(tabList.querySelectorAll<HTMLElement>('[data-tab-id]'))
+      .filter((tabItem) => (
+        tabItem.offsetLeft < visibleLeft - 0.5
+        || tabItem.offsetLeft + tabItem.offsetWidth > visibleRight + 0.5
+      ))
+      .map((tabItem) => tabItem.dataset.tabId)
+      .filter((tabId): tabId is string => !!tabId);
+
+    if (
+      nextHiddenTabIds.length !== hiddenTabIds.length
+      || nextHiddenTabIds.some((tabId, index) => tabId !== hiddenTabIds[index])
+    ) {
+      hiddenTabIds = nextHiddenTabIds;
+    }
+  }
+
+  function scrollTabIntoView(tabId: string) {
+    const tabList = tabListEl;
+    if (!tabList) return;
+
+    const tabItem = Array.from(tabList.querySelectorAll<HTMLElement>('[data-tab-id]'))
+      .find((item) => item.dataset.tabId === tabId);
+    if (!tabItem) return;
+
+    const tabLeft = tabItem.offsetLeft;
+    const tabRight = tabLeft + tabItem.offsetWidth;
+    if (tabLeft < tabList.scrollLeft) {
+      tabList.scrollLeft = tabLeft;
+    } else if (tabRight > tabList.scrollLeft + tabList.clientWidth) {
+      tabList.scrollLeft = tabRight - tabList.clientWidth;
+    }
+    updateTabStripMetrics();
+  }
+
+  function handleTabListWheel(event: WheelEvent) {
+    if (!isTabStripOverflowing || !tabListEl) return;
+
+    const rawDelta = event.deltaX !== 0
+      ? event.deltaX
+      : (event.shiftKey ? event.deltaY : 0);
+    if (rawDelta === 0) return;
+
+    event.preventDefault();
+    const deltaScale = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+      ? 16
+      : (event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? tabListEl.clientWidth : 1);
+    tabListEl.scrollLeft += rawDelta * deltaScale;
+    updateTabStripMetrics();
+  }
+
+  function toggleTabOverflowMenu(event: MouseEvent) {
+    event.stopPropagation();
+    openDropdown = null;
+    isTabOverflowMenuOpen = !isTabOverflowMenuOpen;
+  }
+
+  function selectTabFromOverflowMenu(tabId: string) {
+    isTabOverflowMenuOpen = false;
+    if (tabId !== activeTabId) activateTab(tabId);
+    requestAnimationFrame(() => scrollTabIntoView(tabId));
+  }
+
+  function createTabTransferId(): string {
+    const randomPart = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+    return `tab-transfer-${Date.now().toString(36)}-${randomPart}`;
+  }
+
+
+  function getActiveOutgoingTabTransfer(): OutgoingTabTransfer | null {
+    if (!draggedTabId) return null;
+    return Array.from(outgoingTabTransfers.values())
+      .find((transfer) => transfer.tab.id === draggedTabId) ?? null;
+  }
+
+  function clearTabDropTarget() {
+    tabDropIndex = null;
+    tabDropIndicatorLeft = 0;
+    isTabDockDropTarget = false;
+  }
+
+  function updateTabDropTarget(pointerX: number) {
+    const tabList = tabListEl;
+    if (!tabList) return;
+
+    const listRect = tabList.getBoundingClientRect();
+    if (isTabStripOverflowing) {
+      if (pointerX < listRect.left + 28) {
+        tabList.scrollLeft -= 16;
+      } else if (pointerX > listRect.right - 28) {
+        tabList.scrollLeft += 16;
+      }
+      updateTabStripMetrics();
+    }
+
+    const tabItems = Array.from(tabList.querySelectorAll<HTMLElement>('[data-tab-id]'));
+    const tabRects = tabItems.map((item) => {
+      const rect = item.getBoundingClientRect();
+      return { left: rect.left, width: rect.width };
+    });
+    const nextDropIndex = getTabDropIndex(pointerX, tabRects);
+    const indicatorClientX = nextDropIndex < tabItems.length
+      ? tabItems[nextDropIndex].getBoundingClientRect().left
+      : (tabItems.at(-1)?.getBoundingClientRect().right ?? listRect.left);
+
+    tabDropIndex = nextDropIndex;
+    tabDropIndicatorLeft = Math.max(
+      0,
+      Math.min(indicatorClientX - listRect.left, tabList.clientWidth)
+    );
+    isTabDockDropTarget = true;
+  }
+
+  function scheduleOutgoingTransferExpiry(transfer: OutgoingTabTransfer) {
+    if (transfer.expiryTimer) clearTimeout(transfer.expiryTimer);
+    transfer.expiryTimer = setTimeout(() => {
+      if (transfer.detachTimer) clearTimeout(transfer.detachTimer);
+      outgoingTabTransfers.delete(transfer.transferId);
+      if (tabDragPreview?.transferId === transfer.transferId) tabDragPreview = null;
+    }, 30_000);
+  }
+
+  function createOutgoingTabTransfer(
+    tabId: string,
+    screenX: number,
+    screenY: number,
+    previewWidth: number,
+    previewOffsetX: number,
+    previewOffsetY: number
+  ): OutgoingTabTransfer | null {
+    syncActiveTabState();
+    const tab = tabs.find((item) => item.id === tabId);
+    if (!tab) return null;
+
+    const transferId = createTabTransferId();
+    const sourceWindowLabel = getCurrentEditorWindowLabel();
+    const transfer: OutgoingTabTransfer = {
+      transferId,
+      sourceWindowLabel,
+      tab: { ...tab },
+      undoHistory: getUndoHistoryForTab(tab).exportState(),
+      receiverRequested: false,
+      handledInCurrentWindow: false,
+      hasLeftDock: false,
+      screenX,
+      screenY,
+      previewTitle: getDisplayFileName(tab),
+      previewIsDirty: tab.isDirty,
+      previewWidth,
+      previewOffsetX,
+      previewOffsetY,
+      detachTimer: null,
+      expiryTimer: null
+    };
+    outgoingTabTransfers.set(transferId, transfer);
+    scheduleOutgoingTransferExpiry(transfer);
+    draggedTabId = tabId;
+    closeAllDropdown();
+    return transfer;
+  }
+
+  function getTabDockPointFromClient(clientX: number, clientY: number) {
+    const dock = titlebarTabsEl;
+    if (!dock) return null;
+    const rect = dock.getBoundingClientRect();
+    if (!isPointInsideTabDock(clientX, clientY, rect)) return null;
+    return { clientX, clientY };
+  }
+
+  function getTabDockPointFromScreen(screenX: number, screenY: number) {
+    return getTabDockPointFromClient(
+      screenX - window.screenX,
+      screenY - window.screenY
+    );
+  }
+
+  function getTabPointerPayload(transfer: OutgoingTabTransfer): TabPointerDragPayload {
+    return {
+      transferId: transfer.transferId,
+      sourceWindowLabel: transfer.sourceWindowLabel,
+      screenX: transfer.screenX,
+      screenY: transfer.screenY,
+      previewTitle: transfer.previewTitle,
+      previewIsDirty: transfer.previewIsDirty,
+      previewWidth: transfer.previewWidth,
+      previewOffsetX: transfer.previewOffsetX,
+      previewOffsetY: transfer.previewOffsetY
+    };
+  }
+  function updateTabDragPreview(
+    transferId: string,
+    presentation: TabDragPreviewPresentation,
+    pointerX: number,
+    pointerY: number
+  ) {
+    const position = getTabDragPreviewPosition(
+      pointerX,
+      pointerY,
+      presentation.previewOffsetX,
+      presentation.previewOffsetY,
+      window.innerWidth,
+      window.innerHeight
+    );
+    tabDragPreview = position.visible
+      ? { transferId, ...presentation, left: position.left, top: position.top }
+      : null;
+  }
+
+
+  function broadcastTabPointerEvent(
+    eventName: typeof tabPointerDragMoveEvent | typeof tabPointerDragDropEvent,
+    transfer: OutgoingTabTransfer
+  ) {
+    if (!hasTauriRuntime()) return;
+    void emit(eventName, getTabPointerPayload(transfer)).catch((error) => {
+      console.error('Failed to broadcast tab pointer event:', error);
+    });
+  }
+
+  function handleTabPointerDown(event: PointerEvent, tabId: string) {
+    if (event.button !== 0 || !event.isPrimary) return;
+
+    const pointerTarget = event.currentTarget as HTMLElement;
+    const tabItem = pointerTarget.closest<HTMLElement>('[data-tab-id]') ?? pointerTarget;
+    const tabRect = tabItem.getBoundingClientRect();
+
+    pendingPointerTabDrag = {
+      pointerId: event.pointerId,
+      tabId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      lastScreenX: event.screenX,
+      lastScreenY: event.screenY,
+      previewWidth: tabRect.width,
+      previewOffsetX: Math.max(0, Math.min(event.clientX - tabRect.left, tabRect.width)),
+      previewOffsetY: Math.max(0, Math.min(event.clientY - tabRect.top, tabRect.height)),
+      transferId: null
+    };
+    pointerTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handleTabPointerMove(event: PointerEvent) {
+    const pointerDrag = pendingPointerTabDrag;
+    if (!pointerDrag || pointerDrag.pointerId !== event.pointerId) return;
+
+    pointerDrag.lastScreenX = event.screenX;
+    pointerDrag.lastScreenY = event.screenY;
+    if (!pointerDrag.transferId) {
+      const distance = Math.hypot(
+        event.clientX - pointerDrag.startClientX,
+        event.clientY - pointerDrag.startClientY
+      );
+      if (distance < 5) return;
+
+      const transfer = createOutgoingTabTransfer(
+        pointerDrag.tabId,
+        event.screenX,
+        event.screenY,
+        pointerDrag.previewWidth,
+        pointerDrag.previewOffsetX,
+        pointerDrag.previewOffsetY
+      );
+      if (!transfer) return;
+      pointerDrag.transferId = transfer.transferId;
+    }
+
+    event.preventDefault();
+    const transfer = outgoingTabTransfers.get(pointerDrag.transferId);
+    if (!transfer) return;
+    transfer.screenX = event.screenX;
+    transfer.screenY = event.screenY;
+
+    updateTabDragPreview(transfer.transferId, transfer, event.clientX, event.clientY);
+    const dockPoint = getTabDockPointFromClient(event.clientX, event.clientY);
+    if (dockPoint) {
+      updateTabDropTarget(dockPoint.clientX);
+    } else {
+      transfer.hasLeftDock = true;
+      clearTabDropTarget();
+    }
+    broadcastTabPointerEvent(tabPointerDragMoveEvent, transfer);
+  }
+
+  function reorderTabWithinCurrentWindow(tabId: string, dropIndex: number) {
+    syncActiveTabState();
+    const sourceIndex = tabs.findIndex((tab) => tab.id === tabId);
+    if (sourceIndex === -1) return;
+
+    const nextTabs = reorderTabItems(tabs, sourceIndex, dropIndex);
+    if (nextTabs.every((tab, index) => tab.id === tabs[index]?.id)) return;
+    tabs = nextTabs;
+    requestAnimationFrame(() => scrollTabIntoView(tabId));
+  }
+
+  function insertTransferredTab(delivery: TabTransferDelivery): boolean {
+    if (receivedTabTransferIds.has(delivery.transferId)) return true;
+
+    syncActiveTabState();
+    const hasSingleCleanUntitledTab = tabs.length === 1 && isCleanUntitledTab(tabs[0]);
+    const shouldReplaceBlank = shouldReplaceDetachedWindowPlaceholder(
+      startupTabTransferMetadata?.transferId ?? null,
+      delivery.transferId,
+      hasSingleCleanUntitledTab
+    );
+    const receivedTab: EditorTab = {
+      ...delivery.tab,
+      id: shouldReplaceBlank ? tabs[0].id : `tab-${nextTabId++}`
+    };
+    const receivedHistory = EditorUndoHistory.fromState(
+      getTabSnapshot(receivedTab),
+      delivery.undoHistory
+    );
+    receivedTab.isDirty = receivedHistory.isDirty();
+
+    if (shouldReplaceBlank) {
+      undoWindowBudget.remove(tabs[0].id);
+      undoHistories.delete(tabs[0].id);
+      tabs = [receivedTab];
+    } else {
+      tabs = insertTabItem(tabs, receivedTab, delivery.dropIndex);
+    }
+
+    undoHistories.set(receivedTab.id, receivedHistory);
+    undoWindowBudget.touch(receivedTab.id);
+    closeAllDropdown();
+    loadTabIntoEditor(receivedTab);
+    receivedTabTransferIds.add(delivery.transferId);
+    requestAnimationFrame(() => scrollTabIntoView(receivedTab.id));
+    return true;
+  }
+
+  function requestIncomingTabTransfer(
+    metadata: TabDragMetadata,
+    dropIndex: number
+  ): Promise<boolean> {
+    if (!hasTauriRuntime()) return Promise.resolve(false);
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        pendingIncomingTransferResolvers.delete(metadata.transferId);
+        resolve(false);
+      }, 3_000);
+      pendingIncomingTransferResolvers.set(metadata.transferId, (received) => {
+        clearTimeout(timeout);
+        pendingIncomingTransferResolvers.delete(metadata.transferId);
+        resolve(received);
+      });
+
+      void emitTo(metadata.sourceWindowLabel, tabTransferRequestEvent, {
+        ...metadata,
+        targetWindowLabel: getCurrentEditorWindowLabel(),
+        dropIndex
+      } satisfies TabTransferRequest).catch((error) => {
+        console.error('Failed to request tab transfer:', error);
+        const resolver = pendingIncomingTransferResolvers.get(metadata.transferId);
+        resolver?.(false);
+      });
+    });
+  }
+
+  async function handleTabTransferRequest(event: TauriEvent<TabTransferRequest>) {
+    const request = event.payload;
+    const transfer = outgoingTabTransfers.get(request.transferId);
+    if (!transfer || transfer.sourceWindowLabel !== request.sourceWindowLabel) return;
+
+    transfer.receiverRequested = true;
+    if (transfer.detachTimer) {
+      clearTimeout(transfer.detachTimer);
+      transfer.detachTimer = null;
+    }
+
+    const currentTab = tabs.find((tab) => tab.id === transfer.tab.id);
+    if (!currentTab) return;
+
+    try {
+      await emitTo(request.targetWindowLabel, tabTransferDeliveryEvent, {
+        transferId: transfer.transferId,
+        sourceWindowLabel: transfer.sourceWindowLabel,
+        tab: transfer.tab,
+        undoHistory: transfer.undoHistory,
+        dropIndex: request.dropIndex
+      } satisfies TabTransferDelivery);
+    } catch (error) {
+      console.error('Failed to deliver tab transfer:', error);
+    }
+  }
+
+  async function handleTabTransferDelivery(event: TauriEvent<TabTransferDelivery>) {
+    const delivery = event.payload;
+    try {
+      if (!insertTransferredTab(delivery)) return;
+      await emitTo(delivery.sourceWindowLabel, tabTransferAcceptedEvent, {
+        transferId: delivery.transferId,
+        targetWindowLabel: getCurrentEditorWindowLabel()
+      } satisfies TabTransferAccepted);
+      pendingIncomingTransferResolvers.get(delivery.transferId)?.(true);
+    } catch (error) {
+      console.error('Failed to receive tab transfer:', error);
+      pendingIncomingTransferResolvers.get(delivery.transferId)?.(false);
+    }
+  }
+
+  async function removeTransferredTabFromSource(tabId: string) {
+    if (!tabs.some((tab) => tab.id === tabId)) return;
+
+    if (tabs.length === 1 && hasTauriRuntime()) {
+      try {
+        await getCurrentWindow().destroy();
+      } catch (error) {
+        console.error('Failed to close empty tab window:', error);
+      }
+      return;
+    }
+
+    closeTabWithoutPrompt(tabId);
+  }
+
+  async function handleTabTransferAccepted(event: TauriEvent<TabTransferAccepted>) {
+    const accepted = event.payload;
+    const transfer = outgoingTabTransfers.get(accepted.transferId);
+    if (!transfer) return;
+
+    transfer.handledInCurrentWindow = true;
+    if (transfer.detachTimer) clearTimeout(transfer.detachTimer);
+    if (transfer.expiryTimer) clearTimeout(transfer.expiryTimer);
+    outgoingTabTransfers.delete(transfer.transferId);
+    await removeTransferredTabFromSource(transfer.tab.id);
+  }
+
+  async function createDetachedTabWindow(transfer: OutgoingTabTransfer) {
+    if (
+      !hasTauriRuntime()
+      || transfer.receiverRequested
+      || transfer.handledInCurrentWindow
+      || !outgoingTabTransfers.has(transfer.transferId)
+    ) {
+      return;
+    }
+
+    const label = `editor-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const searchParams = new URLSearchParams({
+      [tabTransferIdQueryKey]: transfer.transferId,
+      [tabTransferSourceQueryKey]: transfer.sourceWindowLabel
+    });
+    const hasScreenPosition = transfer.screenX !== 0 || transfer.screenY !== 0;
+    const detachedWindow = new WebviewWindow(label, {
+      url: `${window.location.origin}/?${searchParams.toString()}`,
+      title: getDisplayFileName(transfer.tab),
+      width: 800,
+      height: 600,
+      ...(hasScreenPosition
+        ? { x: Math.round(transfer.screenX - 120), y: Math.round(transfer.screenY - 16) }
+        : {}),
+      visible: false,
+      decorations: false,
+      shadow: true
+    });
+
+    void detachedWindow.once('tauri://error', (creationEvent) => {
+      console.error('Failed to create detached tab window:', creationEvent.payload);
+    });
+  }
+
+  function cleanupOutgoingTabTransfer(transfer: OutgoingTabTransfer) {
+    if (transfer.detachTimer) clearTimeout(transfer.detachTimer);
+    if (transfer.expiryTimer) clearTimeout(transfer.expiryTimer);
+    outgoingTabTransfers.delete(transfer.transferId);
+    if (tabDragPreview?.transferId === transfer.transferId) tabDragPreview = null;
+  }
+
+  function suppressDraggedTabClick(tabId: string) {
+    suppressedTabClickId = tabId;
+    setTimeout(() => {
+      if (suppressedTabClickId === tabId) suppressedTabClickId = null;
+    }, 0);
+  }
+
+  function finishTabPointerDrag(event: PointerEvent, cancelled: boolean) {
+    const pointerDrag = pendingPointerTabDrag;
+    if (!pointerDrag || pointerDrag.pointerId !== event.pointerId) return;
+    pendingPointerTabDrag = null;
+
+    const pointerTarget = event.currentTarget as HTMLElement;
+    if (pointerTarget.hasPointerCapture(event.pointerId)) {
+      pointerTarget.releasePointerCapture(event.pointerId);
+    }
+    if (!pointerDrag.transferId) return;
+
+    event.preventDefault();
+    suppressDraggedTabClick(pointerDrag.tabId);
+    const transfer = outgoingTabTransfers.get(pointerDrag.transferId);
+    draggedTabId = null;
+    tabDragPreview = null;
+    if (!transfer) {
+      clearTabDropTarget();
+      return;
+    }
+
+    transfer.screenX = event.screenX || pointerDrag.lastScreenX;
+    transfer.screenY = event.screenY || pointerDrag.lastScreenY;
+    if (cancelled) {
+      transfer.handledInCurrentWindow = true;
+      cleanupOutgoingTabTransfer(transfer);
+      clearTabDropTarget();
+      return;
+    }
+
+    const dockPoint = getTabDockPointFromClient(event.clientX, event.clientY);
+    if (dockPoint) {
+      updateTabDropTarget(dockPoint.clientX);
+      const nextDropIndex = tabDropIndex ?? tabs.length;
+      transfer.handledInCurrentWindow = true;
+      reorderTabWithinCurrentWindow(transfer.tab.id, nextDropIndex);
+      cleanupOutgoingTabTransfer(transfer);
+      clearTabDropTarget();
+      return;
+    }
+
+    transfer.hasLeftDock = true;
+    clearTabDropTarget();
+    if (!hasTauriRuntime()) {
+      cleanupOutgoingTabTransfer(transfer);
+      return;
+    }
+
+    broadcastTabPointerEvent(tabPointerDragDropEvent, transfer);
+    transfer.detachTimer = setTimeout(() => {
+      transfer.detachTimer = null;
+      void createDetachedTabWindow(transfer);
+    }, tabDetachTargetClaimDelayMs);
+  }
+
+  function handleTabPointerUp(event: PointerEvent) {
+    finishTabPointerDrag(event, false);
+  }
+
+  function handleTabPointerCancel(event: PointerEvent) {
+    finishTabPointerDrag(event, true);
+  }
+
+  function handleForeignTabPointerMove(event: TauriEvent<TabPointerDragPayload>) {
+    const pointer = event.payload;
+    if (pointer.sourceWindowLabel === getCurrentEditorWindowLabel()) return;
+    foreignTabDragTransferId = pointer.transferId;
+    updateTabDragPreview(
+      pointer.transferId,
+      pointer,
+      pointer.screenX - window.screenX,
+      pointer.screenY - window.screenY
+    );
+    const dockPoint = getTabDockPointFromScreen(pointer.screenX, pointer.screenY);
+    if (dockPoint) {
+      updateTabDropTarget(dockPoint.clientX);
+    } else {
+      clearTabDropTarget();
+    }
+  }
+
+  function handleForeignTabPointerDrop(event: TauriEvent<TabPointerDragPayload>) {
+    const pointer = event.payload;
+    if (pointer.sourceWindowLabel === getCurrentEditorWindowLabel()) return;
+    if (foreignTabDragTransferId === pointer.transferId) {
+      foreignTabDragTransferId = null;
+    }
+
+    if (tabDragPreview?.transferId === pointer.transferId) tabDragPreview = null;
+    const dockPoint = getTabDockPointFromScreen(pointer.screenX, pointer.screenY);
+    if (!dockPoint) {
+      clearTabDropTarget();
+      return;
+    }
+
+    updateTabDropTarget(dockPoint.clientX);
+    const nextDropIndex = tabDropIndex ?? tabs.length;
+    clearTabDropTarget();
+    void requestIncomingTabTransfer(pointer, nextDropIndex);
+  }
+
+  function handleTabClick(tabId: string) {
+    if (suppressedTabClickId === tabId) {
+      suppressedTabClickId = null;
+      return;
+    }
+    activateTab(tabId);
+  }
+
+  function ensureTabTransferListeners(): Promise<UnlistenFn[]> {
+    if (tabTransferListenersPromise) return tabTransferListenersPromise;
+    const eventWindow = getCurrentWindow();
+    tabTransferListenersPromise = Promise.all([
+      eventWindow.listen<TabTransferRequest>(tabTransferRequestEvent, handleTabTransferRequest),
+      eventWindow.listen<TabTransferDelivery>(tabTransferDeliveryEvent, handleTabTransferDelivery),
+      eventWindow.listen<TabTransferAccepted>(tabTransferAcceptedEvent, handleTabTransferAccepted),
+      eventWindow.listen<TabPointerDragPayload>(tabPointerDragMoveEvent, handleForeignTabPointerMove),
+      eventWindow.listen<TabPointerDragPayload>(tabPointerDragDropEvent, handleForeignTabPointerDrop)
+    ]);
+    return tabTransferListenersPromise;
+  }
+
+  $effect(() => {
+    if (!isBrowser || !hasTauriRuntime() || isSettingsWindow) return;
+
+    let disposed = false;
+    const listeners = ensureTabTransferListeners();
+    return () => {
+      disposed = true;
+      void listeners.then((unlisteners) => {
+        if (!disposed) return;
+        unlisteners.forEach((unlisten) => unlisten());
+      });
+      for (const transfer of outgoingTabTransfers.values()) {
+        if (transfer.detachTimer) clearTimeout(transfer.detachTimer);
+        if (transfer.expiryTimer) clearTimeout(transfer.expiryTimer);
+      }
+      outgoingTabTransfers.clear();
+      receivedTabTransferIds.clear();
+      for (const resolve of pendingIncomingTransferResolvers.values()) {
+        resolve(false);
+      }
+      pendingIncomingTransferResolvers.clear();
+    };
+  });
   function activateTab(tabId: string) {
     if (tabId === activeTabId) return;
     syncActiveTabState();
@@ -867,6 +1688,7 @@
     if (closingIndex === -1) return;
 
     if (tabs.length === 1) {
+      undoWindowBudget.remove(tabId);
       undoHistories.delete(tabId);
       const blankTab = createEditorTab();
       resetUndoHistoryForTab(blankTab);
@@ -876,6 +1698,7 @@
     }
 
     const nextTabs = tabs.filter((tab) => tab.id !== tabId);
+    undoWindowBudget.remove(tabId);
     undoHistories.delete(tabId);
     tabs = nextTabs;
 
@@ -891,6 +1714,31 @@
     if (!canClose) return;
     closeTabWithoutPrompt(tabId);
   }
+
+  $effect(() => {
+    if (!isBrowser || !tabListEl) return;
+
+    const tabList = tabListEl;
+    const resizeObserver = new ResizeObserver(updateTabStripMetrics);
+    resizeObserver.observe(tabList);
+    const frame = requestAnimationFrame(updateTabStripMetrics);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+    };
+  });
+
+  $effect(() => {
+    if (!isBrowser) return;
+    void tabs.length;
+    const nextActiveTabId = activeTabId;
+    const frame = requestAnimationFrame(() => {
+      scrollTabIntoView(nextActiveTabId);
+      updateTabStripMetrics();
+    });
+    return () => cancelAnimationFrame(frame);
+  });
 
   // 시스템 테마 변경 감지
   $effect(() => {
@@ -956,6 +1804,9 @@
     if (savedTabSize) tabSize = parseInt(savedTabSize, 10);
 
     renderAutoPairEditing = localStorage.getItem('pref_render_auto_pair_editing') !== 'false';
+    renderAutoPairAllowedFollowingStrings = parseAutoPairAllowedFollowingStrings(
+      localStorage.getItem(renderAutoPairAllowedFollowingStringsPreferenceKey)
+    );
     renderAutoSymbolSubstitution = localStorage.getItem('pref_render_auto_symbol_substitution') !== 'false';
     renderPreserveIndentOnEnter = localStorage.getItem('pref_render_preserve_indent_on_enter') !== 'false';
     delimitedTableHighlightHeader = localStorage.getItem('pref_delimited_table_highlight_header') !== 'false';
@@ -1022,6 +1873,11 @@
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_font_size', renderFontSize.toString()); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_tab_size', tabSize.toString()); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_pair_editing', renderAutoPairEditing ? 'true' : 'false'); });
+  $effect(() => {
+    if (isBrowser && canPersistPreferences) {
+      localStorage.setItem(renderAutoPairAllowedFollowingStringsPreferenceKey, JSON.stringify(renderAutoPairAllowedFollowingStrings));
+    }
+  });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_symbol_substitution', renderAutoSymbolSubstitution ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_preserve_indent_on_enter', renderPreserveIndentOnEnter ? 'true' : 'false'); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_highlight_header', delimitedTableHighlightHeader ? 'true' : 'false'); });
@@ -1053,7 +1909,7 @@
         event.preventDefault();
         getCurrentWindow().hide();
       });
-    } else if (label === 'main') {
+    } else {
       let unlistenClose: (() => void) | undefined;
       getCurrentWindow().onCloseRequested(async (event) => {
         event.preventDefault();
@@ -1061,13 +1917,17 @@
         if (isHandlingCloseRequest) return;
         isHandlingCloseRequest = true;
         try {
-          const canClose = await shouldCloseMainWindow();
+          const canClose = await shouldCloseEditorWindow();
           if (!canClose) return;
 
           try {
-            const settingsWin = await WebviewWindow.getByLabel('settings');
-            if (settingsWin) {
-              await settingsWin.destroy();
+            const editorWindows = (await WebviewWindow.getAll())
+              .filter((window) => window.label !== 'settings' && window.label !== label);
+            if (editorWindows.length === 0) {
+              const settingsWin = await WebviewWindow.getByLabel('settings');
+              if (settingsWin) {
+                await settingsWin.destroy();
+              }
             }
           } catch {}
 
@@ -1084,7 +1944,7 @@
     }
   });
 
-  async function shouldCloseMainWindow(): Promise<boolean> {
+  async function shouldCloseEditorWindow(): Promise<boolean> {
     syncActiveTabState();
     const dirtyTabs = untrack(() => tabs.filter((tab) => tab.isDirty));
     if (dirtyTabs.length === 0) return true;
@@ -1169,18 +2029,20 @@
     }
   }
 
-  function applySavedPath(tabId: string, targetPath: string) {
-    const nextFileName = getFileNameFromPath(targetPath);
+  function applySavedFile(tabId: string, savedFile: SavedFile) {
+    const nextFileName = getFileNameFromPath(savedFile.path);
     markTabHistorySaved(tabId);
     updateTabById(tabId, {
-      filePath: targetPath,
+      filePath: savedFile.path,
       fileName: nextFileName,
+      encoding: savedFile.encoding,
       isDirty: false
     });
 
     if (tabId === activeTabId) {
-      filePath = targetPath;
+      filePath = savedFile.path;
       fileName = nextFileName;
+      fileEncoding = savedFile.encoding;
       isDirty = false;
     }
   }
@@ -1190,8 +2052,12 @@
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab) return;
 
-    await invoke("write_file_content", { path: targetPath, content: tab.fileContent });
-    applySavedPath(tabId, targetPath);
+    await invoke("write_file_content", {
+      path: targetPath,
+      content: tab.fileContent,
+      encoding: tab.encoding
+    });
+    applySavedFile(tabId, { path: targetPath, encoding: tab.encoding });
   }
 
   async function saveTabFile(tabId: string): Promise<boolean> {
@@ -1204,14 +2070,15 @@
       return true;
     }
 
-    const targetPath = await invoke<string | null>("save_file_dialog", {
+    const savedFile = await invoke<SavedFile | null>("save_file_dialog", {
       defaultName: getSuggestedSaveFileName(tab),
       content: tab.fileContent,
+      encoding: null,
       filters: getSaveFileDialogFilters(locale)
     });
-    if (!targetPath) return false;
+    if (!savedFile) return false;
 
-    applySavedPath(tabId, targetPath);
+    applySavedFile(tabId, savedFile);
     return true;
   }
 
@@ -1224,16 +2091,17 @@
     const tab = getActiveTab();
     if (!tab) return false;
 
-    const targetPath = await invoke<string | null>("save_file_dialog", {
+    const savedFile = await invoke<SavedFile | null>("save_file_dialog", {
       defaultName: getSuggestedSaveFileName(tab),
       content: tab.fileContent,
+      encoding: tab.filePath ? tab.encoding : null,
       filters: getSaveFileDialogFilters(locale)
     });
-    if (!targetPath) {
+    if (!savedFile) {
       return false;
     }
 
-    applySavedPath(activeTabId, targetPath);
+    applySavedFile(activeTabId, savedFile);
     return true;
   }
 
@@ -1246,6 +2114,9 @@
     if (e.key === 'pref_render_font_size' && e.newValue) renderFontSize = parseInt(e.newValue, 10);
     if (e.key === 'pref_tab_size' && e.newValue) tabSize = parseInt(e.newValue, 10);
     if (e.key === 'pref_render_auto_pair_editing' && e.newValue) renderAutoPairEditing = e.newValue !== 'false';
+    if (e.key === renderAutoPairAllowedFollowingStringsPreferenceKey) {
+      renderAutoPairAllowedFollowingStrings = parseAutoPairAllowedFollowingStrings(e.newValue);
+    }
     if (e.key === 'pref_render_auto_symbol_substitution' && e.newValue) renderAutoSymbolSubstitution = e.newValue !== 'false';
     if (e.key === 'pref_render_preserve_indent_on_enter' && e.newValue) renderPreserveIndentOnEnter = e.newValue !== 'false';
     if (e.key === 'pref_delimited_table_highlight_header' && e.newValue) delimitedTableHighlightHeader = e.newValue !== 'false';
@@ -1275,6 +2146,140 @@
       window.removeEventListener('storage', handleStorageChange);
     };
   });
+
+  function getCurrentSettingsSnapshot(): AppSettingsSnapshot {
+    return {
+      general: {
+        language: languagePreference,
+        theme: themeMode
+      },
+      source: {
+        fontSize: sourceFontSize
+      },
+      render: {
+        fontSize: renderFontSize,
+        indentWidth: tabSize,
+        fontFamily: renderFontFamily,
+        editing: {
+          autoPair: renderAutoPairEditing,
+          autoPairAllowedFollowingStrings: [...renderAutoPairAllowedFollowingStrings],
+          autoSymbols: renderAutoSymbolSubstitution,
+          preserveIndent: renderPreserveIndentOnEnter
+        },
+        colors: {
+          light: { ...lightColors },
+          dark: { ...darkColors }
+        },
+        formats: {
+          features: normalizeDocumentFeatureSettings(documentFeatureSettings),
+          markdown: normalizeMarkdownRenderSettings(markdownRenderSettings),
+          table: {
+            highlightHeader: delimitedTableHighlightHeader,
+            showRowIndices: delimitedTableShowRowIndices,
+            animateReorder: delimitedTableAnimateReorder,
+            reorderDurationMs: delimitedTableReorderDurationMs
+          }
+        }
+      }
+    };
+  }
+
+  function applySettingsSnapshot(settings: AppSettingsSnapshot) {
+    languagePreference = settings.general.language;
+    themeMode = settings.general.theme;
+    sourceFontSize = settings.source.fontSize;
+    renderFontSize = settings.render.fontSize;
+    tabSize = settings.render.indentWidth;
+    renderFontFamily = settings.render.fontFamily;
+    renderAutoPairEditing = settings.render.editing.autoPair;
+    renderAutoPairAllowedFollowingStrings = [...settings.render.editing.autoPairAllowedFollowingStrings];
+    renderAutoSymbolSubstitution = settings.render.editing.autoSymbols;
+    renderPreserveIndentOnEnter = settings.render.editing.preserveIndent;
+    lightColors = { ...settings.render.colors.light };
+    darkColors = { ...settings.render.colors.dark };
+    documentFeatureSettings = normalizeDocumentFeatureSettings(settings.render.formats.features);
+    markdownRenderSettings = normalizeMarkdownRenderSettings(settings.render.formats.markdown);
+    delimitedTableHighlightHeader = settings.render.formats.table.highlightHeader;
+    delimitedTableShowRowIndices = settings.render.formats.table.showRowIndices;
+    delimitedTableAnimateReorder = settings.render.formats.table.animateReorder;
+    delimitedTableReorderDurationMs = normalizeDelimitedTableReorderDuration(
+      settings.render.formats.table.reorderDurationMs
+    );
+  }
+
+  function getSettingsImportErrorMessage(reason: SettingsImportErrorReason): string {
+    const keys: Record<SettingsImportErrorReason, TranslationKey> = {
+      invalid_json: 'settings.transfer.error.invalidJson',
+      invalid_structure: 'settings.transfer.error.invalidStructure',
+      unsupported_format: 'settings.transfer.error.unsupportedFormat',
+      file_too_large: 'settings.transfer.error.fileTooLarge'
+    };
+    return t(keys[reason]);
+  }
+
+  async function handleExportSettings() {
+    if (isSettingsTransferBusy) return;
+    isSettingsTransferBusy = true;
+    settingsTransferStatus = null;
+    try {
+      const savedFile = await invoke<SavedFile | null>('save_file_dialog', {
+        defaultName: 'text-pad-settings.json',
+        content: serializeSettingsFile(getCurrentSettingsSnapshot(), installedAppVersion),
+        encoding: 'utf8',
+        filters: [{ name: t('settings.transfer.jsonFilter'), extensions: ['json'] }]
+      });
+      if (savedFile) {
+        settingsTransferStatus = {
+          kind: 'success',
+          message: t('settings.transfer.exportSuccess')
+        };
+      }
+    } catch (error) {
+      settingsTransferStatus = {
+        kind: 'error',
+        message: localizeError('error.saveFile', error)
+      };
+    } finally {
+      isSettingsTransferBusy = false;
+    }
+  }
+
+  async function handleImportSettings() {
+    if (isSettingsTransferBusy) return;
+    isSettingsTransferBusy = true;
+    settingsTransferStatus = null;
+    try {
+      const openedFile = await invoke<OpenedFile | null>('open_file_dialog', {
+        filters: [{ name: t('settings.transfer.jsonFilter'), extensions: ['json'] }]
+      });
+      if (!openedFile) return;
+
+      const result = parseSettingsFile(openedFile.content, getCurrentSettingsSnapshot());
+      if (!result.ok) {
+        settingsTransferStatus = {
+          kind: 'error',
+          message: getSettingsImportErrorMessage(result.reason)
+        };
+        return;
+      }
+
+      applySettingsSnapshot(result.settings);
+      await tick();
+      settingsTransferStatus = result.newerVersion
+        ? { kind: 'warning', message: t('settings.transfer.importNewer', { count: result.applied }) }
+        : result.skipped > 0
+          ? { kind: 'warning', message: t('settings.transfer.importPartial', { count: result.applied, skipped: result.skipped }) }
+          : { kind: 'success', message: t('settings.transfer.importSuccess', { count: result.applied }) };
+    } catch (error) {
+      settingsTransferStatus = {
+        kind: 'error',
+        message: localizeError('error.readFile', error)
+      };
+    } finally {
+      isSettingsTransferBusy = false;
+    }
+  }
+
 
   function normalizeHexColor(value: string): string | null {
     const trimmed = value.trim();
@@ -1345,17 +2350,7 @@
     event.preventDefault();
     openColorPicker(inputId);
   }
-  function getLineStartOffsets(content: string): number[] {
-    const lineStartOffsets = [0];
-    const newlineRegex = /\r?\n/g;
-    let match: RegExpExecArray | null;
 
-    while ((match = newlineRegex.exec(content)) !== null) {
-      lineStartOffsets.push(match.index + match[0].length);
-    }
-
-    return lineStartOffsets;
-  }
 
   function getLineTextForLayout(content: string, offsets: number[], lineIndex: number): string {
     const lineStart = offsets[lineIndex] ?? 0;
@@ -1370,55 +2365,6 @@
     }
 
     return content.slice(lineStart, lineEnd);
-  }
-
-  interface FencedCodeBlockRange {
-    openingLineStart: number;
-    openingLineEnd: number;
-    contentStart: number;
-    fenceLength: number;
-    closingBoundaryStart?: number;
-    closingLineStart?: number;
-    closingLineEnd?: number;
-    afterBlockStart?: number;
-  }
-
-  function getFencedCodeBlockRanges(content: string, offsets: number[]): FencedCodeBlockRange[] {
-    const ranges: FencedCodeBlockRange[] = [];
-    let activeRange: FencedCodeBlockRange | null = null;
-
-    for (let lineIndex = 0; lineIndex < offsets.length; lineIndex += 1) {
-      const lineStart = offsets[lineIndex] ?? 0;
-      const lineText = getLineTextForLayout(content, offsets, lineIndex);
-      const lineEnd = lineStart + lineText.length;
-
-      if (activeRange) {
-        const closingMatch = lineText.match(/^[ \t]*(`{3,})[ \t]*$/);
-        if (closingMatch?.[1] && closingMatch[1].length >= activeRange.fenceLength) {
-          activeRange.closingBoundaryStart = lineStart > 0 && content[lineStart - 1] === '\n'
-            ? (lineStart > 1 && content[lineStart - 2] === '\r' ? lineStart - 2 : lineStart - 1)
-            : lineStart;
-          activeRange.closingLineStart = lineStart;
-          activeRange.closingLineEnd = lineEnd;
-          activeRange.afterBlockStart = offsets[lineIndex + 1] ?? lineEnd;
-          activeRange = null;
-        }
-        continue;
-      }
-
-      const openingMatch = lineText.match(/^[ \t]*(`{3,})/);
-      if (!openingMatch?.[1]) continue;
-
-      activeRange = {
-        openingLineStart: lineStart,
-        openingLineEnd: lineEnd,
-        contentStart: offsets[lineIndex + 1] ?? lineEnd,
-        fenceLength: openingMatch[1].length
-      };
-      ranges.push(activeRange);
-    }
-
-    return ranges;
   }
 
   function measureEditorTextEndWidth(text: string, startWidth = 0): number {
@@ -1454,139 +2400,40 @@
     return width;
   }
 
-  function countWrappedVisualLines(lineText: string, contentWidth: number): number {
-    if (!isBrowser || contentWidth <= 0 || lineText.length === 0) return 1;
-
-    const segments = lineText.match(/\S+\s*|\s+/g) || [lineText];
-    let visualLineCount = 1;
-    let currentWidth = 0;
-
-    const appendPiece = (piece: string) => {
-      const nextWidth = measureEditorTextEndWidth(piece, currentWidth);
-      if (currentWidth > 0 && nextWidth > contentWidth) {
-        visualLineCount += 1;
-        currentWidth = measureEditorTextEndWidth(piece, 0);
-      } else {
-        currentWidth = nextWidth;
-      }
-    };
-
-    for (const segment of segments) {
-      const segmentWidth = measureEditorTextEndWidth(segment, 0);
-      if (segmentWidth <= contentWidth) {
-        appendPiece(segment);
-        continue;
-      }
-
-      for (const char of Array.from(segment)) {
-        appendPiece(char);
-        if (currentWidth > contentWidth) {
-          visualLineCount += 1;
-          currentWidth = 0;
-        }
-      }
-    }
-
-    return visualLineCount;
-  }
-
-  function getEditorLineLayout(
-    content: string,
-    offsets: number[],
-    contentWidth: number,
-    fencedCodeRanges: FencedCodeBlockRange[],
-    wrapEnabled: boolean,
-    measurements: RenderedLineHeightMeasurements,
-    measurementContext: string
-  ): EditorLineLayout {
-    const lineTotal = offsets.length;
-    const tops: number[] = new Array(lineTotal);
-    const heights: number[] = new Array(lineTotal);
-    let top = 0;
-    let fencedRangeIndex = 0;
-
-    for (let lineIndex = 0; lineIndex < lineTotal; lineIndex += 1) {
-      const lineStart = offsets[lineIndex] ?? 0;
-      let fencedRange = fencedCodeRanges[fencedRangeIndex];
-      while (
-        fencedRange
-        && lineStart > (fencedRange.closingLineStart ?? Number.POSITIVE_INFINITY)
-      ) {
-        fencedRangeIndex += 1;
-        fencedRange = fencedCodeRanges[fencedRangeIndex];
-      }
-      const isFencedCode = !!fencedRange
-        && lineStart >= fencedRange.openingLineStart
-        && lineStart <= (fencedRange.closingLineStart ?? Number.POSITIVE_INFINITY);
-      const lineContentWidth = isFencedCode
-        ? Math.max(1, contentWidth - (fencedCodeHorizontalPadding * 2))
-        : contentWidth;
-      const lineText = wrapEnabled ? getLineTextForLayout(content, offsets, lineIndex) : '';
-      const visualLineCount = wrapEnabled
-        ? countWrappedVisualLines(lineText, lineContentWidth)
-        : 1;
-      const measuredHeight = measurements.content === content && measurements.context === measurementContext
-        ? measurements.heights[lineIndex]
-        : null;
-      const height = measuredHeight ?? Math.max(measuredLineHeight, visualLineCount * measuredLineHeight);
-
-      tops[lineIndex] = top;
-      heights[lineIndex] = height;
-      top += height;
-    }
-
-    return { tops, heights, totalHeight: top };
-  }
-
-  function findLineIndexForLayoutOffset(layout: EditorLineLayout, offset: number): number {
-    if (layout.tops.length === 0) return 0;
-
-    const safeOffset = Math.max(0, offset);
-    let low = 0;
-    let high = layout.tops.length - 1;
-
-    while (low <= high) {
-      const mid = Math.floor((low + high) / 2);
-      const top = layout.tops[mid] ?? 0;
-      const bottom = top + (layout.heights[mid] ?? measuredLineHeight);
-
-      if (safeOffset >= top && safeOffset < bottom) return mid;
-      if (safeOffset < top) high = mid - 1;
-      else low = mid + 1;
-    }
-
-    return Math.max(0, Math.min(low, layout.tops.length - 1));
-  }
-
   function getRenderLineTop(lineIndex: number): number {
-    return renderLineLayout.tops[lineIndex] ?? lineIndex * measuredLineHeight;
+    return renderLineLayout.getLineTop(lineIndex);
   }
 
   function getRenderLineHeight(lineIndex: number): number {
-    return renderLineLayout.heights[lineIndex] ?? measuredLineHeight;
+    return renderLineLayout.getLineHeight(lineIndex);
   }
 
   function parseDelimitedTableWithinBudget(
     content: string,
     separator: DelimitedTableSeparator
   ): DelimitedTableDocument | null {
-    return parseDelimitedTableWithinCellLimit(content, separator, maxDelimitedTableCells);
+    return parseDelimitedTableWithinCellLimit(content, separator, MAX_INTERACTIVE_TABLE_CELLS);
   }
 
   // 반응형 상태
-  let lineStartOffsets = $derived(getLineStartOffsets(fileContent));
+  let lineStartOffsets = $derived(textOffsetIndex.lineStartOffsets);
   let isEnhancedDocumentWithinBudget = $derived(
-    fileContent.length <= maxEnhancedRenderChars
-    && lineStartOffsets.length <= maxEnhancedRenderLines
+    fileContent.length <= MAX_ENHANCED_RENDER_CHARS
+    && lineStartOffsets.length <= MAX_ENHANCED_RENDER_LINES
   );
   let fencedCodeBlocks = $derived(
-    isEnhancedDocumentWithinBudget
-      ? getFencedCodeBlockRanges(fileContent, lineStartOffsets)
+    isRenderMode && isEnhancedDocumentWithinBudget
+      ? getFencedCodeBlockRanges(
+          fencedCodeBlockCache,
+          fileContent,
+          lineStartOffsets,
+          latestContentChange
+        )
       : []
   );
   let lineCount = $derived(lineStartOffsets.length);
   let charCount = $derived(fileContent.length);
-  let textareaDisplayContent = $derived(getTextareaValueFromContent(fileContent));
+  let textareaDisplayContent = $derived(textOffsetIndex.textareaValue);
   let editorViewportWidth = $state<number>(500);
   function getEditorTextBoxWidth(): number {
     const fallbackWidth = Math.max(1, editorViewportWidth);
@@ -1623,15 +2470,21 @@
     JSON.stringify(documentFeatureSettings),
     JSON.stringify(markdownRenderSettings)
   ].join('|'));
-  let renderLineLayout = $derived(getEditorLineLayout(
-    fileContent,
+  let renderLineLayout = $derived(getEditorLineLayout(editorLineLayoutCache, {
+    content: fileContent,
     lineStartOffsets,
-    renderWrapContentWidth,
-    fencedCodeBlocks,
-    isRenderMode && isEnhancedDocumentWithinBudget,
-    renderedLineHeightMeasurements,
-    renderedLineMeasurementContext
-  ));
+    contentWidth: renderWrapContentWidth,
+    fencedCodeRanges: fencedCodeBlocks,
+    wrapEnabled: isRenderMode && isEnhancedDocumentWithinBudget,
+    measurements: renderedLineHeightMeasurements,
+    measurementContext: renderedLineMeasurementContext,
+    measuredLineHeight,
+    fencedCodeHorizontalPadding,
+    measureTextEndWidth: measureEditorTextEndWidth,
+    measureTextWidth: measureEditorTextWidth,
+    getListContinuationIndent: getMeasuredListContinuationIndent,
+    change: latestContentChange
+  }));
   let shouldShowNativeRenderText = $derived(isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling);
   let shouldRenderHighlightLayer = $derived(isRenderMode && isEnhancedDocumentWithinBudget && !shouldShowNativeRenderText);
 
@@ -1689,11 +2542,11 @@
   // 가상화 범위 계산
   let startLine = $derived(Math.max(
     0,
-    findLineIndexForLayoutOffset(renderLineLayout, scrollTop - editorTopPadding) - virtualLineOverscan
+    renderLineLayout.findLineIndex(scrollTop - editorTopPadding) - virtualLineOverscan
   ));
   let endLine = $derived(Math.min(
     lineCount - 1,
-    findLineIndexForLayoutOffset(renderLineLayout, scrollTop + clientHeight - editorTopPadding) + virtualLineOverscan
+    renderLineLayout.findLineIndex(scrollTop + clientHeight - editorTopPadding) + virtualLineOverscan
   ));
 
   // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
@@ -1723,9 +2576,73 @@
     lineRange: { startLine, endLine },
     renderEnabled: isActiveDocumentRenderEnabled,
     featureSettings: documentFeatureSettings,
-    markdownSettings: markdownRenderSettings
+    markdownSettings: markdownRenderSettings,
+    renderCache: documentRenderCache,
+    contentChange: latestContentChange
   }));
   let parsedLines = $derived(documentRender.lines);
+
+
+  function getTokenTextLength(token: Token): number {
+    if (token.children?.length) {
+      return token.children.reduce((length, child) => length + getTokenTextLength(child), 0);
+    }
+    return token.text?.length ?? 0;
+  }
+
+  interface RenderListTokenParts {
+    prefixTokens: Token[];
+    bodyTokens: Token[];
+  }
+
+  function getListRenderTokenParts(tokens: Token[], prefixLength: number): RenderListTokenParts | null {
+    if (prefixLength === 0) {
+      return { prefixTokens: [], bodyTokens: tokens };
+    }
+
+    const prefixTokens: Token[] = [];
+    let remaining = prefixLength;
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      const tokenLength = getTokenTextLength(token);
+      if (tokenLength <= remaining) {
+        prefixTokens.push(token);
+        remaining -= tokenLength;
+        if (remaining === 0) {
+          return { prefixTokens, bodyTokens: tokens.slice(index + 1) };
+        }
+        continue;
+      }
+
+      if (token.children?.length) return null;
+      const tokenText = token.text ?? '';
+      const tokenStart = token.start;
+      const prefixText = tokenText.slice(0, remaining);
+      const bodyText = tokenText.slice(remaining);
+      if (prefixText) {
+        prefixTokens.push({
+          ...token,
+          text: prefixText,
+          end: tokenStart === undefined ? token.end : tokenStart + remaining
+        });
+      }
+      const bodyToken: Token = {
+        ...token,
+        text: bodyText,
+        start: tokenStart === undefined ? token.start : tokenStart + remaining
+      };
+      return {
+        prefixTokens,
+        bodyTokens: bodyText ? [bodyToken, ...tokens.slice(index + 1)] : tokens.slice(index + 1)
+      };
+    }
+
+    return remaining === 0 ? { prefixTokens, bodyTokens: [] } : null;
+  }
+
+  let renderListLineLayouts = $derived(
+    renderLineLayout.listLayouts.slice(startLine, endLine + 1)
+  );
 
   const syntaxDiagnosticDelayMs = 500;
 
@@ -1733,7 +2650,10 @@
     const content = fileContent;
     const pathOrName = filePath || fileName;
     const format = activeDocumentFormat;
-    const featureSettings = documentFeatureSettings;
+    const featureSettings = normalizeDocumentFeatureSettings(documentFeatureSettings);
+    const requestLocale = locale;
+    const requestId = ++documentDiagnosticRequestId;
+    documentDiagnosticWorkerClient?.cancel();
 
     if (
       !isEnhancedDocumentWithinBudget
@@ -1745,10 +2665,41 @@
     }
 
     const timer = setTimeout(() => {
-      documentDiagnostic = getDocumentDiagnostic(content, { pathOrName, featureSettings, locale });
+      if (!documentDiagnosticWorkerClient) {
+        documentDiagnostic = getDocumentDiagnostic(content, {
+          pathOrName,
+          featureSettings,
+          locale: requestLocale
+        });
+        return;
+      }
+
+      void documentDiagnosticWorkerClient.diagnose({
+        requestId,
+        content,
+        pathOrName,
+        featureSettings,
+        locale: requestLocale
+      }).then((response) => {
+        if (response.requestId === documentDiagnosticRequestId) {
+          documentDiagnostic = response.diagnostic;
+        }
+      }).catch((error) => {
+        if (error instanceof DocumentDiagnosticCancelledError) return;
+        if (requestId !== documentDiagnosticRequestId) return;
+        console.error('Document diagnostic worker failed:', error);
+        documentDiagnostic = getDocumentDiagnostic(content, {
+          pathOrName,
+          featureSettings,
+          locale: requestLocale
+        });
+      });
     }, syntaxDiagnosticDelayMs);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      documentDiagnosticWorkerClient?.cancel();
+    };
   });
 
   // 줄 높이 실측 로직
@@ -1801,9 +2752,6 @@
     if (cachedWidth !== undefined) return cachedWidth;
 
     const width = context.measureText(text).width;
-    if (editorTextWidthCache.size > editorTextWidthCacheLimit) {
-      editorTextWidthCache.clear();
-    }
     editorTextWidthCache.set(text, width);
     return width;
   }
@@ -1845,6 +2793,7 @@
       const viewportRect = editorViewportEl.getBoundingClientRect();
       steadyEditorCaretLeft = caretRect.left - viewportRect.left;
       steadyEditorCaretTop = caretRect.top - viewportRect.top;
+      steadyEditorCaretHeight = Math.max(1, caretRect.height);
       return;
     }
 
@@ -1853,6 +2802,7 @@
     const linePrefix = fileContent.slice(lineStart, start);
     steadyEditorCaretLeft = 12 + measureEditorTextWidth(linePrefix) - scrollLeft;
     steadyEditorCaretTop = 8 + lineIndex * measuredLineHeight - scrollTop;
+    steadyEditorCaretHeight = measuredLineHeight;
   }
 
   function restartSteadyEditorCaretBlink() {
@@ -1982,6 +2932,7 @@
       filePath: openedFile.path,
       fileName: getFileNameFromPath(openedFile.path),
       fileContent: openedFile.content,
+      encoding: openedFile.encoding,
       isDirty: false
     });
     const activeTab = getActiveTab();
@@ -2068,8 +3019,10 @@
     const appWindow = getCurrentWindow();
 
     try {
-      await appWindow.setTitle(getCurrentWindowTitle());
-      await appWindow.show();
+      await Promise.all([
+        appWindow.setTitle(getCurrentWindowTitle()),
+        appWindow.show()
+      ]);
       await appWindow.setFocus();
     } catch (err) {
       console.error('Failed to show main window:', err);
@@ -2115,7 +3068,7 @@
 
     isInstallingUpdate = true;
     try {
-      const canRestart = await shouldCloseMainWindow();
+      const canRestart = await shouldCloseEditorWindow();
       if (!canRestart) {
         showTransientStatus(t('update.cancelled'));
         return;
@@ -2232,8 +3185,39 @@
     void refreshInstalledAppVersion();
   }
 
+  async function receiveStartupTabTransfer(): Promise<boolean> {
+    if (!startupTabTransferMetadata) return true;
+
+    try {
+      await ensureTabTransferListeners();
+      const received = await requestIncomingTabTransfer(startupTabTransferMetadata, 0);
+      if (received) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete(tabTransferIdQueryKey);
+        url.searchParams.delete(tabTransferSourceQueryKey);
+        window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      }
+      return received;
+    } catch (error) {
+      console.error('Failed to initialize detached tab window:', error);
+      return false;
+    }
+  }
+
   async function initializeMainWindowAfterStartup() {
-    await loadStartupFiles();
+    if (getCurrentEditorWindowLabel() !== 'main') {
+      void invoke('setup_editor_window_wheel').catch((error) => {
+        console.error('Failed to initialize horizontal wheel for editor window:', error);
+      });
+    }
+    const receivedStartupTransfer = await receiveStartupTabTransfer();
+    if (startupTabTransferMetadata && !receivedStartupTransfer) {
+      await getCurrentWindow().destroy().catch(() => {});
+      return;
+    }
+    if (!startupTabTransferMetadata) {
+      await loadStartupFiles();
+    }
     await showMainWindowAfterStartup();
     void refreshInstalledAppVersion();
     scheduleStartupUpdateCheck();
@@ -2286,6 +3270,7 @@
   }
 
   function clearRenderedSelectionHighlight() {
+    hasRenderedSelectionHighlight = false;
     if (!supportsRenderedSelectionHighlight) return;
     CSS.highlights.delete(renderedSelectionHighlightName);
   }
@@ -2369,6 +3354,7 @@
     }
 
     CSS.highlights.set(renderedSelectionHighlightName, new Highlight(...ranges));
+    hasRenderedSelectionHighlight = true;
   }
 
   function scheduleRenderedSelectionHighlight() {
@@ -2473,6 +3459,13 @@
       }
     }
 
+    const listLineIndex = findLineIndexForOffset(offset);
+    const listLayout = getRenderListLineLayout(listLineIndex);
+    if (listLayout) {
+      const bodyStart = getRenderListBodyStart(listLineIndex, listLayout);
+      if (offset < bodyStart) return bodyStart;
+    }
+
     return offset;
   }
 
@@ -2520,7 +3513,17 @@
     scheduleRenderedSelectionHighlight();
   }
 
-  function updateEditorStateForSnapshot(snapshot: EditorSnapshot) {
+  function updateEditorStateForSnapshot(
+    snapshot: EditorSnapshot,
+    suppliedChange?: TextChange | null,
+    suppliedOffsetIndex?: TextOffsetIndex
+  ) {
+    const contentChange = suppliedChange === undefined
+      ? getTextChange(fileContent, snapshot.content)
+      : suppliedChange;
+    latestContentChange = contentChange;
+    textOffsetIndex = suppliedOffsetIndex
+      ?? (contentChange ? createTextOffsetIndex(snapshot.content) : getTextOffsetIndex(snapshot.content));
     fileContent = snapshot.content;
     fileName = filePath ? fileName : getFirstLineTitle(fileContent);
     isDirty = getActiveUndoHistory().isDirty();
@@ -2536,8 +3539,13 @@
     });
   }
 
-  function applyEditorSnapshot(snapshot: EditorSnapshot, selectionAlreadyApplied = false) {
-    updateEditorStateForSnapshot(snapshot);
+  function applyEditorSnapshot(
+    snapshot: EditorSnapshot,
+    selectionAlreadyApplied = false,
+    change?: TextChange | null,
+    offsetIndex?: TextOffsetIndex
+  ) {
+    updateEditorStateForSnapshot(snapshot, change, offsetIndex);
 
     if (selectionAlreadyApplied) {
       updateCursorPosition();
@@ -2562,10 +3570,18 @@
       selectionAlreadyApplied?: boolean;
       keepRenderCaretVisible?: boolean;
       syncRenderCaretAfterUpdate?: boolean;
+      change?: TextChange | null;
+      offsetIndex?: TextOffsetIndex;
     } = {}
   ) {
+    const change = options.change === undefined
+      ? getTextChange(before.content, after.content)
+      : options.change;
+    const offsetIndex = options.offsetIndex
+      ?? (change ? createTextOffsetIndex(after.content) : getTextOffsetIndex(after.content));
     const history = getActiveUndoHistory();
-    history.record(before, after, { mergeKey: options.mergeKey ?? null });
+    history.record(before, after, { mergeKey: options.mergeKey ?? null, change });
+    enforceUndoWindowBudget();
 
     if (
       options.syncRenderCaretAfterUpdate
@@ -2573,7 +3589,7 @@
       && isRenderMode
       && isActiveDocumentRenderEnabled
     ) {
-      updateEditorStateForSnapshot(after);
+      updateEditorStateForSnapshot(after, change, offsetIndex);
       void tick().then(() => {
         updateCursorPosition();
         syncActiveTabState();
@@ -2585,7 +3601,7 @@
       });
       return;
     }
-    applyEditorSnapshot(after, options.selectionAlreadyApplied ?? false);
+    applyEditorSnapshot(after, options.selectionAlreadyApplied ?? false, change, offsetIndex);
     if (options.keepRenderCaretVisible) {
       keepEditorCaretVisibleDuringEdit();
     } else {
@@ -2608,6 +3624,21 @@
 
   function commitRenderEditorEdit(nextContent: string, nextSelection: EditorSelection) {
     commitManualEditorEdit(nextContent, nextSelection, { keepRenderCaretVisible: true });
+  }
+
+  function duplicateEditorSelectionOrLine(): boolean {
+    if (!textareaEl || document.activeElement !== textareaEl) return false;
+
+    const selection = getTextareaSelectionInContent();
+    const edit = getEditorDuplicationEdit(
+      fileContent,
+      selection,
+      getPreferredNewline(fileContent, selection.start)
+    );
+    commitManualEditorEdit(edit.content, edit.selection, {
+      keepRenderCaretVisible: isRenderMode
+    });
+    return true;
   }
 
   function commitDelimitedTableEdit(
@@ -2645,14 +3676,22 @@
     pendingNativeInput = null;
 
     const before = pendingInput?.before ?? lastEditorSnapshot;
-    const after = getSnapshotFromTextareaInput(before, target.value, target.selectionStart, target.selectionEnd);
+    const inputResult = getSnapshotFromTextareaInput(
+      before,
+      getTextOffsetIndex(before.content),
+      target.value,
+      target.selectionStart,
+      target.selectionEnd
+    );
     const inputType = pendingInput?.inputType ?? 'input';
     const mergeKey = getNativeInputMergeKey(inputType, before, pendingInput?.isComposing ?? isComposingEditorText);
 
-    commitEditorEdit(before, after, {
+    commitEditorEdit(before, inputResult.snapshot, {
       mergeKey,
       selectionAlreadyApplied: true,
-      syncRenderCaretAfterUpdate: true
+      syncRenderCaretAfterUpdate: true,
+      change: inputResult.change,
+      offsetIndex: inputResult.offsetIndex
     });
   }
 
@@ -2743,6 +3782,7 @@
   });
 
   onDestroy(() => {
+    documentDiagnosticWorkerClient?.dispose();
     renderedLineResizeObserver?.disconnect();
     renderedLineResizeObserver = null;
     if (renderedSelectionHighlightFrame !== null) {
@@ -2870,6 +3910,94 @@
     };
   }
 
+  function getRenderListLineLayout(lineIndex: number): RenderListLineLayout | null {
+    return renderLineLayout.listLayouts[lineIndex] ?? null;
+  }
+
+  function getRenderListBodyStart(lineIndex: number, layout: RenderListLineLayout): number {
+    return (lineStartOffsets[lineIndex] ?? 0) + layout.prefixLength;
+  }
+
+  function getRenderListBodyColumnWidth(layout: RenderListLineLayout): number {
+    return Math.max(1, measureEditorTextWidth(`${layout.marker.indent}${layout.marker.marker}`));
+  }
+
+  function getRenderListLineStyle(layout: RenderListLineLayout): string {
+    return `--list-prefix-width: ${getRenderListBodyColumnWidth(layout)}px;`;
+  }
+
+  function handleRenderListBoundaryArrowLeft(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing || event.key !== 'ArrowLeft') return false;
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineIndex = findLineIndexForOffset(start);
+    const layout = getRenderListLineLayout(lineIndex);
+    if (!layout || layout.ownerLineIndex === lineIndex || layout.prefixLength === 0) return false;
+    if (start !== getRenderListBodyStart(lineIndex, layout)) return false;
+
+    const previousLine = getPreviousLineBounds(fileContent, lineStartOffsets[lineIndex] ?? 0);
+    if (!previousLine) return false;
+
+    event.preventDefault();
+    closeActiveUndoGroup();
+    setTextareaSelectionFromContent(previousLine.end, previousLine.end);
+    updateCursorPosition();
+    keepEditorCaretVisibleDuringEdit();
+    return true;
+  }
+
+  function handleRenderListMarkerBackspace(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing || event.key !== 'Backspace') return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineStart = getLineStartOffset(fileContent, start);
+    const lineEnd = getLineEndOffset(fileContent, start);
+    const edit = getListMarkerBackspaceEdit(
+      fileContent.slice(lineStart, lineEnd),
+      start - lineStart
+    );
+    if (!edit) return false;
+
+    event.preventDefault();
+    const nextCaret = lineStart + edit.caret;
+    commitRenderEditorEdit(
+      `${fileContent.slice(0, lineStart)}${edit.text}${fileContent.slice(lineEnd)}`,
+      { start: nextCaret, end: nextCaret }
+    );
+    return true;
+  }
+
+  function handleRenderListContinuationBackspace(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing || event.key !== 'Backspace') return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineIndex = findLineIndexForOffset(start);
+    const layout = getRenderListLineLayout(lineIndex);
+    if (!layout || layout.ownerLineIndex === lineIndex) return false;
+    if (start !== getRenderListBodyStart(lineIndex, layout)) return false;
+
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const previousLine = getPreviousLineBounds(fileContent, lineStart);
+    if (!previousLine) return false;
+
+    event.preventDefault();
+    const nextContent = `${fileContent.slice(0, previousLine.end)}${fileContent.slice(start)}`;
+    commitRenderEditorEdit(nextContent, {
+      start: previousLine.end,
+      end: previousLine.end
+    });
+    return true;
+  }
+
   function getLineIndentOffsetDelta(
     offset: number,
     absoluteLineStart: number,
@@ -2981,14 +4109,35 @@
     return null;
   }
 
-  function getPreferredNewline(text: string, offset: number): string {
-    const previousLineBreak = offset <= 0 ? -1 : text.lastIndexOf('\n', offset - 1);
-    if (previousLineBreak > 0 && text[previousLineBreak - 1] === '\r') return '\r\n';
 
-    const firstLineBreak = text.indexOf('\n');
-    if (firstLineBreak > 0 && text[firstLineBreak - 1] === '\r') return '\r\n';
+  function getLineEndingLabel(text: string): string {
+    const lineEndings = new Set<string>();
+    for (let index = 0; index < text.length; index += 1) {
+      if (text[index] === '\r') {
+        if (text[index + 1] === '\n') {
+          lineEndings.add('CRLF');
+          index += 1;
+        } else {
+          lineEndings.add('CR');
+        }
+      } else if (text[index] === '\n') {
+        lineEndings.add('LF');
+      }
+    }
+    return lineEndings.size > 0 ? [...lineEndings].join('/') : 'LF';
+  }
 
-    return '\n';
+  function getTextEncodingLabel(encoding: TextEncoding): string {
+    switch (encoding) {
+      case 'utf8Bom':
+        return 'UTF-8 BOM';
+      case 'utf16Le':
+        return 'UTF-16 LE';
+      case 'utf16Be':
+        return 'UTF-16 BE';
+      default:
+        return 'UTF-8';
+    }
   }
 
   function getPreviousLineBounds(text: string, lineStart: number): { start: number; end: number } | null {
@@ -3334,6 +4483,18 @@
     const { start, end } = getTextareaSelectionInContent();
     if (start !== end) return false;
 
+    if (renderAutoClosingCharacters.has(event.key) && fileContent[start] === event.key) {
+      event.preventDefault();
+      closeActiveUndoGroup();
+      const nextCaret = start + event.key.length;
+      setTextareaSelectionFromContent(nextCaret, nextCaret);
+      updateCursorPosition();
+      keepEditorCaretVisibleDuringEdit();
+      return true;
+    }
+
+    if (!canInsertAutoPairAt(fileContent, start, renderAutoPairAllowedFollowingStrings)) return false;
+
     if (
       event.key === '`'
       && start >= 2
@@ -3356,16 +4517,6 @@
         });
         return true;
       }
-    }
-
-    if (renderAutoClosingCharacters.has(event.key) && fileContent[start] === event.key) {
-      event.preventDefault();
-      closeActiveUndoGroup();
-      const nextCaret = start + event.key.length;
-      setTextareaSelectionFromContent(nextCaret, nextCaret);
-      updateCursorPosition();
-      keepEditorCaretVisibleDuringEdit();
-      return true;
     }
 
     const closingChar = renderAutoClosingPairs[event.key];
@@ -3443,11 +4594,14 @@
   }
 
   function handleRenderEditorKeyDown(event: KeyboardEvent) {
+    if (handleRenderListBoundaryArrowLeft(event)) return;
     if (handleRenderListSoftBreakEnter(event)) return;
     if (handleRenderExitEmptyListEnter(event)) return;
     if (handleRenderContinueListEnter(event)) return;
     if (handleRenderListContinuationEnter(event)) return;
     if (handleRenderPreserveIndentEnter(event)) return;
+    if (handleRenderListMarkerBackspace(event)) return;
+    if (handleRenderListContinuationBackspace(event)) return;
     if (handleRenderEmptyIndentedLineBackspace(event)) return;
     if (handleRenderTabIndent(event)) return;
     if (handleRenderIndentBackspace(event)) return;
@@ -3487,7 +4641,7 @@
       syncActiveTabState();
       closeAllDropdown();
       const openedFile = await invoke<OpenedFile | null>("open_file_dialog", {
-        filterName: getOpenFileDialogFilters(locale)[0]?.name ?? t('filter.textFiles')
+        filters: getOpenFileDialogFilters(locale)
       });
 
       if (openedFile) {
@@ -3636,6 +4790,7 @@
 
   function closeAllDropdown() {
     openDropdown = null;
+    isTabOverflowMenuOpen = false;
   }
 
   function performUndo(): boolean {
@@ -3858,7 +5013,7 @@
     // Windows WebView2에서는 가로 휠 조작 시 브라우저 내 wheel 이벤트의 deltaX가 아예 0이 되는 버그가 있습니다.
     // 이를 우회하기 위해 Rust 백엔드에서 WM_MOUSEHWHEEL 메시지를 후킹하여 가로 휠 델타를 직접 수신받습니다.
     const unlistenPromise = hasTauriRuntime()
-      ? listen<number>("native-horizontal-wheel", (event: TauriEvent<number>) => {
+      ? getCurrentWindow().listen<number>("native-horizontal-wheel", (event: TauriEvent<number>) => {
           if (!textareaEl) return;
           const delta = event.payload;
           // OS의 delta 값(보통 120 또는 -120)을 받아 가로 스크롤에 직접 반영
@@ -3886,7 +5041,20 @@
 
     const key = e.key.toLowerCase();
 
-    if (!isSettingsWindow && e.ctrlKey && key === 'z') {
+    if (e.key === 'Escape') {
+      closeAllDropdown();
+      const transfer = getActiveOutgoingTabTransfer();
+      if (pendingPointerTabDrag || transfer) e.preventDefault();
+      pendingPointerTabDrag = null;
+      draggedTabId = null;
+      foreignTabDragTransferId = null;
+      tabDragPreview = null;
+      if (transfer) {
+        transfer.handledInCurrentWindow = true;
+        cleanupOutgoingTabTransfer(transfer);
+      }
+      clearTabDropTarget();
+    } else if (!isSettingsWindow && e.ctrlKey && key === 'z') {
       e.preventDefault();
       if (e.shiftKey) {
         performRedo();
@@ -3896,6 +5064,16 @@
     } else if (!isSettingsWindow && e.ctrlKey && key === 'y') {
       e.preventDefault();
       performRedo();
+    } else if (
+      !isSettingsWindow
+      && e.ctrlKey
+      && !e.shiftKey
+      && !e.altKey
+      && !e.metaKey
+      && !e.isComposing
+      && key === 'd'
+    ) {
+      if (duplicateEditorSelectionOrLine()) e.preventDefault();
     } else if (e.ctrlKey && key === 'n') {
       e.preventDefault();
       handleNewFile();
@@ -4071,13 +5249,9 @@
     return nearestLine;
   }
 
-  interface RenderedTextBoundary {
-    node: Text;
-    offset: number;
-  }
+
 
   function getRenderedCaretRectAtBoundary(
-    lineElement: HTMLElement,
     boundary: RenderedTextBoundary
   ): DOMRect | null {
     const range = document.createRange();
@@ -4102,42 +5276,15 @@
 
     if (!rect) return null;
 
-    const lineRect = lineElement.getBoundingClientRect();
-    const rowIndex = Math.max(0, Math.round((rect.top - lineRect.top) / measuredLineHeight));
     return new DOMRect(
       rect.left,
-      lineRect.top + rowIndex * measuredLineHeight,
+      rect.top,
       1,
-      measuredLineHeight
+      rect.height
     );
   }
 
-  function getRenderedTextBoundaries(
-    lineContent: HTMLElement,
-    lineTextLength: number
-  ): Array<RenderedTextBoundary | undefined> {
-    const boundaries = new Array<RenderedTextBoundary | undefined>(lineTextLength + 1);
-    const walker = document.createTreeWalker(lineContent, NodeFilter.SHOW_TEXT);
-    let consumedOffset = 0;
-    let textNode = walker.nextNode() as Text | null;
 
-    while (textNode && consumedOffset <= lineTextLength) {
-      const textLength = textNode.data.length;
-      if (textLength === 0) {
-        textNode = walker.nextNode() as Text | null;
-        continue;
-      }
-      for (let nodeOffset = 0; nodeOffset <= textLength; nodeOffset += 1) {
-        const sourceOffset = consumedOffset + nodeOffset;
-        if (sourceOffset > lineTextLength) break;
-        boundaries[sourceOffset] = { node: textNode, offset: nodeOffset };
-      }
-      consumedOffset += textLength;
-      textNode = walker.nextNode() as Text | null;
-    }
-
-    return boundaries;
-  }
 
   function getRenderedCaretRectFromLineText(
     lineElement: HTMLElement,
@@ -4148,6 +5295,19 @@
     if (!lineContent) return null;
 
     const targetOffset = clamp(offsetInLine, 0, lineText.length);
+    const listBody = lineContent.querySelector<HTMLElement>('.list-item-body');
+    const listBodyStart = Number(lineContent.dataset.listBodyStart);
+    if (listBody && Number.isFinite(listBodyStart)) {
+      const bodyLength = Math.max(0, lineText.length - listBodyStart);
+      const bodyOffset = clamp(targetOffset - listBodyStart, 0, bodyLength);
+      if (bodyLength === 0) {
+        const bodyRect = listBody.getBoundingClientRect();
+        return new DOMRect(bodyRect.left, bodyRect.top, 1, bodyRect.height);
+      }
+
+      const boundary = getTextNodeBoundary(listBody, bodyOffset, true);
+      return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
+    }
     if (lineText.length === 0) {
       const lineRect = lineElement.getBoundingClientRect();
       const lineContentRect = lineContent.getBoundingClientRect();
@@ -4162,7 +5322,7 @@
     }
 
     const boundary = getTextNodeBoundary(lineContent, targetOffset, true);
-    return boundary ? getRenderedCaretRectAtBoundary(lineElement, boundary) : null;
+    return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
   }
 
   function getRenderedLineTextOffsetAtPoint(
@@ -4174,26 +5334,36 @@
     if (lineText.length === 0) return 0;
     const lineContent = lineElement.querySelector<HTMLElement>('.line-content');
     if (!lineContent) return 0;
+    const listBody = lineContent.querySelector<HTMLElement>('.list-item-body');
+    const listBodyStart = Number(lineContent.dataset.listBodyStart);
+    const pointRoot = listBody && Number.isFinite(listBodyStart) ? listBody : lineContent;
+    const pointMaximum = listBody && Number.isFinite(listBodyStart)
+      ? Math.max(0, lineText.length - listBodyStart)
+      : lineText.length;
+    const pointOffsetBase = listBody && Number.isFinite(listBodyStart) ? listBodyStart : 0;
 
-    const boundaries = getRenderedTextBoundaries(lineContent, lineText.length);
-    let bestOffset = 0;
-    let bestDistance = Number.POSITIVE_INFINITY;
-    const verticalWeight = Math.max(editorViewportWidth, 1);
+    if (pointMaximum === 0) return pointOffsetBase;
 
-    for (let offset = 0; offset <= lineText.length; offset += 1) {
-      const boundary = boundaries[offset];
-      if (!boundary) continue;
-      const rect = getRenderedCaretRectAtBoundary(lineElement, boundary);
-      if (!rect) continue;
-      const distance = Math.abs(clientY - (rect.top + rect.height / 2)) * verticalWeight
-        + Math.abs(clientX - rect.left);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        bestOffset = offset;
+
+    const nativeOffset = getNativeCaretTextOffsetAtPoint(
+      pointRoot,
+      pointMaximum,
+      clientX,
+      clientY
+    );
+    if (nativeOffset !== null) return pointOffsetBase + nativeOffset;
+
+    const boundaries = createRenderedTextBoundaryIndex(pointRoot, pointMaximum);
+    return pointOffsetBase + findClosestRenderedTextOffset(
+      pointMaximum,
+      clientX,
+      clientY,
+      Math.max(editorViewportWidth, 1),
+      (offset) => {
+        const boundary = boundaries.getBoundary(offset);
+        return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
       }
-    }
-
-    return bestOffset;
+    );
   }
 
   function getRenderedCaretRectForOffset(offset: number): DOMRect | null {
@@ -4434,7 +5604,11 @@
   }
 
   function applyInlineColorPreview(start: number, end: number, nextValue: string) {
-    fileContent = `${fileContent.slice(0, start)}${nextValue}${fileContent.slice(end)}`;
+    const beforeContent = fileContent;
+    const nextContent = `${beforeContent.slice(0, start)}${nextValue}${beforeContent.slice(end)}`;
+    latestContentChange = getTextChange(beforeContent, nextContent);
+    textOffsetIndex = createTextOffsetIndex(nextContent);
+    fileContent = nextContent;
     inlineColorPickerValue = nextValue;
     pendingInlineColorReplacement = { start, end: start + nextValue.length };
     fileName = filePath ? fileName : getFirstLineTitle(fileContent);
@@ -4825,6 +5999,41 @@
             </div>
             <p class="settings-category-note">{t('settings.languageDescription')}</p>
           </div>
+          <div class="settings-section">
+            <h4 class="section-title">{t('settings.transfer.title')}</h4>
+            <p class="settings-category-note">{t('settings.transfer.description')}</p>
+            <div class="settings-transfer-actions">
+              <button
+                type="button"
+                class="settings-transfer-button"
+                disabled={isSettingsTransferBusy}
+                onclick={() => void handleImportSettings()}
+              >
+                <Upload size={15} aria-hidden="true"/>
+                {t('settings.transfer.import')}
+              </button>
+              <button
+                type="button"
+                class="settings-transfer-button"
+                disabled={isSettingsTransferBusy}
+                onclick={() => void handleExportSettings()}
+              >
+                <Download size={15} aria-hidden="true"/>
+                {t('settings.transfer.export')}
+              </button>
+            </div>
+            {#if settingsTransferStatus}
+              <p
+                class="settings-transfer-status"
+                class:warning={settingsTransferStatus.kind === 'warning'}
+                class:error={settingsTransferStatus.kind === 'error'}
+                role={settingsTransferStatus.kind === 'error' ? 'alert' : 'status'}
+                aria-live="polite"
+              >
+                {settingsTransferStatus.message}
+              </p>
+            {/if}
+          </div>
         {:else if activeSettingsView === 'sourceAppearance'}
           <div class="settings-section">
             <h4 class="section-title">{t('settings.fontSettings')}</h4>
@@ -4993,6 +6202,60 @@
                 <span class="settings-check-description">{t('settings.autoPair.description')}</span>
               </span>
             </label>
+            <div
+              class="auto-pair-following-settings"
+              class:disabled={!renderAutoPairEditing}
+              aria-disabled={!renderAutoPairEditing}
+            >
+              <div class="auto-pair-following-heading">
+                <span class="settings-check-title">{t('settings.autoPair.followingTitle')}</span>
+                <span class="settings-check-description">{t('settings.autoPair.followingDescription')}</span>
+              </div>
+              <div class="auto-pair-following-list" role="list">
+                <span class="auto-pair-following-chip fixed" role="listitem">
+                  <span>{t('settings.autoPair.whitespace')}</span>
+                  <span class="auto-pair-following-fixed-label">{t('settings.autoPair.alwaysAllowed')}</span>
+                </span>
+                {#each renderAutoPairAllowedFollowingStrings as value (value)}
+                  <span class="auto-pair-following-chip" role="listitem">
+                    <code>{value}</code>
+                    <button
+                      type="button"
+                      class="auto-pair-following-remove"
+                      aria-label={t('settings.autoPair.removeFollowingString', { value })}
+                      title={t('settings.autoPair.removeFollowingString', { value })}
+                      disabled={!renderAutoPairEditing}
+                      onclick={() => removeRenderAutoPairAllowedFollowingString(value)}
+                    >
+                      <X size={12} aria-hidden="true" />
+                    </button>
+                  </span>
+                {/each}
+              </div>
+              <div class="auto-pair-following-add-row">
+                <input
+                  id="render-auto-pair-allowed-following-string-window"
+                  class="auto-pair-following-input"
+                  type="text"
+                  maxlength={maximumAutoPairAllowedFollowingStringLength}
+                  autocomplete="off"
+                  aria-label={t('settings.autoPair.followingInputLabel')}
+                  placeholder={t('settings.autoPair.followingPlaceholder')}
+                  disabled={!renderAutoPairEditing || renderAutoPairAllowedFollowingStrings.length >= maximumAutoPairAllowedFollowingStringCount}
+                  bind:value={renderAutoPairAllowedFollowingStringDraft}
+                  onkeydown={handleRenderAutoPairAllowedFollowingStringKeydown}
+                />
+                <button
+                  type="button"
+                  class="auto-pair-following-add"
+                  disabled={!renderAutoPairEditing || !canAddRenderAutoPairAllowedFollowingString}
+                  onclick={addRenderAutoPairAllowedFollowingString}
+                >
+                  <Plus size={13} aria-hidden="true" />
+                  {t('settings.autoPair.addFollowingString')}
+                </button>
+              </div>
+            </div>
             <label class="settings-check-row" for="render-auto-symbol-substitution-window">
               <input
                 id="render-auto-symbol-substitution-window"
@@ -5239,44 +6502,126 @@
         <img class="titlebar-app-image" src="/favicon.png" alt="" draggable="false" />
       </div>
 
-      <div class="titlebar-tabs">
-        <div class="tab-list" role="tablist" aria-label={t('window.openTabs')}>
-          {#each tabs as tab (tab.id)}
-            <div class="tab-item" class:active={tab.id === activeTabId} class:dirty={tab.isDirty}>
-              <button
-                type="button"
-                class="tab-select"
-                role="tab"
-                aria-selected={tab.id === activeTabId}
-                title={tab.filePath || getDisplayFileName(tab)}
-                onclick={() => activateTab(tab.id)}
-              >
-                {#if tab.isDirty}
-                  <span class="tab-dirty-dot" aria-hidden="true"></span>
-                {/if}
-                <span class="tab-title">{getDisplayFileName(tab)}</span>
-              </button>
-              <button
-                type="button"
-                class="tab-close-btn"
-                aria-label={t('window.closeTab', { fileName: getDisplayFileName(tab) })}
-                title={t('window.closeTabTitle')}
-                onclick={(event) => handleCloseTab(tab.id, event)}
-              >
-                <X size={14} aria-hidden="true" />
-              </button>
-            </div>
-          {/each}
-        </div>
-        <button
-          type="button"
-          class="tab-add-btn"
-          aria-label={t('window.newTab')}
-          title={t('window.newTab')}
-          onclick={handleAddTab}
+      <div
+        class="titlebar-tabs"
+        class:tab-drop-active={isTabDockDropTarget}
+        bind:this={titlebarTabsEl}
+        role="presentation"
+      >
+        <div
+          class="tab-list-shell"
+          style={`--minimum-tab-width: ${minimumTabWidth}px; --preferred-tab-width: ${preferredTabWidth}px; --tab-list-preferred-width: ${tabListPreferredWidth}px;`}
         >
-          <Plus size={16} aria-hidden="true" />
-        </button>
+          <div
+            class="tab-list"
+            role="tablist"
+            aria-label={t('window.openTabs')}
+            bind:this={tabListEl}
+            onscroll={updateTabStripMetrics}
+            onwheel={handleTabListWheel}
+          >
+            {#each tabs as tab (tab.id)}
+              <div
+                class="tab-item"
+                class:active={tab.id === activeTabId}
+                class:dirty={tab.isDirty}
+                class:dragging={tab.id === draggedTabId}
+                data-tab-id={tab.id}
+              >
+                <button
+                  type="button"
+                  class="tab-select"
+                  role="tab"
+                  aria-selected={tab.id === activeTabId}
+                  draggable="false"
+                  onpointerdown={(event) => handleTabPointerDown(event, tab.id)}
+                  onpointermove={handleTabPointerMove}
+                  onpointerup={handleTabPointerUp}
+                  onpointercancel={handleTabPointerCancel}
+                  title={tab.filePath || getDisplayFileName(tab)}
+                  onclick={() => handleTabClick(tab.id)}
+                >
+                  {#if tab.isDirty}
+                    <span class="tab-dirty-dot" aria-hidden="true"></span>
+                  {/if}
+                  <span class="tab-title">{getDisplayFileName(tab)}</span>
+                </button>
+                <button
+                  type="button"
+                  class="tab-close-btn"
+                  aria-label={t('window.closeTab', { fileName: getDisplayFileName(tab) })}
+                  title={t('window.closeTabTitle')}
+                  onclick={(event) => handleCloseTab(tab.id, event)}
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              </div>
+            {/each}
+          </div>
+          {#if isTabStripOverflowing}
+            <div class="tab-scroll-indicator" aria-hidden="true">
+              <div
+                class="tab-scroll-thumb"
+                style={`width: ${tabScrollThumbWidth}px; transform: translateX(${tabScrollThumbLeft}px);`}
+              ></div>
+            </div>
+          {/if}
+          {#if isTabDockDropTarget}
+            <div
+              class="tab-drop-indicator"
+              style={`transform: translateX(${tabDropIndicatorLeft}px);`}
+            ></div>
+          {/if}
+        </div>
+        <div class="tab-strip-actions">
+          <button
+            type="button"
+            class="tab-add-btn"
+            aria-label={t('window.newTab')}
+            title={t('window.newTab')}
+            onclick={handleAddTab}
+          >
+            <Plus size={16} aria-hidden="true" />
+          </button>
+          <div class="tab-overflow-menu-container">
+            <button
+              type="button"
+              class="tab-overflow-btn"
+              class:active={isTabOverflowMenuOpen}
+              class:unavailable={!isTabStripOverflowing}
+              aria-label={t('window.openTabs')}
+              title={t('window.openTabs')}
+              aria-haspopup="menu"
+              aria-expanded={isTabStripOverflowing && isTabOverflowMenuOpen}
+              aria-hidden={!isTabStripOverflowing}
+              tabindex={isTabStripOverflowing ? 0 : -1}
+              disabled={!isTabStripOverflowing}
+              onclick={toggleTabOverflowMenu}
+            >
+              <ChevronDown size={16} aria-hidden="true" />
+            </button>
+            {#if isTabStripOverflowing && isTabOverflowMenuOpen}
+              <div class="tab-overflow-menu" role="menu" aria-label={t('window.openTabs')}>
+                {#each hiddenTabs as tab (tab.id)}
+                  <button
+                    type="button"
+                    class="tab-overflow-item"
+                    class:active={tab.id === activeTabId}
+                    role="menuitemradio"
+                    aria-checked={tab.id === activeTabId}
+                    title={tab.filePath || getDisplayFileName(tab)}
+                    onclick={() => selectTabFromOverflowMenu(tab.id)}
+                  >
+                    {#if tab.isDirty}
+                      <span class="tab-dirty-dot" aria-hidden="true"></span>
+                    {/if}
+                    <span class="tab-overflow-title">{getDisplayFileName(tab)}</span>
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        </div>
         <div
           class="titlebar-drag-region"
           aria-hidden="true"
@@ -5318,6 +6663,23 @@
         </button>
       </div>
     </div>
+
+    {#if tabDragPreview}
+      <div
+        class="tab-drag-preview"
+        data-tab-drag-preview
+        aria-hidden="true"
+        style={`width: ${tabDragPreview.previewWidth}px; transform: translate3d(${tabDragPreview.left}px, ${tabDragPreview.top}px, 0);`}
+      >
+        <div class="tab-drag-preview-content">
+          {#if tabDragPreview.previewIsDirty}
+            <span class="tab-dirty-dot"></span>
+          {/if}
+          <span class="tab-title">{tabDragPreview.previewTitle}</span>
+        </div>
+        <span class="tab-drag-preview-close"><X size={14} aria-hidden="true" /></span>
+      </div>
+    {/if}
 
     <!-- 메뉴바 영역 -->
     <nav class="menu-bar">
@@ -5507,7 +6869,7 @@
       class="editor-area"
       class:render-mode={isRenderMode && isEnhancedDocumentWithinBudget}
       class:render-selection-active={isRenderMode && isEnhancedDocumentWithinBudget && hasEditorSelection}
-      class:render-custom-selection={isRenderMode && supportsRenderedSelectionHighlight && shouldRenderHighlightLayer}
+      class:render-custom-selection={isRenderMode && supportsRenderedSelectionHighlight && shouldRenderHighlightLayer && hasRenderedSelectionHighlight}
       class:render-wrap-settling={isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling}
       class:render-native-text-visible={shouldShowNativeRenderText}
     >
@@ -5559,8 +6921,55 @@
                 {#each Array(endLine - startLine + 1) as _, idx}
                   {@const lineIdx = startLine + idx}
                   {@const line = parsedLines[idx]}
+                  {@const listLayout = renderListLineLayouts[idx] ?? null}
+                  {@const indentGuideCount = listLayout ? getRenderListIndentGuideCount(listLayout, tabSize) : line?.indentLevel ?? 0}
+                  {@const listTokenParts = listLayout ? getListRenderTokenParts(line?.tokens ?? [], listLayout.prefixLength) : null}
                   {#if line}
-                    <div use:observeRenderedLine class="backdrop-line" data-line-index={lineIdx} class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1} class:fenced-code-line={line.fencedCodePosition !== undefined} class:fenced-code-start={line.fencedCodePosition === 'start'} class:fenced-code-middle={line.fencedCodePosition === 'middle'} class:fenced-code-end={line.fencedCodePosition === 'end'} class:markdown-heading-line={line.headingLevel !== undefined} class:markdown-heading-divider={line.headingLevel !== undefined && line.headingLevel <= 2 && markdownRenderSettings.showHeadingDividers} class:styled-text-geometry={line.headingLevel !== undefined} style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize}; {getMarkdownHeadingLineStyle(line.headingLevel)}">{#each Array(line.indentLevel) as _, i}<span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>{/each}<span class="line-content">{#each line.tokens as token}{@render renderToken(token)}{/each}</span></div>
+                    <div
+                      use:observeRenderedLine
+                      class="backdrop-line"
+                      data-line-index={lineIdx}
+                      class:list-item-line={listLayout !== null}
+                      class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1}
+                      class:configuration-rule-line={line.lineKind === 'rule'}
+                      class:configuration-negated-rule-line={line.lineKind === 'negated-rule'}
+                      class:configuration-section-line={line.lineKind === 'section'}
+                      class:translation-source-line={line.lineKind === 'translation-source'}
+                      class:translation-target-line={line.lineKind === 'translation-target'}
+                      class:translation-empty-line={line.lineKind === 'translation-empty'}
+                      class:subject-line={line.lineKind === 'subject'}
+                      class:fenced-code-line={line.fencedCodePosition !== undefined}
+                      class:fenced-code-start={line.fencedCodePosition === 'start'}
+                      class:fenced-code-middle={line.fencedCodePosition === 'middle'}
+                      class:fenced-code-end={line.fencedCodePosition === 'end'}
+                      class:markdown-heading-line={line.headingLevel !== undefined}
+                      class:markdown-heading-divider={line.headingLevel !== undefined && line.headingLevel <= 2 && markdownRenderSettings.showHeadingDividers}
+                      class:styled-text-geometry={line.headingLevel !== undefined}
+                      style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize}; {getMarkdownHeadingLineStyle(line.headingLevel)} {listLayout ? getRenderListLineStyle(listLayout) : ''}"
+                    >
+                      {#each Array(indentGuideCount) as _, i}
+                        <span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>
+                      {/each}
+                      {#if listLayout && listTokenParts}
+                        <span class="line-content list-item-content" data-list-body-start={listLayout.prefixLength}>
+                          <span class="list-item-prefix">
+                            {#each listTokenParts.prefixTokens as token}
+                              {@render renderToken(token)}
+                            {/each}
+                          </span><span class="list-item-body">
+                            {#each listTokenParts.bodyTokens as token}
+                              {@render renderToken(token)}
+                            {/each}
+                          </span>
+                        </span>
+                      {:else}
+                        <span class="line-content">
+                          {#each line.tokens as token}
+                            {@render renderToken(token)}
+                          {/each}
+                        </span>
+                      {/if}
+                    </div>
                   {/if}
                 {/each}
               </div>
@@ -5595,7 +7004,7 @@
             {#key steadyEditorCaretBlinkKey}
               <div
                 class="steady-editor-caret"
-                style="left: {steadyEditorCaretLeft}px; top: {steadyEditorCaretTop}px; height: {measuredLineHeight}px; background-color: {isRenderMode ? editorCaretColor : 'var(--text-color)'};"
+                style="left: {steadyEditorCaretLeft}px; top: {steadyEditorCaretTop}px; height: {steadyEditorCaretHeight}px; background-color: {isRenderMode ? editorCaretColor : 'var(--text-color)'};"
                 aria-hidden="true"
               ></div>
             {/key}
@@ -5647,8 +7056,8 @@
         {/if}
         <span class="status-item">{t('status.lineColumn', { line: cursorLine, column: cursorCol })}</span>
         <span class="status-item">100%</span>
-        <span class="status-item">Windows (CRLF)</span>
-        <span class="status-item">UTF-8</span>
+        <span class="status-item">{getLineEndingLabel(fileContent)}</span>
+        <span class="status-item">{getTextEncodingLabel(fileEncoding)}</span>
       </div>
     </footer>
 
@@ -5795,6 +7204,36 @@
   }
   :global(.hl-key) {
     color: var(--color-hl-key-medium);
+  }
+  :global(.hl-pattern) {
+    color: var(--color-hl-key-strong);
+  }
+  :global(.hl-attribute) {
+    color: var(--color-hl-key-medium);
+    font-weight: 600;
+  }
+  :global(.hl-owner) {
+    color: var(--color-hl-string);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+    text-underline-offset: 0.12em;
+  }
+  :global(.hl-tag) {
+    color: var(--color-hl-key-strong);
+    font-weight: 650;
+  }
+  :global(.hl-directive) {
+    color: var(--color-hl-key-medium);
+    font-weight: 600;
+  }
+  :global(.hl-hash) {
+    color: var(--color-hl-string);
+    font-variant-numeric: tabular-nums;
+  }
+  :global(.hl-host) {
+    color: var(--color-hl-key-medium);
+    text-decoration: underline dotted color-mix(in srgb, currentColor 40%, transparent);
+    text-underline-offset: 0.14em;
   }
   :global(.hl-key-depth-0) {
     color: var(--color-hl-key-strong);
@@ -5980,7 +7419,7 @@
     box-sizing: border-box;
     user-select: none;
     min-width: 0;
-    overflow: hidden;
+    overflow: visible;
   }
 
   .titlebar-app-icon {
@@ -6015,24 +7454,38 @@
     z-index: 0;
   }
 
-  .tab-list {
+  .tab-list-shell {
     position: relative;
     z-index: 1;
+    flex: 0 1 var(--tab-list-preferred-width);
+    width: var(--tab-list-preferred-width);
+    min-width: 0;
+    height: 32px;
+  }
+
+  .tab-list {
+    position: relative;
     display: flex;
     align-items: flex-end;
     gap: 2px;
-    flex: 0 1 auto;
-    min-width: 0;
+    width: 100%;
+    height: 32px;
     overflow-x: auto;
     overflow-y: hidden;
-    scrollbar-width: thin;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+  }
+
+  .tab-list::-webkit-scrollbar {
+    width: 0;
+    height: 0;
   }
 
   .tab-item {
     display: flex;
     align-items: center;
-    flex: 0 1 252px;
-    min-width: 150px;
+    flex: 0 1 var(--preferred-tab-width);
+    min-width: var(--minimum-tab-width);
     max-width: 272px;
     height: 32px;
     color: var(--text-color);
@@ -6053,6 +7506,55 @@
     border-color: var(--tab-border-color);
   }
 
+  .tab-item.dragging {
+    opacity: 0.55;
+  }
+
+  .tab-item.dragging .tab-select {
+    cursor: grabbing;
+  }
+
+  .tab-drag-preview {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    height: 32px;
+    color: var(--text-color);
+    background-color: var(--bg-tab-active);
+    border: 1px solid var(--tab-border-color);
+    border-radius: 7px;
+    box-sizing: border-box;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.14);
+    opacity: 0.96;
+    overflow: hidden;
+    pointer-events: none;
+    will-change: transform;
+  }
+
+  .tab-drag-preview-content {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0 8px 0 12px;
+    font-family: var(--font-ui);
+    font-size: 0.78rem;
+  }
+
+  .tab-drag-preview-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+  }
+
   .tab-select {
     flex: 1;
     min-width: 0;
@@ -6067,13 +7569,16 @@
     font-family: var(--font-ui);
     font-size: 0.78rem;
     text-align: left;
-    cursor: pointer;
+    cursor: grab;
     outline: none;
+    touch-action: none;
   }
 
   .tab-select:focus-visible,
   .tab-close-btn:focus-visible,
-  .tab-add-btn:focus-visible {
+  .tab-add-btn:focus-visible,
+  .tab-overflow-btn:focus-visible,
+  .tab-overflow-item:focus-visible {
     outline: 2px solid var(--accent-color);
     outline-offset: -2px;
   }
@@ -6093,7 +7598,8 @@
   }
 
   .tab-close-btn,
-  .tab-add-btn {
+  .tab-add-btn,
+  .tab-overflow-btn {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -6114,15 +7620,121 @@
   }
 
   .tab-close-btn:hover,
-  .tab-add-btn:hover {
+  .tab-add-btn:hover,
+  .tab-overflow-btn:hover,
+  .tab-overflow-btn.active {
     background-color: var(--bg-tab-button-hover);
   }
 
   .tab-add-btn {
-    position: relative;
-    z-index: 1;
     margin-bottom: 3px;
   }
+
+  .tab-strip-actions {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
+  .tab-overflow-menu-container {
+    position: relative;
+    width: 28px;
+    height: 28px;
+    margin-bottom: 3px;
+  }
+
+  .tab-overflow-btn {
+    height: 28px;
+  }
+
+  .tab-overflow-btn.unavailable {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .tab-overflow-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    min-width: 210px;
+    max-width: 300px;
+    max-height: 260px;
+    padding: 4px;
+    overflow-y: auto;
+    background-color: var(--bg-dropdown);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: var(--shadow-menu);
+    box-sizing: border-box;
+    z-index: 120;
+  }
+
+  .tab-overflow-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 30px;
+    padding: 5px 9px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 0.78rem;
+    text-align: left;
+    cursor: pointer;
+    outline: none;
+  }
+
+  .tab-overflow-item:hover,
+  .tab-overflow-item.active {
+    background-color: var(--bg-menu-hover);
+  }
+
+  .tab-overflow-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tab-scroll-indicator {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 3;
+    height: 2px;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .tab-scroll-thumb {
+    height: 2px;
+    border-radius: 999px;
+    background-color: var(--text-muted);
+    opacity: 0.55;
+    will-change: transform;
+  }
+  .tab-drop-indicator {
+    position: absolute;
+    top: 4px;
+    bottom: 3px;
+    left: 0;
+    z-index: 4;
+    width: 2px;
+    border-radius: 999px;
+    background-color: var(--accent-color);
+    box-shadow: 0 0 0 1px var(--bg-color);
+    pointer-events: none;
+  }
+
 
   .window-control-group {
     display: flex;
@@ -6442,6 +8054,36 @@
     box-shadow: inset 0 -1px color-mix(in srgb, var(--color-render-text, var(--text-color)) 18%, transparent);
   }
 
+  .backdrop-line.configuration-section-line {
+    background-color: color-mix(in srgb, var(--color-hl-key-medium) 7%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--color-hl-key-medium) 45%, transparent);
+  }
+
+  .backdrop-line.configuration-negated-rule-line {
+    background-color: color-mix(in srgb, #d97706 5%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, #d97706 48%, transparent);
+  }
+
+  .backdrop-line.translation-source-line {
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--color-hl-key-medium) 38%, transparent);
+  }
+
+  .backdrop-line.translation-target-line {
+    background-color: color-mix(in srgb, #16a34a 4%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, #16a34a 42%, transparent);
+  }
+
+  .backdrop-line.translation-empty-line {
+    background-color: color-mix(in srgb, #d97706 7%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, #d97706 55%, transparent);
+  }
+
+  .backdrop-line.subject-line {
+    background-color: color-mix(in srgb, var(--color-hl-key-strong) 6%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--color-hl-key-strong) 48%, transparent);
+    font-weight: 650;
+  }
+
   .backdrop-line.fenced-code-line {
     isolation: isolate;
   }
@@ -6504,6 +8146,32 @@
   .line-content {
     display: inline;
     color: var(--color-render-text, var(--text-color));
+  }
+
+  .backdrop-line.list-item-line {
+    white-space: normal;
+  }
+
+  .list-item-content {
+    display: grid;
+    grid-template-columns: var(--list-prefix-width) minmax(0, 1fr);
+    align-items: start;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .list-item-prefix {
+    grid-column: 1;
+    white-space: pre;
+  }
+
+  .list-item-body {
+    grid-column: 2;
+    min-width: 0;
+    min-height: 1lh;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: keep-all;
   }
 
   .editor-textarea {
@@ -6770,6 +8438,134 @@
     font-size: 0.78rem;
   }
 
+  .auto-pair-following-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    margin: -0.1rem 0 0.15rem 26px;
+    padding: 0.65rem 0.75rem;
+    border-left: 2px solid var(--border-color);
+    background: var(--bg-window);
+  }
+
+  .auto-pair-following-settings.disabled {
+    opacity: 0.55;
+  }
+
+  .auto-pair-following-heading {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .auto-pair-following-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .auto-pair-following-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    max-width: 100%;
+    min-height: 24px;
+    padding: 0.1rem 0.2rem 0.1rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: var(--bg-editor);
+    color: var(--text-color);
+    font-size: 0.76rem;
+  }
+
+  .auto-pair-following-chip.fixed {
+    gap: 0.4rem;
+    padding-right: 0.5rem;
+  }
+
+  .auto-pair-following-chip code {
+    overflow-wrap: anywhere;
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 0.76rem;
+  }
+
+  .auto-pair-following-fixed-label {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+  }
+
+  .auto-pair-following-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .auto-pair-following-remove:hover:not(:disabled) {
+    background: var(--bg-menu-hover);
+    color: var(--text-color);
+  }
+
+  .auto-pair-following-add-row {
+    display: flex;
+    gap: 0.4rem;
+    max-width: 360px;
+  }
+
+  .auto-pair-following-input {
+    flex: 1;
+    min-width: 0;
+    height: 28px;
+    box-sizing: border-box;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    outline: none;
+    background: var(--bg-editor);
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 0.78rem;
+  }
+
+  .auto-pair-following-input:focus {
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 1px var(--accent-color);
+  }
+
+  .auto-pair-following-add {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    min-width: 62px;
+    height: 28px;
+    padding: 0 0.55rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-editor);
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 0.76rem;
+    cursor: pointer;
+  }
+
+  .auto-pair-following-add:hover:not(:disabled) {
+    background: var(--bg-menu-hover);
+  }
+
+  .auto-pair-following-add:disabled,
+  .auto-pair-following-remove:disabled,
+  .auto-pair-following-input:disabled {
+    cursor: not-allowed;
+  }
+
   .settings-duration-row {
     display: grid;
     grid-template-columns: 64px minmax(120px, 240px) 52px;
@@ -6876,6 +8672,69 @@
     font-size: 0.8rem;
     line-height: 1.45;
   }
+
+  .settings-transfer-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .settings-transfer-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    min-height: 30px;
+    padding: 0.35rem 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-window);
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+
+  .settings-transfer-button:hover:not(:disabled) {
+    background: var(--bg-menu-hover);
+  }
+
+  .settings-transfer-button:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 2px;
+  }
+
+  .settings-transfer-button:disabled {
+    cursor: wait;
+    opacity: 0.55;
+  }
+
+  .settings-transfer-status {
+    margin: 0;
+    color: #16753c;
+    font-size: 0.78rem;
+    line-height: 1.4;
+  }
+
+  .settings-transfer-status.warning {
+    color: #946200;
+  }
+
+  .settings-transfer-status.error {
+    color: var(--error-text, #b91c1c);
+  }
+  :global(.theme-dark) .settings-transfer-status {
+    color: #86efac;
+  }
+
+  :global(.theme-dark) .settings-transfer-status.warning {
+    color: #fde68a;
+  }
+
+  :global(.theme-dark) .settings-transfer-status.error {
+    color: #fca5a5;
+  }
+
 
   .color-picker-wrapper {
     display: flex;

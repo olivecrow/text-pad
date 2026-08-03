@@ -5,13 +5,62 @@ const root = process.cwd();
 const manifestPath = path.join(root, 'supported-text-formats.json');
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 
-if (manifest.version !== 1 || !Array.isArray(manifest.formats) || manifest.formats.length === 0) {
-  throw new Error('supported-text-formats.json must contain a non-empty version 1 formats array.');
+if (manifest.version !== 2 || !Array.isArray(manifest.formats) || manifest.formats.length === 0) {
+  throw new Error('supported-text-formats.json must contain a non-empty version 2 formats array.');
 }
 
 const ids = new Set();
 const extensions = [];
 const extensionOwners = new Map();
+
+function globPatternToRegExp(pattern) {
+  let source = '^';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index] || '';
+    const next = pattern[index + 1] || '';
+    if (char === '*' && next === '*') {
+      if (pattern[index + 2] === '/') {
+        source += '(?:.*/)?';
+        index += 2;
+      } else {
+        source += '.*';
+        index += 1;
+      }
+    } else if (char === '*') {
+      source += '[^/]*';
+    } else if (char === '?') {
+      source += '[^/]';
+    } else {
+      source += char.replace(/[\\^$.*+?()[\]{}|]/gu, '\\$&');
+    }
+  }
+  return new RegExp(`${source}$`, 'u');
+}
+
+function validateOptionalStringArray(format, property, { allowSlash }) {
+  const values = format[property];
+  if (values === undefined) return [];
+  if (!Array.isArray(values)) throw new Error(`${format.id}.${property} must be an array.`);
+  for (const value of values) {
+    if (typeof value !== 'string' || value.length === 0 || value.length > 256 || /[\u0000-\u001f]/u.test(value)) {
+      throw new Error(`Invalid ${property} value for ${format.id}: ${String(value)}`);
+    }
+    if (!allowSlash && /[/\\]/u.test(value)) {
+      throw new Error(`${format.id}.${property} values must be file names, not paths: ${value}`);
+    }
+  }
+  return values;
+}
+
+function matchesFormatPath(filePath, format) {
+  const normalizedPath = filePath.replaceAll('\\', '/');
+  const fileName = normalizedPath.split('/').pop() || normalizedPath;
+  if ((format.fileNames || []).includes(fileName)) return true;
+  if ((format.fileNamePatterns || []).some((pattern) => globPatternToRegExp(pattern).test(fileName))) return true;
+  if ((format.pathPatterns || []).some((pattern) => globPatternToRegExp(pattern).test(normalizedPath))) return true;
+  const extension = fileName.toLowerCase().match(/\.([^.]+)$/u)?.[1] || '';
+  return format.extensions.includes(extension);
+}
 
 for (const format of manifest.formats) {
   if (!format || typeof format.id !== 'string' || !/^[a-z][a-z0-9]*$/.test(format.id)) {
@@ -20,8 +69,8 @@ for (const format of manifest.formats) {
   if (ids.has(format.id)) throw new Error(`Duplicate format id: ${format.id}`);
   ids.add(format.id);
 
-  if (!Array.isArray(format.extensions) || format.extensions.length === 0) {
-    throw new Error(`Format ${format.id} must define at least one extension.`);
+  if (!Array.isArray(format.extensions)) {
+    throw new Error(`Format ${format.id} must define an extensions array.`);
   }
   for (const extension of format.extensions) {
     if (typeof extension !== 'string' || !/^[a-z0-9][a-z0-9-]{0,15}$/.test(extension)) {
@@ -34,6 +83,13 @@ for (const format of manifest.formats) {
     extensions.push(extension);
   }
 
+  const fileNames = validateOptionalStringArray(format, 'fileNames', { allowSlash: false });
+  const fileNamePatterns = validateOptionalStringArray(format, 'fileNamePatterns', { allowSlash: false });
+  const pathPatterns = validateOptionalStringArray(format, 'pathPatterns', { allowSlash: true });
+  if (format.extensions.length + fileNames.length + fileNamePatterns.length + pathPatterns.length === 0) {
+    throw new Error(`Format ${format.id} must define at least one extension, file name, or path pattern.`);
+  }
+
   if (typeof format.sample !== 'string' || !format.sample.startsWith('samples/')) {
     throw new Error(`Format ${format.id} must point to a file under samples/.`);
   }
@@ -44,9 +100,8 @@ for (const format of manifest.formats) {
   if (fs.statSync(samplePath).size === 0) {
     throw new Error(`Sample for ${format.id} is empty: ${format.sample}`);
   }
-  const sampleExtension = path.extname(samplePath).slice(1).toLowerCase();
-  if (!format.extensions.includes(sampleExtension)) {
-    throw new Error(`Sample extension .${sampleExtension} is not registered for ${format.id}.`);
+  if (!matchesFormatPath(format.sample, format)) {
+    throw new Error(`Sample path ${format.sample} is not registered for ${format.id}.`);
   }
 }
 

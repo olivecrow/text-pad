@@ -9,6 +9,15 @@ export interface ParsedLine {
   tokens: Token[];
   fencedCodePosition?: FencedCodeLinePosition;
   headingLevel?: MarkdownHeadingLevel;
+  lineKind?:
+    | 'rule'
+    | 'negated-rule'
+    | 'section'
+    | 'markup'
+    | 'translation-source'
+    | 'translation-target'
+    | 'translation-empty'
+    | 'subject';
 }
 
 export interface DocumentLineRange {
@@ -98,6 +107,28 @@ export function shouldKeepFlatToken(token: FlatToken, range?: { start: number; e
   return !range || (token.end > range.start && token.start < range.end);
 }
 
+export function getFlatTokensInRange(
+  tokens: FlatToken[],
+  range: { start: number; end: number }
+): FlatToken[] {
+  let low = 0;
+  let high = tokens.length;
+
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((tokens[middle]?.end ?? Number.POSITIVE_INFINITY) <= range.start) low = middle + 1;
+    else high = middle;
+  }
+
+  const visibleTokens: FlatToken[] = [];
+  for (let index = low; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!token || token.start >= range.end) break;
+    if (token.end > range.start) visibleTokens.push(token);
+  }
+  return visibleTokens;
+}
+
 export function inferIndentUnit(content: string, lineStartOffsets: number[], tabSize: number): number {
   let minPositiveIndent = Number.POSITIVE_INFINITY;
 
@@ -158,7 +189,7 @@ export function splitFlatTokensIntoLines(
 ): ParsedLine[] {
   const lineRangeOffsets = getLineRangeOffsets(content, lineStartOffsets, lineRange);
   const lines: ParsedLine[] = [];
-  const indentUnit = inferIndentUnit(content, lineStartOffsets, tabSize);
+  const indentUnit = resolveDepth ? inferIndentUnit(content, lineStartOffsets, tabSize) : tabSize;
 
   for (let lineIndex = lineRange.startLine; lineIndex <= lineRange.endLine; lineIndex++) {
     const lineText = getLineText(content, lineStartOffsets, lineIndex);

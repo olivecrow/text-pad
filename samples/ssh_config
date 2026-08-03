@@ -1,0 +1,9 @@
+# OpenSSH client configuration
+Host work-*
+  HostName gateway.example.com
+  User editor
+  Port 22
+  IdentityFile "~/.ssh/work key"
+
+Match host *.internal user editor
+  ServerAliveInterval 30

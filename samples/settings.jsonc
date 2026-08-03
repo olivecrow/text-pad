@@ -1,0 +1,9 @@
+{
+  // Keep editor behavior consistent across the workspace.
+  "editor.formatOnSave": true,
+  "workbench.colorTheme": "System Default",
+  "files.exclude": {
+    "**/.cache": true,
+    "**/*.tmp": false,
+  },
+}

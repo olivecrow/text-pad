@@ -1,12 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Capability for the main window",
+  "description": "Capability for editor windows",
   "windows": [
-    "main"
+    "main",
+    "editor-*"
   ],
   "permissions": [
     "core:default",
+    "core:event:default",
     "opener:allow-open-url",
     "opener:allow-default-urls",
     "dialog:allow-message",
@@ -17,6 +19,7 @@
     "allow-open-file-paths",
     "allow-save-file-dialog",
     "allow-write-file-content",
+    "allow-setup-editor-window-wheel",
     "core:window:default",
     "core:window:allow-set-size",
     "core:window:allow-set-position",
