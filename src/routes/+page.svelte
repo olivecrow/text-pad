@@ -109,6 +109,7 @@
     createFencedCodeBlockCache,
     getEditorLineLayout,
     getFencedCodeBlockRanges,
+    getRenderListIndentGuideCount,
     type FencedCodeBlockRange,
     type RenderedLineHeightMeasurements,
     type RenderListLineLayout
@@ -443,6 +444,7 @@
   let steadyEditorCaretCollapsed = $state<boolean>(true);
   let steadyEditorCaretLeft = $state<number>(12);
   let steadyEditorCaretTop = $state<number>(8);
+  let steadyEditorCaretHeight = $state<number>(22);
   let steadyEditorCaretTimer: ReturnType<typeof setTimeout> | null = null;
   let steadyEditorCaretBlinkKey = $state<number>(0);
   let isEditorFocused = $state<boolean>(false);
@@ -2790,6 +2792,7 @@
       const viewportRect = editorViewportEl.getBoundingClientRect();
       steadyEditorCaretLeft = caretRect.left - viewportRect.left;
       steadyEditorCaretTop = caretRect.top - viewportRect.top;
+      steadyEditorCaretHeight = Math.max(1, caretRect.height);
       return;
     }
 
@@ -2798,6 +2801,7 @@
     const linePrefix = fileContent.slice(lineStart, start);
     steadyEditorCaretLeft = 12 + measureEditorTextWidth(linePrefix) - scrollLeft;
     steadyEditorCaretTop = 8 + lineIndex * measuredLineHeight - scrollTop;
+    steadyEditorCaretHeight = measuredLineHeight;
   }
 
   function restartSteadyEditorCaretBlink() {
@@ -5222,7 +5226,6 @@
 
 
   function getRenderedCaretRectAtBoundary(
-    lineElement: HTMLElement,
     boundary: RenderedTextBoundary
   ): DOMRect | null {
     const range = document.createRange();
@@ -5247,13 +5250,11 @@
 
     if (!rect) return null;
 
-    const lineRect = lineElement.getBoundingClientRect();
-    const rowIndex = Math.max(0, Math.round((rect.top - lineRect.top) / measuredLineHeight));
     return new DOMRect(
       rect.left,
-      lineRect.top + rowIndex * measuredLineHeight,
+      rect.top,
       1,
-      measuredLineHeight
+      rect.height
     );
   }
 
@@ -5270,15 +5271,16 @@
     const targetOffset = clamp(offsetInLine, 0, lineText.length);
     const listBody = lineContent.querySelector<HTMLElement>('.list-item-body');
     const listBodyStart = Number(lineContent.dataset.listBodyStart);
-    if (
-      listBody
-      && Number.isFinite(listBodyStart)
-      && targetOffset === listBodyStart
-      && lineText.length === listBodyStart
-    ) {
-      const bodyRect = listBody.getBoundingClientRect();
-      const lineRect = lineElement.getBoundingClientRect();
-      return new DOMRect(bodyRect.left, lineRect.top, 1, measuredLineHeight);
+    if (listBody && Number.isFinite(listBodyStart)) {
+      const bodyLength = Math.max(0, lineText.length - listBodyStart);
+      const bodyOffset = clamp(targetOffset - listBodyStart, 0, bodyLength);
+      if (bodyLength === 0) {
+        const bodyRect = listBody.getBoundingClientRect();
+        return new DOMRect(bodyRect.left, bodyRect.top, 1, bodyRect.height);
+      }
+
+      const boundary = getTextNodeBoundary(listBody, bodyOffset, true);
+      return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
     }
     if (lineText.length === 0) {
       const lineRect = lineElement.getBoundingClientRect();
@@ -5294,7 +5296,7 @@
     }
 
     const boundary = getTextNodeBoundary(lineContent, targetOffset, true);
-    return boundary ? getRenderedCaretRectAtBoundary(lineElement, boundary) : null;
+    return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
   }
 
   function getRenderedLineTextOffsetAtPoint(
@@ -5306,31 +5308,36 @@
     if (lineText.length === 0) return 0;
     const lineContent = lineElement.querySelector<HTMLElement>('.line-content');
     if (!lineContent) return 0;
+    const listBody = lineContent.querySelector<HTMLElement>('.list-item-body');
     const listBodyStart = Number(lineContent.dataset.listBodyStart);
-    const clampToListBody = (offset: number) => Number.isFinite(listBodyStart)
-      ? Math.max(listBodyStart, offset)
-      : offset;
+    const pointRoot = listBody && Number.isFinite(listBodyStart) ? listBody : lineContent;
+    const pointMaximum = listBody && Number.isFinite(listBodyStart)
+      ? Math.max(0, lineText.length - listBodyStart)
+      : lineText.length;
+    const pointOffsetBase = listBody && Number.isFinite(listBodyStart) ? listBodyStart : 0;
+
+    if (pointMaximum === 0) return pointOffsetBase;
 
 
     const nativeOffset = getNativeCaretTextOffsetAtPoint(
-      lineContent,
-      lineText.length,
+      pointRoot,
+      pointMaximum,
       clientX,
       clientY
     );
-    if (nativeOffset !== null) return clampToListBody(nativeOffset);
+    if (nativeOffset !== null) return pointOffsetBase + nativeOffset;
 
-    const boundaries = createRenderedTextBoundaryIndex(lineContent, lineText.length);
-    return clampToListBody(findClosestRenderedTextOffset(
-      lineText.length,
+    const boundaries = createRenderedTextBoundaryIndex(pointRoot, pointMaximum);
+    return pointOffsetBase + findClosestRenderedTextOffset(
+      pointMaximum,
       clientX,
       clientY,
       Math.max(editorViewportWidth, 1),
       (offset) => {
         const boundary = boundaries.getBoundary(offset);
-        return boundary ? getRenderedCaretRectAtBoundary(lineElement, boundary) : null;
+        return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
       }
-    ));
+    );
   }
 
   function getRenderedCaretRectForOffset(offset: number): DOMRect | null {
@@ -6889,6 +6896,7 @@
                   {@const lineIdx = startLine + idx}
                   {@const line = parsedLines[idx]}
                   {@const listLayout = renderListLineLayouts[idx] ?? null}
+                  {@const indentGuideCount = listLayout ? getRenderListIndentGuideCount(listLayout, tabSize) : line?.indentLevel ?? 0}
                   {@const listTokenParts = listLayout ? getListRenderTokenParts(line?.tokens ?? [], listLayout.prefixLength) : null}
                   {#if line}
                     <div
@@ -6913,7 +6921,7 @@
                       class:styled-text-geometry={line.headingLevel !== undefined}
                       style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize}; {getMarkdownHeadingLineStyle(line.headingLevel)} {listLayout ? getRenderListLineStyle(listLayout) : ''}"
                     >
-                      {#each Array(line.indentLevel) as _, i}
+                      {#each Array(indentGuideCount) as _, i}
                         <span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>
                       {/each}
                       {#if listLayout && listTokenParts}
@@ -6922,8 +6930,7 @@
                             {#each listTokenParts.prefixTokens as token}
                               {@render renderToken(token)}
                             {/each}
-                          </span>
-                          <span class="list-item-body">
+                          </span><span class="list-item-body">
                             {#each listTokenParts.bodyTokens as token}
                               {@render renderToken(token)}
                             {/each}
@@ -6971,7 +6978,7 @@
             {#key steadyEditorCaretBlinkKey}
               <div
                 class="steady-editor-caret"
-                style="left: {steadyEditorCaretLeft}px; top: {steadyEditorCaretTop}px; height: {measuredLineHeight}px; background-color: {isRenderMode ? editorCaretColor : 'var(--text-color)'};"
+                style="left: {steadyEditorCaretLeft}px; top: {steadyEditorCaretTop}px; height: {steadyEditorCaretHeight}px; background-color: {isRenderMode ? editorCaretColor : 'var(--text-color)'};"
                 aria-hidden="true"
               ></div>
             {/key}

@@ -349,12 +349,25 @@ try {
   });
   assert.equal(wrappedAfterSource.visitedLineCount, modeIndex.lineStartOffsets.length);
   assert.equal(wrappedAfterSource.listLayouts.length, modeIndex.lineStartOffsets.length);
+  assert.ok(wrappedAfterSource.listLayouts[1]);
+  assert.equal(editorLayout.getRenderListIndentGuideCount(wrappedAfterSource.listLayouts[1], 4), 0);
   const sourceAfterWrapped = editorLayout.getEditorLineLayout(modeCache, {
     ...modeOptions,
     wrapEnabled: false
   });
   assert.equal(sourceAfterWrapped.visitedLineCount, 0);
   assert.equal(sourceAfterWrapped.listLayouts.length, 0);
+
+  const nestedModeContent = '    1. item\n       continuation';
+  const nestedModeIndex = offsets.createTextOffsetIndex(nestedModeContent);
+  const nestedModeLayout = editorLayout.getEditorLineLayout(editorLayout.createEditorLineLayoutCache(), {
+    ...modeOptions,
+    content: nestedModeContent,
+    lineStartOffsets: nestedModeIndex.lineStartOffsets,
+    wrapEnabled: true
+  });
+  assert.ok(nestedModeLayout.listLayouts[1]);
+  assert.equal(editorLayout.getRenderListIndentGuideCount(nestedModeLayout.listLayouts[1], 4), 1);
 
 
   const wrappedLineCount = 12_000;

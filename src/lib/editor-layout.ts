@@ -3,7 +3,7 @@ import {
   getListMarkerBodyStart,
   type ListMarker
 } from './list-markers';
-import { findLineIndexForOffset, getLineText } from './structured-rendering';
+import { findLineIndexForOffset, getIndentInfo, getLineText } from './structured-rendering';
 import { isTextChangeTransition, type TextChange } from './text-change';
 
 export interface FencedCodeBlockRange {
@@ -23,6 +23,13 @@ export interface RenderListLineLayout {
   marker: ListMarker;
   ownerLineIndex: number;
   prefixLength: number;
+}
+
+export function getRenderListIndentGuideCount(
+  layout: RenderListLineLayout,
+  tabSize: number
+): number {
+  return getIndentInfo(layout.marker.indent, tabSize).indentLevel;
 }
 
 export interface RenderedLineHeightMeasurements {
