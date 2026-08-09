@@ -47,6 +47,8 @@ graph TD
 
 - 현재 제품 지원 형식인 일반 텍스트, Markdown, JSON/JSONC, JSON Lines, XML, Gettext PO/POT, CSV/TSV, YAML, TOML, INI 계열, ENV, Git·EditorConfig·npm·Docker 설정, REG, OpenSSH, systemd, hosts, 로그, 자막·가사 파일 열기와 저장.
 - 메인 창에 드롭한 텍스트 파일을 각각 새 탭으로 열기.
+- Explorer나 기본 앱 연결에서 파일을 다시 열 때 기존 앱의 새 탭으로 전달하는 단일 프로세스 실행.
+- 탭을 새 편집기 창으로 분리하고 편집기 창 사이에서 드래그해 다시 도킹하기.
 - 원문 모드 편집.
 - 렌더 모드 구문 강조, 들여쓰기 가이드, 줄 번호, 가상화된 화면 렌더링.
 - Markdown 제목 1~6단계의 크기·굵기 설정, 제목 표식 숨김, 링크·강조·인용·코드 구분.

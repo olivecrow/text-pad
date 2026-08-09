@@ -20,6 +20,7 @@
     "allow-save-file-dialog",
     "allow-write-file-content",
     "allow-setup-editor-window-wheel",
+    "allow-take-pending-open-files",
     "core:window:default",
     "core:window:allow-set-size",
     "core:window:allow-set-position",

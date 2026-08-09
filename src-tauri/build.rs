@@ -7,6 +7,7 @@ fn main() {
         "save_file_dialog",
         "write_file_content",
         "setup_editor_window_wheel",
+        "take_pending_open_files",
     ]);
     let attributes = tauri_build::Attributes::new().app_manifest(app_manifest);
 
