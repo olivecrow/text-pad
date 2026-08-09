@@ -17,6 +17,8 @@
 - [x] 메모장형 메뉴와 상태 표시줄.
 - [x] 파일별 탭 열기, 새 탭 추가, 탭별 닫기.
 - [x] 메인 창에 드롭한 실제 파일을 각각 새 탭으로 열기.
+- [x] 후속 파일 열기를 기존 앱의 새 탭으로 전달하는 단일 프로세스 실행.
+- [x] 탭을 새 창으로 분리하고 편집기 창 사이에서 다시 도킹하기.
 - [x] 일반 텍스트, Markdown, JSON/JSONC, JSON Lines, XML, Gettext PO/POT, CSV/TSV, YAML, TOML, INI 계열, ENV, Git·EditorConfig·npm·Docker 설정, REG, OpenSSH, systemd, hosts, 로그, 자막·가사 제품 지원과 형식별 대표 샘플.
 - [x] 렌더 모드 줄 번호, 구문 강조, 들여쓰기 가이드.
 - [x] 렌더 모드 가상화 표시.

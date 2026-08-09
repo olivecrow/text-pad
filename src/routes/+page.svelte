@@ -244,6 +244,7 @@
   const tabTransferAcceptedEvent = 'text-pad-tab-transfer-accepted';
   const tabPointerDragMoveEvent = 'text-pad-tab-pointer-move';
   const tabPointerDragDropEvent = 'text-pad-tab-pointer-drop';
+  const openFilesRequestedEvent = 'text-pad-open-files-requested';
   const tabTransferIdQueryKey = 'tabTransferId';
   const tabTransferSourceQueryKey = 'tabTransferSource';
   function getInitialLanguagePreference(): LanguagePreference {
@@ -424,6 +425,7 @@
   let hasLoadedStartupFiles = false;
   let hasCheckedForUpdateOnStartup = false;
   let startupUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingInstanceOpenChain: Promise<void> = Promise.resolve();
   let transientStatusTimer: ReturnType<typeof setTimeout> | null = null;
   let isWindowMaximized = $state<boolean>(false);
   let transientStatusMessage = $state<string | null>(null);
@@ -2961,6 +2963,58 @@
       isLoading = false;
     }
   }
+
+  async function openPendingInstanceFiles() {
+    if (isSettingsWindow) return;
+
+    try {
+      const openedFiles = await invoke<OpenedFile[]>('take_pending_open_files');
+      if (!openedFiles.length) return;
+
+      isLoading = true;
+      errorMsg = null;
+      syncActiveTabState();
+      for (const openedFile of openedFiles) {
+        openFile(openedFile, false);
+      }
+    } catch (err: any) {
+      errorMsg = localizeError('error.readFile', err);
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  function schedulePendingInstanceFilesOpen() {
+    pendingInstanceOpenChain = pendingInstanceOpenChain
+      .then(openPendingInstanceFiles)
+      .catch((error) => {
+        console.error('Failed to open files from another app launch:', error);
+      });
+  }
+
+  $effect(() => {
+    if (!isBrowser || !hasTauriRuntime() || isSettingsWindow) return;
+
+    let isDisposed = false;
+    let unlistenOpenRequest: UnlistenFn | undefined;
+    getCurrentWindow().listen(openFilesRequestedEvent, schedulePendingInstanceFilesOpen)
+      .then((unlisten) => {
+        if (isDisposed) {
+          unlisten();
+        } else {
+          unlistenOpenRequest = unlisten;
+          schedulePendingInstanceFilesOpen();
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to listen for files from another app launch:', err);
+      });
+
+    return () => {
+      isDisposed = true;
+      unlistenOpenRequest?.();
+    };
+  });
 
   $effect(() => {
     if (!isBrowser || !hasTauriRuntime() || isSettingsWindow) return;

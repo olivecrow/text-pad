@@ -131,7 +131,7 @@ pub struct FileCommandError {
 }
 
 impl FileCommandError {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -565,7 +565,7 @@ fn open_file(
     })
 }
 
-fn open_existing_files<I>(
+pub(crate) fn open_existing_files<I>(
     file_paths: I,
     approved_paths: &ApprovedFilePaths,
 ) -> Result<Vec<OpenedFile>, FileCommandError>

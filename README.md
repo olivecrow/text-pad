@@ -5,7 +5,8 @@
 ## Features
 
 - Open, edit, save, and create copies of local text files with Save As.
-- Work with multiple files in a tabbed interface.
+- Work with multiple files in a tabbed interface, including moving tabs between editor windows.
+- Open files from Explorer in the existing app as new tabs instead of starting another app process.
 - Switch between Source Mode and Render Mode.
 - Edit JSON/JSONC, XML, YAML, TOML, Gettext catalogs, Git and workspace configuration, Windows Registry exports, OpenSSH/systemd settings, hosts files, CSV, and TSV text with format-aware rendering.
 - Use natural editing helpers for paired characters, lists, indentation, and code blocks.
