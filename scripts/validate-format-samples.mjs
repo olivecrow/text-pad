@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import assert from 'node:assert/strict';
 import { createServer } from 'vite';
 
 const root = process.cwd();
@@ -240,9 +241,37 @@ try {
     }
   }
 
+  const sharedNaturalText = [
+    '1. Shared item 42 #aabbcc',
+    'Nested ("value" [123]) and `inline code`',
+    '```',
+    'block { value: 7 }',
+    '```'
+  ].join('\n');
+  const sharedLineStartOffsets = getLineStarts(sharedNaturalText);
+  const renderSharedNaturalText = (pathOrName) => module.parseDocumentForRender(sharedNaturalText, {
+    pathOrName,
+    tabSize: 4,
+    lineStartOffsets: sharedLineStartOffsets,
+    markdownSettings
+  }).lines;
+  const plainNaturalTextLines = renderSharedNaturalText('shared.txt');
+  const markdownNaturalTextLines = renderSharedNaturalText('shared.md');
+  assert.deepEqual(
+    markdownNaturalTextLines,
+    plainNaturalTextLines,
+    'TXT and Markdown must share the same rendering for common natural-text syntax.'
+  );
+  const inlineCode = plainNaturalTextLines[1]?.tokens.find((token) => token.type === 'code');
+  assert.ok(
+    inlineCode?.children?.some((token) => token.hiddenSyntax),
+    'Shared inline-code rendering must keep hidden delimiter tokens.'
+  );
+
   console.log(`Rendered and validated ${summaries.length} format samples: ${summaries.join(', ')}`);
   console.log(`Detected ${invalidCases.length} representative syntax errors at the expected lines.`);
   console.log(`Detected ${pathDetectionCases.length} representative file-name and path routing cases.`);
+  console.log('Matched TXT and Markdown rendering for shared natural-text syntax.');
 } finally {
   await server.close();
 }

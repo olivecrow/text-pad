@@ -576,6 +576,17 @@ try {
     `markdown edit revisited ${markdownCheckpoint.cache.lineOriented.visitedLineCount} lines`
   );
 
+  const plainLines = Array.from({ length: 12_000 }, (_, index) => {
+    if (index === 2 || index === 11_850) return '```';
+    return `plain ${index}`;
+  });
+  assertCheckpointedRender(
+    'large.txt',
+    plainLines.join('\n'),
+    { startLine: 11_700, endLine: 11_760 },
+    'lineOriented'
+  );
+
   const jsoncContent = ['{', '  /*', ...Array.from({ length: 6_000 }, (_, i) => `  comment ${i}`), '  */', '  "ok": true', '}'].join('\n');
   assertCheckpointedRender(
     'large.jsonc',

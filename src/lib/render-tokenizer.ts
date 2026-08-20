@@ -1,4 +1,5 @@
 import { getListMarkerAtStart } from './list-markers';
+import type { MarkdownHeadingLevel } from './markdown-settings';
 
 export interface Token {
   type:
@@ -71,6 +72,7 @@ export interface TokenizeLineResult {
   tokens: Token[];
   state: TokenizeState | null;
   fencedCodePosition?: FencedCodeLinePosition;
+  headingLevel?: MarkdownHeadingLevel;
 }
 
 const hexColorAtStartRegex = /^#[0-9a-fA-F]{6}$/;
@@ -303,12 +305,35 @@ function finalizeTokens(root: Token): Token[] {
   return finalTokens;
 }
 
+function getMarkdownInlineTokenAt(line: string, index: number): Token | null {
+  const firstChar = line[index];
+  if (firstChar === '[') {
+    const link = line.slice(index).match(/^\[[^\]\r\n]+\]\([^)\r\n]+\)/u)?.[0];
+    return link ? { type: 'link', text: link } : null;
+  }
+
+  if (firstChar !== '*' && firstChar !== '_') return null;
+  const remaining = line.slice(index);
+  const strongPattern = firstChar === '*'
+    ? /^\*\*[^*\r\n]+\*\*/u
+    : /^__[^_\r\n]+__/u;
+  const strong = remaining.match(strongPattern)?.[0];
+  if (strong) return { type: 'strong', text: strong };
+
+  const emphasisPattern = firstChar === '*'
+    ? /^\*[^*\r\n]+\*/u
+    : /^_[^_\r\n]+_/u;
+  const emphasis = remaining.match(emphasisPattern)?.[0];
+  return emphasis ? { type: 'emphasis', text: emphasis } : null;
+}
+
 export function tokenizeLineWithState(line: string, options: TokenizeLineOptions = {}): TokenizeLineResult {
   const root: Token = { type: 'text', children: [] };
   const stack: { token: Token; openChar?: string; closeIndex?: number; hideSyntax?: boolean }[] = [{ token: root }];
   const commentSyntax = options.comments || null;
   const firstNonWhitespaceIndex = getNextNonWhitespaceIndex(line, 0);
   let nextState: TokenizeState | null = options.state || null;
+  let headingLevel: MarkdownHeadingLevel | undefined;
   let i = 0;
   const len = line.length;
 
@@ -403,7 +428,6 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
     return -1;
   }
 
-  const listMarker = nextState ? null : getListMarkerAtStart(line);
   if (nextState?.codeFenceLength) {
     const closesCodeFence = isClosingCodeFence(line, nextState.codeFenceLength);
     if (closesCodeFence) {
@@ -437,6 +461,38 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
       };
     }
   }
+
+  if (!nextState && options.markdown) {
+    const headingMatch = line.match(/^([ \t]{0,3})(#{1,6})([ \t]+)/u);
+    const hashes = headingMatch?.[2];
+    if (headingMatch && hashes) {
+      const indent = headingMatch[1] || '';
+      const spacing = headingMatch[3] || '';
+      if (indent) appendChild(root, { type: 'text', text: indent });
+      appendChild(root, {
+        type: 'heading-marker',
+        text: `${hashes}${spacing}`,
+        hiddenSyntax: options.markdown.hideHeadingMarkers || undefined
+      });
+      headingLevel = hashes.length as MarkdownHeadingLevel;
+      i = indent.length + hashes.length + spacing.length;
+    }
+  }
+
+  if (!nextState && options.markdown && headingLevel === undefined) {
+    const quoteMatch = line.match(/^([ \t]{0,3})(>[ \t]?)/u);
+    if (quoteMatch) {
+      const indent = quoteMatch[1] || '';
+      const marker = quoteMatch[2] || '';
+      if (indent) appendChild(root, { type: 'text', text: indent });
+      appendChild(root, { type: 'quote-marker', text: marker });
+      i = indent.length + marker.length;
+    }
+  }
+
+  const listMarker = nextState || headingLevel !== undefined || i > 0
+    ? null
+    : getListMarkerAtStart(line);
 
   if (listMarker) {
     if (listMarker.indent) {
@@ -498,6 +554,15 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
     }
 
     if (!activeQuoteFrame) {
+      const markdownInlineToken = options.markdown
+        ? getMarkdownInlineTokenAt(line, i)
+        : null;
+      if (markdownInlineToken) {
+        appendChild(top.token, markdownInlineToken);
+        i += markdownInlineToken.text?.length ?? 0;
+        continue;
+      }
+
       const blockRule = findBlockCommentRule(line, i, commentSyntax?.block);
       if (blockRule) {
         const endSearchIndex = i + blockRule.start.length;
@@ -585,14 +650,20 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
 
   return {
     tokens: finalizeTokens(root),
-    state: nextState
+    state: nextState,
+    headingLevel
   };
+}
+
+export interface MarkdownTokenizeOptions {
+  hideHeadingMarkers: boolean;
 }
 
 export interface TokenizeLineOptions {
   comments?: CommentSyntax | null;
   state?: TokenizeState | null;
   suppressCodeFence?: boolean;
+  markdown?: MarkdownTokenizeOptions;
 }
 
 export function tokenizeLine(line: string, options: TokenizeLineOptions = {}): Token[] {
