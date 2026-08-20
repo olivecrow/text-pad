@@ -12,7 +12,9 @@
     createDefaultDocumentFeatureSettings,
     createDocumentRenderCache,
     getDocumentDiagnostic,
+    getDocumentFormatById,
     getDocumentFormatForContent,
+    getNewDocumentInitialContent,
     getSuggestedFileExtensionForContent,
     isDocumentFormatEditEnabled,
     isDocumentFormatRenderEnabled,
@@ -139,6 +141,7 @@
     filePath: string | null;
     fileName: string;
     fileContent: string;
+    selectedDocumentFormatId: DocumentFormatId | null;
     encoding: TextEncoding;
     isDirty: boolean;
     scrollTop: number;
@@ -314,19 +317,42 @@
     return firstLine || untitledFileName;
   }
 
-  function getDisplayFileName(tab: Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent'>): string {
-    return tab.filePath ? tab.fileName : getFirstLineTitle(tab.fileContent);
+  function getUnsavedDocumentTitle(
+    content: string,
+    selectedFormatId: DocumentFormatId | null
+  ): string {
+    return selectedFormatId !== null && content === getNewDocumentInitialContent(selectedFormatId)
+      ? untitledFileName
+      : getFirstLineTitle(content);
+  }
+
+  function getDisplayFileName(
+    tab: Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent' | 'selectedDocumentFormatId'>
+  ): string {
+    return tab.filePath
+      ? tab.fileName
+      : getUnsavedDocumentTitle(tab.fileContent, tab.selectedDocumentFormatId);
   }
 
   function getCurrentWindowTitle(): string {
     if (isSettingsWindow) return t('settings.windowTitle');
-    const displayName = getDisplayFileName({ filePath, fileName, fileContent });
+    const displayName = getDisplayFileName({
+      filePath,
+      fileName,
+      fileContent,
+      selectedDocumentFormatId
+    });
     return `${isDirty ? '*' : ''}${t('app.windowTitle', { fileName: displayName })}`;
   }
 
-  function getUnsavedFileNameFromContent(content: string): string {
-    const suggestedExtension = getSuggestedFileExtensionForContent(content);
-    const firstLineTitle = getFirstLineTitle(content);
+  function getUnsavedFileNameFromContent(
+    content: string,
+    selectedFormatId: DocumentFormatId | null
+  ): string {
+    const selectedFormat = getDocumentFormatById(selectedFormatId);
+    const suggestedExtension = selectedFormat?.defaultExtension
+      ?? getSuggestedFileExtensionForContent(content);
+    const firstLineTitle = getUnsavedDocumentTitle(content, selectedFormatId);
     const suggestedTitle = suggestedExtension === "json" && /^[{\[]\s*$/.test(firstLineTitle)
       ? untitledFileName
       : firstLineTitle;
@@ -340,10 +366,12 @@
   }
 
   function getSuggestedSaveFileName(tab: EditorTab): string {
-    return tab.filePath ? tab.fileName : getUnsavedFileNameFromContent(tab.fileContent);
+    return tab.filePath
+      ? tab.fileName
+      : getUnsavedFileNameFromContent(tab.fileContent, tab.selectedDocumentFormatId);
   }
 
-  function createEditorTab(options: Partial<Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent' | 'encoding' | 'isDirty'>> = {}): EditorTab {
+  function createEditorTab(options: Partial<Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent' | 'selectedDocumentFormatId' | 'encoding' | 'isDirty'>> = {}): EditorTab {
     const nextFileContent = options.fileContent ?? "";
     const nextFilePath = options.filePath ?? null;
     return {
@@ -351,6 +379,7 @@
       filePath: nextFilePath,
       fileName: options.fileName ?? (nextFilePath ? getFileNameFromPath(nextFilePath) : getNextUntitledFileName()),
       fileContent: nextFileContent,
+      selectedDocumentFormatId: options.selectedDocumentFormatId ?? null,
       encoding: options.encoding ?? 'utf8',
       isDirty: options.isDirty ?? false,
       scrollTop: 0,
@@ -413,10 +442,14 @@
   let filePath = $state<string | null>(initialTab.filePath);
   let fileName = $state<string>(initialTab.fileName);
   let fileContent = $state<string>(initialTab.fileContent);
+  let selectedDocumentFormatId = $state<DocumentFormatId | null>(initialTab.selectedDocumentFormatId);
   let textOffsetIndex = $state.raw<TextOffsetIndex>(createTextOffsetIndex(initialTab.fileContent));
   let latestContentChange = $state.raw<TextChange | null>(null);
   let fileEncoding = $state<TextEncoding>(initialTab.encoding);
   let isDirty = $state<boolean>(initialTab.isDirty);
+  let isNewDocumentFormatPickerOpen = $state(false);
+  let newDocumentFormatTriggerEl = $state<HTMLButtonElement | null>(null);
+  let newDocumentFormatPickerEl = $state<HTMLDivElement | null>(null);
   let isLoading = $state<boolean>(false);
   let errorMsg = $state<string | null>(null);
   let isHandlingCloseRequest = false;
@@ -937,7 +970,9 @@
     const activeTab = getActiveTab();
     if (!activeTab) return;
 
-    const nextFileName = filePath ? fileName : getFirstLineTitle(fileContent);
+    const nextFileName = filePath
+      ? fileName
+      : getUnsavedDocumentTitle(fileContent, selectedDocumentFormatId);
     const nextIsDirty = getUndoHistoryForTab(activeTab).isDirty();
     fileName = nextFileName;
     isDirty = nextIsDirty;
@@ -947,6 +982,7 @@
       filePath,
       fileName: nextFileName,
       fileContent,
+      selectedDocumentFormatId,
       encoding: fileEncoding,
       isDirty: nextIsDirty,
       scrollTop,
@@ -990,6 +1026,8 @@
     latestContentChange = null;
     textOffsetIndex = createTextOffsetIndex(tab.fileContent);
     fileContent = tab.fileContent;
+    selectedDocumentFormatId = tab.selectedDocumentFormatId ?? null;
+    isNewDocumentFormatPickerOpen = false;
     enforceUndoWindowBudget();
     fileEncoding = tab.encoding;
     isDirty = history.isDirty();
@@ -1666,6 +1704,46 @@
     addTab(createEditorTab());
   }
 
+  function selectNewDocumentFormat(formatId: DocumentFormatId) {
+    if (filePath !== null || fileContent.length > 0) return;
+
+    isNewDocumentFormatPickerOpen = false;
+    selectedDocumentFormatId = formatId;
+    updateTabById(activeTabId, { selectedDocumentFormatId: formatId });
+
+    const initialContent = getNewDocumentInitialContent(formatId);
+    if (initialContent.length > 0) {
+      commitManualEditorEdit(initialContent, { start: 0, end: 0 });
+    }
+  }
+
+  function toggleNewDocumentFormatPicker() {
+    isNewDocumentFormatPickerOpen = !isNewDocumentFormatPickerOpen;
+    if (!isNewDocumentFormatPickerOpen) return;
+
+    void tick().then(() => {
+      const selectedButton = newDocumentFormatPickerEl
+        ?.querySelector<HTMLButtonElement>('.new-document-format-button.active');
+      const firstButton = newDocumentFormatPickerEl
+        ?.querySelector<HTMLButtonElement>('.new-document-format-button');
+      (selectedButton ?? firstButton)?.focus();
+    });
+  }
+
+  function closeNewDocumentFormatPicker(restoreFocus = true) {
+    isNewDocumentFormatPickerOpen = false;
+    if (restoreFocus) {
+      void tick().then(() => newDocumentFormatTriggerEl?.focus());
+    }
+  }
+
+  function handleNewDocumentFormatPickerKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeNewDocumentFormatPicker();
+  }
+
   function isCleanUntitledTab(tab: EditorTab): boolean {
     return !tab.filePath && !tab.isDirty && tab.fileContent.length === 0;
   }
@@ -2037,6 +2115,7 @@
     updateTabById(tabId, {
       filePath: savedFile.path,
       fileName: nextFileName,
+      selectedDocumentFormatId: null,
       encoding: savedFile.encoding,
       isDirty: false
     });
@@ -2044,6 +2123,7 @@
     if (tabId === activeTabId) {
       filePath = savedFile.path;
       fileName = nextFileName;
+      selectedDocumentFormatId = null;
       fileEncoding = savedFile.encoding;
       isDirty = false;
     }
@@ -2552,7 +2632,15 @@
   ));
 
   // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
-  let activeDocumentFormat = $derived(getDocumentFormatForContent(fileContent, filePath || fileName));
+  let selectedDocumentFormat = $derived(
+    filePath === null ? getDocumentFormatById(selectedDocumentFormatId) : null
+  );
+  let activeDocumentFormat = $derived(
+    selectedDocumentFormat ?? getDocumentFormatForContent(fileContent, filePath || fileName)
+  );
+  let shouldShowNewDocumentFormatToolbar = $derived(
+    !isSettingsWindow && filePath === null && fileContent.length === 0
+  );
   let isActiveDocumentRenderEnabled = $derived(
     isEnhancedDocumentWithinBudget
     && isDocumentFormatRenderEnabled(activeDocumentFormat, documentFeatureSettings)
@@ -3579,7 +3667,10 @@
     textOffsetIndex = suppliedOffsetIndex
       ?? (contentChange ? createTextOffsetIndex(snapshot.content) : getTextOffsetIndex(snapshot.content));
     fileContent = snapshot.content;
-    fileName = filePath ? fileName : getFirstLineTitle(fileContent);
+    if (snapshot.content.length > 0) isNewDocumentFormatPickerOpen = false;
+    fileName = filePath
+      ? fileName
+      : getUnsavedDocumentTitle(fileContent, selectedDocumentFormatId);
     isDirty = getActiveUndoHistory().isDirty();
     errorMsg = null;
     reconcileInlineColorPickerState();
@@ -6880,6 +6971,23 @@
           </button>
         {/if}
 
+        {#if shouldShowNewDocumentFormatToolbar}
+          <button
+            bind:this={newDocumentFormatTriggerEl}
+            type="button"
+            class="new-document-format-trigger"
+            class:active={isNewDocumentFormatPickerOpen}
+            aria-haspopup="dialog"
+            aria-expanded={isNewDocumentFormatPickerOpen}
+            aria-controls="new-document-format-picker"
+            onclick={toggleNewDocumentFormatPicker}
+          >
+            <FileText size={14} aria-hidden="true" />
+            <span>{t('newDocument.formatPrompt')}</span>
+            <ChevronDown size={12} aria-hidden="true" />
+          </button>
+        {/if}
+
         <button
           class="theme-mode-toggle"
           onclick={() => {
@@ -6927,6 +7035,54 @@
       class:render-wrap-settling={isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling}
       class:render-native-text-visible={shouldShowNativeRenderText}
     >
+      {#if shouldShowNewDocumentFormatToolbar && isNewDocumentFormatPickerOpen}
+        <div
+          bind:this={newDocumentFormatPickerEl}
+          id="new-document-format-picker"
+          class="new-document-format-picker"
+          role="dialog"
+          tabindex="-1"
+          aria-labelledby="new-document-format-picker-title"
+          onkeydown={handleNewDocumentFormatPickerKeydown}
+        >
+          <div class="new-document-format-picker-heading">
+            <strong id="new-document-format-picker-title">{t('newDocument.formatPrompt')}</strong>
+            <button
+              type="button"
+              class="new-document-format-picker-close"
+              aria-label={t('window.closeTitle')}
+              title={t('window.closeTitle')}
+              onclick={() => closeNewDocumentFormatPicker()}
+            >
+              <X size={14} aria-hidden="true" />
+            </button>
+          </div>
+          <div class="new-document-format-groups">
+            {#each configurableDocumentFormatCategories as category}
+              <div
+                class="new-document-format-group"
+                role="group"
+                aria-label={t(category.labelKey)}
+              >
+                <span class="new-document-format-category">{t(category.labelKey)}</span>
+                <div class="new-document-format-buttons">
+                  {#each getDocumentFormatsForCategory(category) as format}
+                    <button
+                      type="button"
+                      class="new-document-format-button"
+                      class:active={selectedDocumentFormatId === format.id}
+                      aria-pressed={selectedDocumentFormatId === format.id}
+                      onclick={() => selectNewDocumentFormat(format.id)}
+                    >
+                      {t(format.labelKey)}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
       <div class="editor-container">
         {#if shouldShowDelimitedTableEditor && activeDelimitedTableDocument}
           <DelimitedTableEditor
@@ -7895,6 +8051,34 @@
     opacity: 0.78;
   }
 
+  .new-document-format-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    height: 24px;
+    padding: 0 7px;
+    margin-right: 0.25rem;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 0.72rem;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .new-document-format-trigger:hover,
+  .new-document-format-trigger.active {
+    background-color: var(--bg-menu-hover);
+  }
+
+  .new-document-format-trigger:focus-visible {
+    outline: 1px solid var(--accent-color);
+    outline-offset: 1px;
+  }
+
   .menu-item-container {
     position: relative;
   }
@@ -8020,6 +8204,126 @@
     height: 100%;
     overflow: hidden;
     position: relative;
+  }
+
+  .new-document-format-picker {
+    position: absolute;
+    z-index: 5;
+    top: 12px;
+    left: 50%;
+    width: min(960px, calc(100% - 24px));
+    max-height: calc(100% - 24px);
+    padding: 10px 12px 12px;
+    box-sizing: border-box;
+    overflow: auto;
+    transform: translateX(-50%);
+    color: var(--text-color);
+    background: var(--bg-window);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: var(--shadow-menu);
+    font-family: var(--font-ui);
+  }
+
+  .new-document-format-picker-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 9px;
+    font-size: 12px;
+  }
+
+  .new-document-format-picker-heading strong {
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  .new-document-format-category {
+    color: var(--text-muted);
+  }
+
+  .new-document-format-picker-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .new-document-format-picker-close:hover {
+    background: var(--bg-menu-hover);
+    color: var(--text-color);
+  }
+
+  .new-document-format-picker-close:focus-visible {
+    outline: 1px solid var(--accent-color);
+    outline-offset: 1px;
+  }
+
+  .new-document-format-groups {
+    display: grid;
+    gap: 8px;
+  }
+
+  .new-document-format-group {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+  }
+
+  .new-document-format-category {
+    padding-top: 5px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .new-document-format-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .new-document-format-button {
+    min-height: 26px;
+    padding: 3px 8px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: var(--bg-menu-hover);
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 11px;
+    white-space: nowrap;
+    cursor: default;
+  }
+
+  .new-document-format-button:hover,
+  .new-document-format-button.active {
+    border-color: color-mix(in srgb, var(--accent-color) 55%, var(--border-color));
+    background: color-mix(in srgb, var(--accent-color) 14%, var(--bg-menu-hover));
+  }
+
+  .new-document-format-button:focus-visible {
+    outline: 1px solid var(--accent-color);
+    outline-offset: 1px;
+  }
+
+  @media (max-width: 640px) {
+    .new-document-format-group {
+      grid-template-columns: 1fr;
+      gap: 3px;
+    }
+
+    .new-document-format-category {
+      padding-top: 0;
+    }
   }
 
   .editor-gutter {

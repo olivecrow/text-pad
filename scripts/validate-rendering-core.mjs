@@ -196,6 +196,21 @@ try {
     budgets.MAX_INTERACTIVE_TABLE_CELLS
   ), null);
 
+  const csvInitialContent = documentFormats.getNewDocumentInitialContent('csv');
+  const tsvInitialContent = documentFormats.getNewDocumentInitialContent('tsv');
+  assert.equal(csvInitialContent, ',\n,');
+  assert.equal(tsvInitialContent, '\t\n\t');
+  assert.deepEqual(
+    delimited.parseDelimitedTableWithinCellLimit(csvInitialContent, ',', budgets.MAX_INTERACTIVE_TABLE_CELLS)?.rows,
+    [['', ''], ['', '']]
+  );
+  assert.deepEqual(
+    delimited.parseDelimitedTableWithinCellLimit(tsvInitialContent, '\t', budgets.MAX_INTERACTIVE_TABLE_CELLS)?.rows,
+    [['', ''], ['', '']]
+  );
+  assert.equal(documentFormats.getNewDocumentInitialContent('markdown'), '');
+  assert.equal(documentFormats.getDocumentFormatById('markdown')?.defaultExtension, 'md');
+
   const tableDocument = {
     rows: [['a', 'b'], ['c', 'd'], ['e', 'f']],
     separator: ',',
@@ -662,7 +677,8 @@ try {
     `Validated render core: CRLF offsets, logarithmic hit testing (${rectCalls} reads), `
       + `XML range cache (${xmlParseDuration.toFixed(1)}ms), 250k-line uniform layout (${uniformDuration.toFixed(1)}ms), `
       + `incremental layout/parser checkpoints, shared input diffs, bounded caches/undo, worker cancellation, `
-      + `auto-pair right-context rules, editor duplication, list-marker backspace, and table copy-on-write.`
+      + `auto-pair right-context rules, editor duplication, list-marker backspace, new-table templates, `
+      + `and table copy-on-write.`
   );
 } finally {
   await server.close();

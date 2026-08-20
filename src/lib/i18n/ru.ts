@@ -115,6 +115,7 @@ export const russianTranslations: Record<TranslationKey, string> = {
   "settings.preserveIndent.title": "Сохранять отступ на новой строке",
   "settings.preserveIndent.description": "Нажатие Enter на строке с отступом добавляет такой же отступ на следующую строку.",
   "settings.categoryFormats": "Форматы {category}",
+  "newDocument.formatPrompt": "Выберите формат файла",
   "settings.table.display": "Отображение",
   "settings.table.highlightHeader.title": "Выделять первую строку",
   "settings.table.highlightHeader.description": "Выделять первую строку данных в CSV и TSV как заголовок.",

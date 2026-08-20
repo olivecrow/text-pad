@@ -115,6 +115,7 @@ export const simplifiedChineseTranslations: Record<TranslationKey, string> = {
   "settings.preserveIndent.title": "在新行保留缩进",
   "settings.preserveIndent.description": "在有缩进的行按 Enter 键时，在下一行自动添加相同的缩进。",
   "settings.categoryFormats": "{category} 格式",
+  "newDocument.formatPrompt": "选择文件格式",
   "settings.table.display": "显示",
   "settings.table.highlightHeader.title": "高亮显示首行",
   "settings.table.highlightHeader.description": "将 CSV 和 TSV 中的第一行数据高亮显示为表头。",

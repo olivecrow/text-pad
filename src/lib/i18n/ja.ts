@@ -115,6 +115,7 @@ export const japaneseTranslations: Record<TranslationKey, string> = {
   "settings.preserveIndent.title": "改行時のインデント維持",
   "settings.preserveIndent.description": "インデントされた行で Enter を押すと、次の行に同じインデントが追加されます。",
   "settings.categoryFormats": "{category} フォーマット",
+  "newDocument.formatPrompt": "ファイル形式を選択",
   "settings.table.display": "表示",
   "settings.table.highlightHeader.title": "先頭行を強調表示",
   "settings.table.highlightHeader.description": "CSV および TSV の先頭のデータ行をヘッダーとして強調表示します。",

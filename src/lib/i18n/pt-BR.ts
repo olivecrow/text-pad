@@ -115,6 +115,7 @@ export const brazilianPortugueseTranslations: Record<TranslationKey, string> = {
   "settings.preserveIndent.title": "Manter recuo em uma nova linha",
   "settings.preserveIndent.description": "Pressionar Enter em uma linha recuada adiciona o mesmo recuo à próxima linha.",
   "settings.categoryFormats": "Formatos de {category}",
+  "newDocument.formatPrompt": "Escolher formato de arquivo",
   "settings.table.display": "Exibição",
   "settings.table.highlightHeader.title": "Destacar primeira linha",
   "settings.table.highlightHeader.description": "Destacar a primeira linha de dados em CSV e TSV como cabeçalho.",

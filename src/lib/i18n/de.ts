@@ -115,6 +115,7 @@ export const germanTranslations: Record<TranslationKey, string> = {
   "settings.preserveIndent.title": "Einzug in neuer Zeile beibehalten",
   "settings.preserveIndent.description": "Drücken von Eingabe in einer eingerückten Zeile fügt der nächsten Zeile denselben Einzug hinzu.",
   "settings.categoryFormats": "{category}-Formate",
+  "newDocument.formatPrompt": "Dateiformat auswählen",
   "settings.table.display": "Anzeige",
   "settings.table.highlightHeader.title": "Erste Zeile hervorheben",
   "settings.table.highlightHeader.description": "Die erste Datenzeile in CSV und TSV als Kopfzeile hervorheben.",

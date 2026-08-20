@@ -118,6 +118,7 @@ export const englishTranslations = {
   'settings.preserveIndent.title': 'Keep indentation on a new line',
   'settings.preserveIndent.description': 'Pressing Enter on an indented line adds the same indentation to the next line.',
   'settings.categoryFormats': '{category} formats',
+  'newDocument.formatPrompt': 'Choose a file format',
   'settings.table.display': 'Display',
   'settings.table.highlightHeader.title': 'Highlight first row',
   'settings.table.highlightHeader.description': 'Highlight the first data row in CSV and TSV as a header.',

@@ -115,6 +115,7 @@ export const arabicTranslations: Record<TranslationKey, string> = {
   "settings.preserveIndent.title": "الإبقاء على المسافة البادئة في سطر جديد",
   "settings.preserveIndent.description": "الضغط على Enter في سطر يحتوي على مسافة بادئة يضيف المسافة البادئة نفسها إلى السطر التالي.",
   "settings.categoryFormats": "تنسيقات {category}",
+  "newDocument.formatPrompt": "اختر تنسيق الملف",
   "settings.table.display": "العرض",
   "settings.table.highlightHeader.title": "تمييز الصف الأول",
   "settings.table.highlightHeader.description": "تمييز صف البيانات الأول في ملفات CSV و TSV كرأس.",

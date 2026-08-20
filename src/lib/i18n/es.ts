@@ -115,6 +115,7 @@ export const spanishTranslations: Record<TranslationKey, string> = {
   "settings.preserveIndent.title": "Mantener sangría en una nueva línea",
   "settings.preserveIndent.description": "Al pulsar Intro en una línea con sangría, se añade la misma sangría a la siguiente línea.",
   "settings.categoryFormats": "Formatos de {category}",
+  "newDocument.formatPrompt": "Elegir formato de archivo",
   "settings.table.display": "Visualización",
   "settings.table.highlightHeader.title": "Resaltar primera fila",
   "settings.table.highlightHeader.description": "Resalta la primera fila de datos en CSV y TSV como encabezado.",

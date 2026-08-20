@@ -115,6 +115,7 @@ export const koreanTranslations: Record<TranslationKey, string> = {
   "settings.preserveIndent.title": "줄바꿈 시 들여쓰기 유지",
   "settings.preserveIndent.description": "들여쓰기된 줄에서 Enter를 누르면 다음 줄에도 동일한 들여쓰기가 추가됩니다.",
   "settings.categoryFormats": "{category} 형식",
+  "newDocument.formatPrompt": "파일 형식 선택",
   "settings.table.display": "표시",
   "settings.table.highlightHeader.title": "첫 행 강조",
   "settings.table.highlightHeader.description": "CSV와 TSV에서 데이터의 첫 번째 행을 머리글로 강조합니다.",

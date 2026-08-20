@@ -603,6 +603,16 @@ export const configurableDocumentFormats = [
   lrcFormat
 ];
 
+export function getDocumentFormatById(formatId: DocumentFormatId | null | undefined): DocumentFormat | null {
+  return configurableDocumentFormats.find((format) => format.id === formatId) ?? null;
+}
+
+export function getNewDocumentInitialContent(formatId: DocumentFormatId): string {
+  if (formatId === 'csv') return ',\n,';
+  if (formatId === 'tsv') return '\t\n\t';
+  return '';
+}
+
 export const configurableDocumentFormatCategories: DocumentFormatCategory[] = [
   {
     id: 'document',

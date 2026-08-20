@@ -115,6 +115,7 @@ export const frenchTranslations: Record<TranslationKey, string> = {
   "settings.preserveIndent.title": "Conserver l'indentation sur une nouvelle ligne",
   "settings.preserveIndent.description": "Appuyer sur Entrée sur une ligne indentée ajoute la même indentation à la ligne suivante.",
   "settings.categoryFormats": "Formats {category}",
+  "newDocument.formatPrompt": "Choisir un format de fichier",
   "settings.table.display": "Affichage",
   "settings.table.highlightHeader.title": "Mettre en surbrillance la première ligne",
   "settings.table.highlightHeader.description": "Mettre en surbrillance la première ligne de données dans les fichiers CSV et TSV en tant qu'en-tête.",
