@@ -1,7 +1,9 @@
 import {
   configurableDocumentFormats,
+  isConfigurableDocumentFormatId,
   normalizeDocumentFeatureSettings,
-  type DocumentFeatureSettings
+  type DocumentFeatureSettings,
+  type DocumentFormatId
 } from './document-formats';
 import { isAppLocale, type LanguagePreference } from './i18n';
 import { normalizeAutoPairAllowedFollowingStrings } from './auto-pair';
@@ -40,6 +42,7 @@ export interface AppSettingsSnapshot {
   general: {
     language: LanguagePreference;
     theme: ThemeMode;
+    defaultNewDocumentFormat: DocumentFormatId;
   };
   source: {
     fontSize: number;
@@ -214,6 +217,10 @@ function normalizeTheme(value: unknown): ThemeMode | null {
   return value === 'system' || value === 'light' || value === 'dark' ? value : null;
 }
 
+function normalizeDocumentFormatId(value: unknown): DocumentFormatId | null {
+  return isConfigurableDocumentFormatId(value) ? value : null;
+}
+
 function normalizeFontFamily(value: unknown): string | null {
   return typeof value === 'string' && renderFontFamilies.has(value) ? value : null;
 }
@@ -328,6 +335,7 @@ function migrateLegacySettings(candidate: UnknownRecord): UnknownRecord {
 
   assignLegacyValue(general, 'language', candidate, 'languagePreference');
   assignLegacyValue(general, 'theme', candidate, 'themeMode');
+  assignLegacyValue(general, 'defaultNewDocumentFormat', candidate, 'defaultNewDocumentFormatId');
   assignLegacyValue(source, 'fontSize', candidate, 'sourceFontSize');
   assignLegacyValue(render, 'fontSize', candidate, 'renderFontSize');
   assignLegacyValue(render, 'indentWidth', candidate, 'tabSize');
@@ -372,9 +380,16 @@ function applySettingsCandidate(
 
   const general = getSection(candidate, 'general', statistics);
   if (general) {
-    markUnknownKeys(general, ['language', 'theme'], statistics);
+    markUnknownKeys(general, ['language', 'theme', 'defaultNewDocumentFormat'], statistics);
     applyValue(general, 'language', normalizeLanguage, (value) => settings.general.language = value, statistics);
     applyValue(general, 'theme', normalizeTheme, (value) => settings.general.theme = value, statistics);
+    applyValue(
+      general,
+      'defaultNewDocumentFormat',
+      normalizeDocumentFormatId,
+      (value) => settings.general.defaultNewDocumentFormat = value,
+      statistics
+    );
   }
 
   const source = getSection(candidate, 'source', statistics);

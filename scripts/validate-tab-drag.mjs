@@ -10,6 +10,7 @@ const server = await createServer({
 
 try {
   const tabDrag = await server.ssrLoadModule('/src/lib/tab-drag.ts');
+  const fileTabs = await server.ssrLoadModule('/src/lib/file-tabs.ts');
   const undo = await server.ssrLoadModule('/src/lib/editor-undo.ts');
 
   assert.equal(tabDrag.tabDetachTargetClaimDelayMs, 50);
@@ -70,6 +71,27 @@ try {
     ['three', 'one', 'two']
   );
 
+  const openTabs = [
+    { id: 'untitled', filePath: null },
+    { id: 'readme', filePath: 'C:\\Work\\text-pad\\README.md' }
+  ];
+  assert.equal(
+    fileTabs.findOpenFileTab(openTabs, 'c:/work/text-pad/readme.md')?.id,
+    'readme'
+  );
+  assert.equal(
+    fileTabs.findOpenFileTab(openTabs, '\\\\?\\C:\\Work\\text-pad\\README.md')?.id,
+    'readme'
+  );
+  assert.equal(
+    fileTabs.findOpenFileTab(openTabs, 'C:\\Work\\text-pad\\other.md'),
+    null
+  );
+  assert.equal(
+    fileTabs.normalizeFilePathForComparison('\\\\?\\UNC\\Server\\Share\\File.txt'),
+    '\\\\server\\share\\file.txt'
+  );
+
   const initialSnapshot = {
     content: 'one',
     selection: { start: 3, end: 3 }
@@ -97,7 +119,7 @@ try {
   assert.equal(restoredSavedHistory.isDirty(), false);
 
   console.log(
-    'Validated tab drag: dock bounds, pointer-follow preview, blank-tab preservation, insertion indices, reordering, and undo-state transfer.'
+    'Validated tabs: existing-file reuse, dock bounds, pointer-follow preview, blank-tab preservation, insertion indices, reordering, and undo-state transfer.'
   );
 } finally {
   await server.close();

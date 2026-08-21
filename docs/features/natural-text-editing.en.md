@@ -79,9 +79,13 @@ The behavioral contract is:
 ## Editing Markdown headings
 
 - In render-enabled `.md` and `.markdown` documents, recognize `# ` through `###### ` after no more than three leading spaces as heading levels 1 through 6.
+- In render mode, when a collapsed caret is immediately after `#` through `######` at the start of a line, pressing Space inserts one space and immediately applies that heading level. For example, pressing Space in `##|Heading` produces `## |Heading` and renders a level 2 heading. Here `|` represents the caret.
+- When a complete existing heading marker, including its trailing whitespace, is immediately right of the caret, the newly typed marker replaces the existing level. For example, after typing `#` before an existing level 3 heading to form `#|### Existing heading`, pressing Space produces `# |Existing heading` and applies level 1.
+- While replacing an existing heading level, keep the caret before the hidden old marker so the user can type up to six consecutive hashes. Release this temporary replacement position when an edit other than Space or a caret movement begins.
 - The default setting hides the leading heading marker, but keeps the same source range as hidden syntax so source text and selections remain stable. Do not hide or reinterpret the same markers inside a fenced code block.
 - Per-level size and weight, marker visibility, and level 1 and 2 dividers are shared display settings for every Markdown document. Changing them alters neither source text nor Undo history.
-- Typing `# ` remains ordinary character input. The app does not delete or rewrite the marker, and source mode displays it as normal HTML `textarea` text.
+- Typing `#` itself remains ordinary character input. Applying a heading or replacing an existing level with Space keeps the new heading marker and space as Markdown source, and records the complete Space input and old-marker replacement as one Undo action.
+- Do not intercept heading application when there is an active selection, IME composition is in progress, Ctrl, Alt, or Meta is pressed, the marker is not after no more than three leading spaces at line start, there are seven or more hashes, the line is inside a fenced code block, or the editor is in source mode.
 - Pointer placement, arrow movement, and selection on a heading map the actual rendered glyph widths back to source positions. Do not leave a collapsed caret trapped inside a hidden marker range.
 - Links, emphasis, and inline code inside a heading keep their exact source ranges, and saved text never receives display-only size, weight, color, or divider data.
 
@@ -330,7 +334,7 @@ An application with custom editing features should use one history system as the
 - Each record stores the source range that actually changed, the before and after strings, and the before and after selections.
 - Consecutive character insertion, Backspace, and Delete operations merge when they continue at the same location within one second.
 - An IME composition, including Korean text composition, is recorded as one ordinary input group from composition start to composition end.
-- Paste, cut, menu deletion, newline insertion, line or selection duplication, automatic pairing, backtick code-block expansion and fence disabling, indentation, and list-marker conversion are each independent actions with a clear semantic boundary.
+- Paste, cut, menu deletion, newline insertion, line or selection duplication, automatic pairing, backtick code-block expansion and fence disabling, Markdown heading application and level replacement, indentation, and list-marker conversion are each independent actions with a clear semantic boundary.
 - Caret movement, selection changes, focus changes, mode switching, and setting changes do not alter source text and therefore create no history record.
 - Starting a new application-defined edit closes any active ordinary-input group.
 - Starting a new edit after Undo discards the Redo history after the current position.
@@ -374,9 +378,10 @@ The common `Ctrl+D` editing shortcut is handled first as an independent duplicat
 12. Indent or outdent lines with Tab or Shift+Tab
 13. Delete leading indentation with Backspace
 14. Delete an empty automatic pair with Backspace
-15. Apply a context-aware substitution confirmed by Space
-16. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
-17. Fall back to default `textarea` input when none of the conditions match
+15. Apply a Markdown heading or replace its existing level when confirmed by Space
+16. Apply a context-aware substitution confirmed by Space
+17. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
+18. Fall back to default `textarea` input when none of the conditions match
 
 Do not chain one editing-assistance helper from inside another. The top-level input path selects exactly one feature by priority, and that feature records the final source text and selection only once.
 
@@ -410,6 +415,7 @@ When editing assistance is added or changed, verify at least the following:
 ## text-pad implementation locations
 
 - `src/routes/+page.svelte`: top-level render-mode input, caret and selection conversion, and edit-result recording.
+- `src/lib/markdown-heading-edit.ts`: calculation of Markdown heading-marker application and existing-level replacement confirmed by Space.
 - `src/lib/list-markers.ts`: list-marker recognition, sequence advancement, and depth-based style selection.
 - `src/lib/line-oriented-formats.ts` and `src/lib/markdown-settings.ts`: Markdown heading recognition and shared per-level display settings.
 - `src/lib/editor-undo.ts`: per-tab Undo and Redo history.

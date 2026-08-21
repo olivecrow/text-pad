@@ -157,6 +157,7 @@ export function createDocumentRenderCache(): DocumentRenderCache {
 
 interface ParseDocumentOptions {
   pathOrName: string | null | undefined;
+  formatId?: DocumentFormatId | null;
   tabSize: number;
   lineStartOffsets: number[];
   lineRange?: DocumentLineRange;
@@ -602,6 +603,13 @@ export const configurableDocumentFormats = [
   webVttFormat,
   lrcFormat
 ];
+
+export const defaultNewDocumentFormatId: DocumentFormatId = 'markdown';
+
+export function isConfigurableDocumentFormatId(value: unknown): value is DocumentFormatId {
+  return typeof value === 'string'
+    && configurableDocumentFormats.some((format) => format.id === value);
+}
 
 export function getDocumentFormatById(formatId: DocumentFormatId | null | undefined): DocumentFormat | null {
   return configurableDocumentFormats.find((format) => format.id === formatId) ?? null;
@@ -1910,7 +1918,8 @@ export function getDocumentDiagnostic(
 }
 
 export function parseDocumentForRender(content: string, options: ParseDocumentOptions): DocumentRenderResult {
-  const format = getDocumentFormatForContent(content, options.pathOrName);
+  const format = getDocumentFormatById(options.formatId)
+    ?? getDocumentFormatForContent(content, options.pathOrName);
   const lineRange = normalizeLineRange(options.lineStartOffsets.length, options.lineRange);
   const lineRangeOffsets = getLineRangeOffsets(content, options.lineStartOffsets, lineRange);
   const renderEnabled = options.renderEnabled

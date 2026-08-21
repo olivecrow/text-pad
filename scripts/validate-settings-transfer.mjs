@@ -27,7 +27,11 @@ try {
     renderFontWeight: '400'
   };
   const current = {
-    general: { language: 'system', theme: 'dark' },
+    general: {
+      language: 'system',
+      theme: 'dark',
+      defaultNewDocumentFormat: 'markdown'
+    },
     source: { fontSize: 11 },
     render: {
       fontSize: 12,
@@ -72,6 +76,7 @@ try {
 
   const legacy = transfer.parseSettingsFile(JSON.stringify({
     languagePreference: 'ko',
+    defaultNewDocumentFormatId: 'tsv',
     sourceFontSize: 16,
     renderFontSize: 18,
     tabSize: 8,
@@ -82,6 +87,7 @@ try {
   assert.equal(legacy.ok, true);
   assert.equal(legacy.sourceVersion, 0);
   assert.equal(legacy.settings.general.language, 'ko');
+  assert.equal(legacy.settings.general.defaultNewDocumentFormat, 'tsv');
   assert.equal(legacy.settings.source.fontSize, 16);
   assert.equal(legacy.settings.render.fontSize, 18);
   assert.equal(legacy.settings.render.indentWidth, 8);
@@ -94,7 +100,12 @@ try {
     format: 'text-pad-settings',
     schemaVersion: 99,
     settings: {
-      general: { language: 'ja', theme: 'ultraviolet', futurePreference: true },
+      general: {
+        language: 'ja',
+        theme: 'ultraviolet',
+        defaultNewDocumentFormat: 'future-format',
+        futurePreference: true
+      },
       render: {
         fontSize: 500,
         fontFamily: 'future-font',
@@ -121,6 +132,7 @@ try {
   assert.equal(future.newerVersion, true);
   assert.equal(future.settings.general.language, 'ja');
   assert.equal(future.settings.general.theme, 'dark');
+  assert.equal(future.settings.general.defaultNewDocumentFormat, 'markdown');
   assert.equal(future.settings.render.fontSize, 72);
   assert.equal(future.settings.render.fontFamily, 'nanum-gothic');
   assert.equal(future.settings.render.editing.autoSymbols, false);

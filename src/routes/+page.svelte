@@ -11,6 +11,7 @@
     configurableDocumentFormats,
     createDefaultDocumentFeatureSettings,
     createDocumentRenderCache,
+    defaultNewDocumentFormatId,
     getDocumentDiagnostic,
     getDocumentFormatById,
     getDocumentFormatForContent,
@@ -18,6 +19,7 @@
     getSuggestedFileExtensionForContent,
     isDocumentFormatEditEnabled,
     isDocumentFormatRenderEnabled,
+    isConfigurableDocumentFormatId,
     normalizeDocumentFeatureSettings,
     getOpenFileDialogFilters,
     parseDocumentForRender,
@@ -97,6 +99,11 @@
   } from "$lib/text-offset-index";
   import { getPreferredNewline, getSnapshotFromTextareaInput } from "$lib/editor-input";
   import { getEditorDuplicationEdit } from "$lib/editor-duplication";
+  import {
+    canInsertMarkdownHeadingReplacementMarker,
+    getMarkdownHeadingSpaceEdit
+  } from "$lib/markdown-heading-edit";
+  import { findOpenFileTab } from "$lib/file-tabs";
   import { BoundedLruCache, BoundedRecentSet } from "$lib/bounded-collections";
   import {
     canInsertAutoPairAt,
@@ -233,6 +240,7 @@
   const invalidFileNameCharsPattern = /[<>:"/\\|?*\x00-\x1F]/g;
   const isBrowser = typeof window !== 'undefined';
   const languagePreferenceKey = 'pref_language';
+  const defaultNewDocumentFormatPreferenceKey = 'pref_default_new_document_format';
   const documentRenderCache = createDocumentRenderCache();
   const editorLineLayoutCache = createEditorLineLayoutCache();
   const fencedCodeBlockCache = createFencedCodeBlockCache();
@@ -256,8 +264,15 @@
     return savedPreference === 'system' || isAppLocale(savedPreference) ? savedPreference : 'system';
   }
 
+  function parseDefaultNewDocumentFormat(value: string | null): DocumentFormatId {
+    return isConfigurableDocumentFormatId(value) ? value : defaultNewDocumentFormatId;
+  }
+
   let systemLocale = $state<AppLocale>(resolveSystemLocale(isBrowser ? navigator.languages : []));
   let languagePreference = $state<LanguagePreference>(getInitialLanguagePreference());
+  let defaultNewDocumentFormat = $state<DocumentFormatId>(
+    parseDefaultNewDocumentFormat(isBrowser ? localStorage.getItem(defaultNewDocumentFormatPreferenceKey) : null)
+  );
   let locale = $derived<AppLocale>(languagePreference === 'system' ? systemLocale : languagePreference);
   let untitledFileName = $derived(translate(locale, 'app.untitled'));
 
@@ -372,14 +387,20 @@
   }
 
   function createEditorTab(options: Partial<Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent' | 'selectedDocumentFormatId' | 'encoding' | 'isDirty'>> = {}): EditorTab {
-    const nextFileContent = options.fileContent ?? "";
     const nextFilePath = options.filePath ?? null;
+    const nextSelectedDocumentFormatId = nextFilePath
+      ? null
+      : options.selectedDocumentFormatId === undefined
+        ? defaultNewDocumentFormat
+        : options.selectedDocumentFormatId;
+    const nextFileContent = options.fileContent
+      ?? (nextSelectedDocumentFormatId ? getNewDocumentInitialContent(nextSelectedDocumentFormatId) : '');
     return {
       id: `tab-${nextTabId++}`,
       filePath: nextFilePath,
       fileName: options.fileName ?? (nextFilePath ? getFileNameFromPath(nextFilePath) : getNextUntitledFileName()),
       fileContent: nextFileContent,
-      selectedDocumentFormatId: options.selectedDocumentFormatId ?? null,
+      selectedDocumentFormatId: nextSelectedDocumentFormatId,
       encoding: options.encoding ?? 'utf8',
       isDirty: options.isDirty ?? false,
       scrollTop: 0,
@@ -772,6 +793,7 @@
   const delimitedTableReorderDurationStepMs = 50;
   const editorMovementKeys = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
   let pendingRenderCaretMovementDirection: -1 | 0 | 1 = 0;
+  let markdownHeadingReplacementCaret: number | null = null;
 
   function parseDocumentFeatureSettingsValue(value: string | null): DocumentFeatureSettings {
     if (!value) return createDefaultDocumentFeatureSettings();
@@ -1745,7 +1767,10 @@
   }
 
   function isCleanUntitledTab(tab: EditorTab): boolean {
-    return !tab.filePath && !tab.isDirty && tab.fileContent.length === 0;
+    const initialContent = tab.selectedDocumentFormatId
+      ? getNewDocumentInitialContent(tab.selectedDocumentFormatId)
+      : '';
+    return !tab.filePath && !tab.isDirty && tab.fileContent === initialContent;
   }
 
   function replaceActiveTabWith(tab: EditorTab) {
@@ -1868,6 +1893,9 @@
       languagePreference = savedLanguagePreference;
     }
     systemLocale = resolveSystemLocale(navigator.languages);
+    defaultNewDocumentFormat = parseDefaultNewDocumentFormat(
+      localStorage.getItem(defaultNewDocumentFormatPreferenceKey)
+    );
 
     const savedThemeMode = localStorage.getItem('pref_theme_mode');
     if (savedThemeMode === 'system' || savedThemeMode === 'light' || savedThemeMode === 'dark') {
@@ -1948,6 +1976,7 @@
 
   // 상태 변경 감지 자동 로컬스토리지 동기화
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(languagePreferenceKey, languagePreference); });
+  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(defaultNewDocumentFormatPreferenceKey, defaultNewDocumentFormat); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_theme_mode', themeMode); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_source_font_size', sourceFontSize.toString()); });
   $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_font_size', renderFontSize.toString()); });
@@ -2191,6 +2220,9 @@
   function handleStorageChange(e: StorageEvent) {
     if (!e.key) return;
     if (e.key === languagePreferenceKey && e.newValue && (e.newValue === 'system' || isAppLocale(e.newValue))) languagePreference = e.newValue;
+    if (e.key === defaultNewDocumentFormatPreferenceKey) {
+      defaultNewDocumentFormat = parseDefaultNewDocumentFormat(e.newValue);
+    }
     if (e.key === 'pref_theme_mode' && e.newValue && (e.newValue === 'system' || e.newValue === 'light' || e.newValue === 'dark')) themeMode = e.newValue;
     if (e.key === 'pref_source_font_size' && e.newValue) sourceFontSize = parseInt(e.newValue, 10);
     if (e.key === 'pref_render_font_size' && e.newValue) renderFontSize = parseInt(e.newValue, 10);
@@ -2233,7 +2265,8 @@
     return {
       general: {
         language: languagePreference,
-        theme: themeMode
+        theme: themeMode,
+        defaultNewDocumentFormat
       },
       source: {
         fontSize: sourceFontSize
@@ -2269,6 +2302,7 @@
   function applySettingsSnapshot(settings: AppSettingsSnapshot) {
     languagePreference = settings.general.language;
     themeMode = settings.general.theme;
+    defaultNewDocumentFormat = settings.general.defaultNewDocumentFormat;
     sourceFontSize = settings.source.fontSize;
     renderFontSize = settings.render.fontSize;
     tabSize = settings.render.indentWidth;
@@ -2661,6 +2695,7 @@
   let documentDiagnostic = $state<DocumentDiagnostic | null>(null);
   let documentRender = $derived(parseDocumentForRender(fileContent, {
     pathOrName: filePath || fileName,
+    formatId: selectedDocumentFormat?.id,
     tabSize,
     lineStartOffsets,
     lineRange: { startLine, endLine },
@@ -3018,6 +3053,12 @@
   });
 
   function openFile(openedFile: OpenedFile, replaceCleanUntitled = true) {
+    const existingTab = findOpenFileTab(tabs, openedFile.path);
+    if (existingTab) {
+      activateTab(existingTab.id);
+      return;
+    }
+
     const openedTab = createEditorTab({
       filePath: openedFile.path,
       fileName: getFileNameFromPath(openedFile.path),
@@ -3556,11 +3597,7 @@
     const lineIndex = findLineIndexForOffset(offset);
     const lineStart = lineStartOffsets[lineIndex] ?? 0;
     const lineEnd = getLineEndOffset(fileContent, lineStart);
-    const insideFencedCode = fencedCodeBlocks.some((block) => (
-      lineStart >= block.openingLineStart
-      && lineStart <= (block.closingLineStart ?? Number.POSITIVE_INFINITY)
-    ));
-    if (insideFencedCode) return null;
+    if (isLineInsideFencedCodeBlock(lineStart)) return null;
 
     const line = fileContent.slice(lineStart, lineEnd);
     const match = line.match(/^([ \t]{0,3})(#{1,6})([ \t]+)/u);
@@ -3571,6 +3608,8 @@
   }
 
   function getSafeRenderedCaretOffset(offset: number, direction: -1 | 0 | 1): number {
+    if (markdownHeadingReplacementCaret === offset) return offset;
+
     const headingMarker = getMarkdownHeadingMarkerRange(offset);
     if (headingMarker && offset > headingMarker.start && offset < headingMarker.end) {
       return direction < 0 ? headingMarker.start : headingMarker.end;
@@ -3887,6 +3926,7 @@
 
   function handleEditorBlur() {
     isEditorFocused = false;
+    markdownHeadingReplacementCaret = null;
     closeActiveUndoGroup();
     updateEditorSelectionState();
     hideSteadyEditorCaret();
@@ -4708,6 +4748,58 @@
     return true;
   }
 
+  function isLineInsideFencedCodeBlock(lineStart: number): boolean {
+    return fencedCodeBlocks.some((block) => (
+      lineStart >= block.openingLineStart
+      && lineStart <= (block.closingLineStart ?? Number.POSITIVE_INFINITY)
+    ));
+  }
+
+  function handleRenderMarkdownHeadingSpace(event: KeyboardEvent): boolean {
+    if (activeDocumentFormat.id !== 'markdown' || !isActiveDocumentRenderEnabled) return false;
+    if (!textareaEl || event.isComposing || event.key !== ' ') return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end || isLineInsideFencedCodeBlock(getLineStartOffset(fileContent, start))) return false;
+
+    const edit = getMarkdownHeadingSpaceEdit(fileContent, start);
+    if (!edit) return false;
+
+    event.preventDefault();
+    markdownHeadingReplacementCaret = null;
+    commitRenderEditorEdit(edit.content, edit.selection);
+    return true;
+  }
+
+  function prepareRenderMarkdownHeadingReplacementMarker(event: KeyboardEvent) {
+    if (
+      event.key !== '#'
+      || event.isComposing
+      || event.ctrlKey
+      || event.altKey
+      || event.metaKey
+      || activeDocumentFormat.id !== 'markdown'
+      || !isActiveDocumentRenderEnabled
+      || !textareaEl
+    ) {
+      markdownHeadingReplacementCaret = null;
+      return;
+    }
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (
+      start !== end
+      || isLineInsideFencedCodeBlock(getLineStartOffset(fileContent, start))
+      || !canInsertMarkdownHeadingReplacementMarker(fileContent, start)
+    ) {
+      markdownHeadingReplacementCaret = null;
+      return;
+    }
+
+    markdownHeadingReplacementCaret = start + 1;
+  }
+
   function handleRenderAutoSubstitutionSpace(event: KeyboardEvent): boolean {
     if (!renderAutoSymbolSubstitution) return false;
     if (!textareaEl || event.isComposing) return false;
@@ -4739,6 +4831,7 @@
   }
 
   function handleRenderEditorKeyDown(event: KeyboardEvent) {
+    prepareRenderMarkdownHeadingReplacementMarker(event);
     if (handleRenderListBoundaryArrowLeft(event)) return;
     if (handleRenderListSoftBreakEnter(event)) return;
     if (handleRenderExitEmptyListEnter(event)) return;
@@ -4751,6 +4844,7 @@
     if (handleRenderTabIndent(event)) return;
     if (handleRenderIndentBackspace(event)) return;
     if (handleRenderAutoPairBackspace(event)) return;
+    if (handleRenderMarkdownHeadingSpace(event)) return;
     if (handleRenderAutoSubstitutionSpace(event)) return;
     handleRenderAutoPairInput(event);
   }
@@ -4766,7 +4860,10 @@
       closeActiveUndoGroup();
     }
 
-    if (!isRenderMode) return;
+    if (!isRenderMode) {
+      markdownHeadingReplacementCaret = null;
+      return;
+    }
     if (handleRenderFencedCodeSelectionEdit(event)) return;
     if (handleRenderFencedCodeBlockBackspace(event)) return;
     if (handleRenderFencedCodeBoundaryDeletion(event)) return;
@@ -5802,6 +5899,7 @@
   function handleEditorPointerDown(event: PointerEvent) {
     if (event.button === 0) {
       closeActiveUndoGroup();
+      markdownHeadingReplacementCaret = null;
     }
     if (!isRenderMode || !isActiveDocumentRenderEnabled || !textareaEl || event.button !== 0) return;
 
@@ -6143,6 +6241,27 @@
               </select>
             </div>
             <p class="settings-category-note">{t('settings.languageDescription')}</p>
+          </div>
+          <div class="settings-section">
+            <h4 class="section-title">{t('settings.newDocumentSection')}</h4>
+            <div class="settings-row">
+              <label for="default-new-document-format-select">{t('settings.defaultNewDocumentFormat')}</label>
+              <select
+                id="default-new-document-format-select"
+                bind:value={defaultNewDocumentFormat}
+                class="tab-size-select"
+                style="width: 195px;"
+              >
+                {#each configurableDocumentFormatCategories as category}
+                  <optgroup label={t(category.labelKey)}>
+                    {#each getDocumentFormatsForCategory(category) as format}
+                      <option value={format.id}>{t(format.labelKey)}</option>
+                    {/each}
+                  </optgroup>
+                {/each}
+              </select>
+            </div>
+            <p class="settings-category-note">{t('settings.defaultNewDocumentFormatDescription')}</p>
           </div>
           <div class="settings-section">
             <h4 class="section-title">{t('settings.transfer.title')}</h4>

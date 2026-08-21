@@ -60,6 +60,7 @@ try {
   const editorUndo = await server.ssrLoadModule('/src/lib/editor-undo.ts');
   const diagnosticClient = await server.ssrLoadModule('/src/lib/document-diagnostic-client.ts');
   const autoPair = await server.ssrLoadModule('/src/lib/auto-pair.ts');
+  const markdownHeadingEdit = await server.ssrLoadModule('/src/lib/markdown-heading-edit.ts');
 
   const offsetSamples = [
     '',
@@ -182,6 +183,44 @@ try {
   assert.deepEqual(unorderedMarkerEdit, { text: 'body', caret: 0 });
   assert.equal(listMarkers.getListMarkerBackspaceEdit('1. body', 4), null);
 
+  assert.deepEqual(markdownHeadingEdit.getMarkdownHeadingSpaceEdit('#', 1), {
+    content: '# ',
+    selection: { start: 2, end: 2 }
+  });
+  assert.deepEqual(markdownHeadingEdit.getMarkdownHeadingSpaceEdit('##Title', 2), {
+    content: '## Title',
+    selection: { start: 3, end: 3 }
+  });
+  assert.deepEqual(markdownHeadingEdit.getMarkdownHeadingSpaceEdit('#### Existing', 1), {
+    content: '# Existing',
+    selection: { start: 2, end: 2 }
+  });
+  assert.deepEqual(markdownHeadingEdit.getMarkdownHeadingSpaceEdit('  ####### Existing', 4), {
+    content: '  ## Existing',
+    selection: { start: 5, end: 5 }
+  });
+  assert.deepEqual(markdownHeadingEdit.getMarkdownHeadingSpaceEdit('before\r\n###Title\r\nafter', 11), {
+    content: 'before\r\n### Title\r\nafter',
+    selection: { start: 12, end: 12 }
+  });
+  assert.equal(markdownHeadingEdit.getMarkdownHeadingSpaceEdit('#######Title', 7), null);
+  assert.equal(markdownHeadingEdit.getMarkdownHeadingSpaceEdit('text ##Title', 7), null);
+  assert.equal(markdownHeadingEdit.getMarkdownHeadingSpaceEdit('    #Title', 5), null);
+  assert.equal(markdownHeadingEdit.canInsertMarkdownHeadingReplacementMarker('## Existing', 0), true);
+  assert.equal(markdownHeadingEdit.canInsertMarkdownHeadingReplacementMarker('### Existing', 1), true);
+  assert.equal(markdownHeadingEdit.canInsertMarkdownHeadingReplacementMarker('###### Existing', 5), true);
+  assert.equal(markdownHeadingEdit.canInsertMarkdownHeadingReplacementMarker('####### Existing', 6), false);
+  assert.equal(markdownHeadingEdit.canInsertMarkdownHeadingReplacementMarker('Plain text', 0), false);
+
+  const selectedMarkdownRender = documentFormats.parseDocumentForRender('## Heading', {
+    pathOrName: 'Heading',
+    formatId: 'markdown',
+    tabSize: 4,
+    lineStartOffsets: [0]
+  });
+  assert.equal(selectedMarkdownRender.format.id, 'markdown');
+  assert.equal(selectedMarkdownRender.lines[0].headingLevel, 2);
+
   const tableRow = Array.from({ length: 10 }, (_, index) => `value-${index}`).join(',');
   const interactiveTableContent = Array.from({ length: 200 }, () => tableRow).join('\n');
   const oversizedTableContent = `${interactiveTableContent}\n${tableRow}`;
@@ -209,6 +248,9 @@ try {
     [['', ''], ['', '']]
   );
   assert.equal(documentFormats.getNewDocumentInitialContent('markdown'), '');
+  assert.equal(documentFormats.defaultNewDocumentFormatId, 'markdown');
+  assert.equal(documentFormats.isConfigurableDocumentFormatId('markdown'), true);
+  assert.equal(documentFormats.isConfigurableDocumentFormatId('future-format'), false);
   assert.equal(documentFormats.getDocumentFormatById('markdown')?.defaultExtension, 'md');
 
   const tableDocument = {
@@ -677,7 +719,7 @@ try {
     `Validated render core: CRLF offsets, logarithmic hit testing (${rectCalls} reads), `
       + `XML range cache (${xmlParseDuration.toFixed(1)}ms), 250k-line uniform layout (${uniformDuration.toFixed(1)}ms), `
       + `incremental layout/parser checkpoints, shared input diffs, bounded caches/undo, worker cancellation, `
-      + `auto-pair right-context rules, editor duplication, list-marker backspace, new-table templates, `
+      + `auto-pair right-context rules, editor duplication, list-marker backspace, Markdown heading application, new-table templates, `
       + `and table copy-on-write.`
   );
 } finally {
