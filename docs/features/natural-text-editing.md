@@ -300,12 +300,16 @@ Enter 결과:
 
 | 입력 | 결과 |
 | --- | --- |
+| `-> ` | `→ ` |
 | `--> ` | `→ ` |
+| `<- ` | `← ` |
 | `<-- ` | `← ` |
 | `<-> ` | `↔ ` |
+| `<--> ` | `↔ ` |
 | `==> ` | `⇒ ` |
 | `<== ` | `⇐ ` |
 | `<=> ` | `⇔ ` |
+| `<==> ` | `⇔ ` |
 
 - 단어 한가운데나 다른 문자에 붙은 문자열은 바꾸지 않는다.
 - 변환 뒤에도 사용자가 누른 공백을 하나 남긴다.
@@ -415,6 +419,7 @@ Enter 결과:
 ## text-pad 적용 위치
 
 - `src/routes/+page.svelte`: 렌더 모드 상위 키 입력, 캐럿과 선택 영역 변환, 편집 결과 기록.
+- `src/lib/arrow-substitution.ts`: Space로 확정한 화살표 표기 인식, 원문 교체, 최종 캐럿 계산.
 - `src/lib/markdown-heading-edit.ts`: Space로 확정한 Markdown 제목 표식 적용과 기존 단계 교체 계산.
 - `src/lib/list-markers.ts`: 글머리 인식, 순번 증가, 깊이별 형식 선택.
 - `src/lib/line-oriented-formats.ts`, `src/lib/markdown-settings.ts`: Markdown 제목 인식과 단계별 공통 표시 설정.

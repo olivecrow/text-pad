@@ -114,7 +114,7 @@ export const koreanTranslations: Record<TranslationKey, string> = {
   "settings.autoPair.addFollowingString": "추가",
   "settings.autoPair.removeFollowingString": "허용 문자열 {value} 제거",
   "settings.autoSymbols.title": "화살표 기호 자동 변환",
-  "settings.autoSymbols.description": "독립된 문자열(예: --> 또는 ==>)을 입력하고 Space를 누르면 → 또는 ⇒ 기호로 변환합니다.",
+  "settings.autoSymbols.description": "독립된 문자열(예: ->, <-> 또는 ==>)을 입력하고 Space를 누르면 →, ↔ 또는 ⇒ 기호로 변환합니다.",
   "settings.preserveIndent.title": "줄바꿈 시 들여쓰기 유지",
   "settings.preserveIndent.description": "들여쓰기된 줄에서 Enter를 누르면 다음 줄에도 동일한 들여쓰기가 추가됩니다.",
   "settings.categoryFormats": "{category} 형식",

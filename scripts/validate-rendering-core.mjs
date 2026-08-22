@@ -60,6 +60,7 @@ try {
   const editorUndo = await server.ssrLoadModule('/src/lib/editor-undo.ts');
   const diagnosticClient = await server.ssrLoadModule('/src/lib/document-diagnostic-client.ts');
   const autoPair = await server.ssrLoadModule('/src/lib/auto-pair.ts');
+  const arrowSubstitution = await server.ssrLoadModule('/src/lib/arrow-substitution.ts');
   const markdownHeadingEdit = await server.ssrLoadModule('/src/lib/markdown-heading-edit.ts');
 
   const offsetSamples = [
@@ -163,6 +164,33 @@ try {
   assert.equal(autoPair.canInsertAutoPairAt('=> body', 0, ['=>']), true);
   assert.equal(autoPair.canInsertAutoPairAt('prefix value', 7, ['value']), true);
   assert.equal(autoPair.canInsertAutoPairAt('prefix value', 7, []), false);
+
+  const arrowSubstitutionSamples = [
+    ['->', '→ '],
+    ['-->', '→ '],
+    ['<-', '← '],
+    ['<--', '← '],
+    ['<->', '↔ '],
+    ['<-->', '↔ '],
+    ['==>', '⇒ '],
+    ['<==', '⇐ '],
+    ['<=>', '⇔ '],
+    ['<==>', '⇔ ']
+  ];
+  for (const [trigger, expected] of arrowSubstitutionSamples) {
+    assert.deepEqual(arrowSubstitution.getArrowSubstitutionSpaceEdit(trigger, trigger.length), {
+      content: expected,
+      selection: { start: expected.length, end: expected.length }
+    });
+  }
+  assert.deepEqual(arrowSubstitution.getArrowSubstitutionSpaceEdit('before\r\n->after', 10), {
+    content: 'before\r\n→ after',
+    selection: { start: 10, end: 10 }
+  });
+  assert.equal(arrowSubstitution.getArrowSubstitutionSpaceEdit('word->', 6), null);
+  assert.equal(arrowSubstitution.getArrowSubstitutionSpaceEdit('=>', 2), null);
+  assert.equal(arrowSubstitution.getArrowSubstitutionSpaceEdit('<=', 2), null);
+  assert.equal(arrowSubstitution.getArrowSubstitutionSpaceEdit('>=', 2), null);
 
   const cachedTokens = renderCache.xml.tokens;
   documentFormats.parseDocumentForRender(xmlContent, {
@@ -719,7 +747,7 @@ try {
     `Validated render core: CRLF offsets, logarithmic hit testing (${rectCalls} reads), `
       + `XML range cache (${xmlParseDuration.toFixed(1)}ms), 250k-line uniform layout (${uniformDuration.toFixed(1)}ms), `
       + `incremental layout/parser checkpoints, shared input diffs, bounded caches/undo, worker cancellation, `
-      + `auto-pair right-context rules, editor duplication, list-marker backspace, Markdown heading application, new-table templates, `
+      + `auto-pair right-context rules, arrow substitutions, editor duplication, list-marker backspace, Markdown heading application, new-table templates, `
       + `and table copy-on-write.`
   );
 } finally {

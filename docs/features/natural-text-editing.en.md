@@ -300,12 +300,16 @@ The current arrow substitutions apply after the user types a standalone trigger 
 
 | Input | Result |
 | --- | --- |
+| `-> ` | `→ ` |
 | `--> ` | `→ ` |
+| `<- ` | `← ` |
 | `<-- ` | `← ` |
 | `<-> ` | `↔ ` |
+| `<--> ` | `↔ ` |
 | `==> ` | `⇒ ` |
 | `<== ` | `⇐ ` |
 | `<=> ` | `⇔ ` |
+| `<==> ` | `⇔ ` |
 
 - Do not convert a trigger in the middle of a word or attached to another character.
 - Preserve one space after the substitution to represent the Space key the user pressed.
@@ -415,6 +419,7 @@ When editing assistance is added or changed, verify at least the following:
 ## text-pad implementation locations
 
 - `src/routes/+page.svelte`: top-level render-mode input, caret and selection conversion, and edit-result recording.
+- `src/lib/arrow-substitution.ts`: arrow-trigger recognition, source replacement, and final-caret calculation confirmed by Space.
 - `src/lib/markdown-heading-edit.ts`: calculation of Markdown heading-marker application and existing-level replacement confirmed by Space.
 - `src/lib/list-markers.ts`: list-marker recognition, sequence advancement, and depth-based style selection.
 - `src/lib/line-oriented-formats.ts` and `src/lib/markdown-settings.ts`: Markdown heading recognition and shared per-level display settings.

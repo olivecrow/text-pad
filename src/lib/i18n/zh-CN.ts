@@ -114,7 +114,7 @@ export const simplifiedChineseTranslations: Record<TranslationKey, string> = {
   "settings.autoPair.addFollowingString": "添加",
   "settings.autoPair.removeFollowingString": "移除允许的字符串 {value}",
   "settings.autoSymbols.title": "自动转换箭头符号",
-  "settings.autoSymbols.description": "输入独立的字符序列（例如 --> 或 ==>）并按下空格键时，自动将其转换为 → 或 ⇒。",
+  "settings.autoSymbols.description": "输入独立的字符序列（例如 ->、<-> 或 ==>）并按下空格键时，自动将其转换为 →、↔ 或 ⇒。",
   "settings.preserveIndent.title": "在新行保留缩进",
   "settings.preserveIndent.description": "在有缩进的行按 Enter 键时，在下一行自动添加相同的缩进。",
   "settings.categoryFormats": "{category} 格式",

@@ -114,7 +114,7 @@ export const arabicTranslations: Record<TranslationKey, string> = {
   "settings.autoPair.addFollowingString": "إضافة",
   "settings.autoPair.removeFollowingString": "إزالة السلسلة المسموح بها {value}",
   "settings.autoSymbols.title": "تحويل رموز الأسهم تلقائيًا",
-  "settings.autoSymbols.description": "كتابة تتابع مستقل مثل --> أو ==> ثم مسافة يحوله إلى → أو ⇒.",
+  "settings.autoSymbols.description": "كتابة تتابع مستقل مثل -> أو <-> أو ==> ثم مسافة يحوله إلى → أو ↔ أو ⇒.",
   "settings.preserveIndent.title": "الإبقاء على المسافة البادئة في سطر جديد",
   "settings.preserveIndent.description": "الضغط على Enter في سطر يحتوي على مسافة بادئة يضيف المسافة البادئة نفسها إلى السطر التالي.",
   "settings.categoryFormats": "تنسيقات {category}",

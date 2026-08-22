@@ -114,7 +114,7 @@ export const japaneseTranslations: Record<TranslationKey, string> = {
   "settings.autoPair.addFollowingString": "追加",
   "settings.autoPair.removeFollowingString": "許可文字列 {value} を削除",
   "settings.autoSymbols.title": "矢印記号の自動変換",
-  "settings.autoSymbols.description": "--> や ==> などの独立したシーケンスを入力した後に Space を入力すると、→ や ⇒ に変換されます。",
+  "settings.autoSymbols.description": "->、<->、==> などの独立したシーケンスを入力した後に Space を入力すると、→、↔、⇒ に変換されます。",
   "settings.preserveIndent.title": "改行時のインデント維持",
   "settings.preserveIndent.description": "インデントされた行で Enter を押すと、次の行に同じインデントが追加されます。",
   "settings.categoryFormats": "{category} フォーマット",

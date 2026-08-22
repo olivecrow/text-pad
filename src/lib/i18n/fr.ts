@@ -114,7 +114,7 @@ export const frenchTranslations: Record<TranslationKey, string> = {
   "settings.autoPair.addFollowingString": "Ajouter",
   "settings.autoPair.removeFollowingString": "Supprimer la chaîne autorisée {value}",
   "settings.autoSymbols.title": "Convertir automatiquement les flèches",
-  "settings.autoSymbols.description": "Saisir une séquence isolée comme --> ou ==> puis appuyer sur Espace la convertit en → ou ⇒.",
+  "settings.autoSymbols.description": "Saisir une séquence isolée comme ->, <-> ou ==> puis appuyer sur Espace la convertit en →, ↔ ou ⇒.",
   "settings.preserveIndent.title": "Conserver l'indentation sur une nouvelle ligne",
   "settings.preserveIndent.description": "Appuyer sur Entrée sur une ligne indentée ajoute la même indentation à la ligne suivante.",
   "settings.categoryFormats": "Formats {category}",

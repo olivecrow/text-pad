@@ -114,7 +114,7 @@ export const russianTranslations: Record<TranslationKey, string> = {
   "settings.autoPair.addFollowingString": "Добавить",
   "settings.autoPair.removeFollowingString": "Удалить разрешённую строку {value}",
   "settings.autoSymbols.title": "Автоматически преобразовывать символы стрелок",
-  "settings.autoSymbols.description": "Ввод отдельной последовательности, такой как --> или ==>, с последующим пробелом преобразует её в → или ⇒.",
+  "settings.autoSymbols.description": "Ввод отдельной последовательности, такой как ->, <-> или ==>, с последующим пробелом преобразует её в →, ↔ или ⇒.",
   "settings.preserveIndent.title": "Сохранять отступ на новой строке",
   "settings.preserveIndent.description": "Нажатие Enter на строке с отступом добавляет такой же отступ на следующую строку.",
   "settings.categoryFormats": "Форматы {category}",

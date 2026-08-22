@@ -117,7 +117,7 @@ export const englishTranslations = {
   'settings.autoPair.addFollowingString': 'Add',
   'settings.autoPair.removeFollowingString': 'Remove allowed string {value}',
   'settings.autoSymbols.title': 'Convert arrow symbols automatically',
-  'settings.autoSymbols.description': 'Typing a standalone sequence such as --> or ==> and then Space converts it to → or ⇒.',
+  'settings.autoSymbols.description': 'Typing a standalone sequence such as ->, <->, or ==> and then Space converts it to →, ↔, or ⇒.',
   'settings.preserveIndent.title': 'Keep indentation on a new line',
   'settings.preserveIndent.description': 'Pressing Enter on an indented line adds the same indentation to the next line.',
   'settings.categoryFormats': '{category} formats',

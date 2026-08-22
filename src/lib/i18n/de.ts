@@ -114,7 +114,7 @@ export const germanTranslations: Record<TranslationKey, string> = {
   "settings.autoPair.addFollowingString": "Hinzufügen",
   "settings.autoPair.removeFollowingString": "Erlaubte Zeichenfolge {value} entfernen",
   "settings.autoSymbols.title": "Pfeilsymbole automatisch umwandeln",
-  "settings.autoSymbols.description": "Das Tippen einer freistehenden Zeichenfolge wie --> oder ==> gefolgt von der Leertaste wandelt diese in → oder ⇒ um.",
+  "settings.autoSymbols.description": "Das Tippen einer freistehenden Zeichenfolge wie ->, <-> oder ==> gefolgt von der Leertaste wandelt diese in →, ↔ oder ⇒ um.",
   "settings.preserveIndent.title": "Einzug in neuer Zeile beibehalten",
   "settings.preserveIndent.description": "Drücken von Eingabe in einer eingerückten Zeile fügt der nächsten Zeile denselben Einzug hinzu.",
   "settings.categoryFormats": "{category}-Formate",

@@ -114,7 +114,7 @@ export const brazilianPortugueseTranslations: Record<TranslationKey, string> = {
   "settings.autoPair.addFollowingString": "Adicionar",
   "settings.autoPair.removeFollowingString": "Remover a string permitida {value}",
   "settings.autoSymbols.title": "Converter símbolos de seta automaticamente",
-  "settings.autoSymbols.description": "Digitar uma sequência isolada como --> ou ==> e depois Espaço a converte para → ou ⇒.",
+  "settings.autoSymbols.description": "Digitar uma sequência isolada como ->, <-> ou ==> e depois Espaço a converte para →, ↔ ou ⇒.",
   "settings.preserveIndent.title": "Manter recuo em uma nova linha",
   "settings.preserveIndent.description": "Pressionar Enter em uma linha recuada adiciona o mesmo recuo à próxima linha.",
   "settings.categoryFormats": "Formatos de {category}",

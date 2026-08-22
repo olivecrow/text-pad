@@ -114,7 +114,7 @@ export const spanishTranslations: Record<TranslationKey, string> = {
   "settings.autoPair.addFollowingString": "Añadir",
   "settings.autoPair.removeFollowingString": "Quitar la cadena permitida {value}",
   "settings.autoSymbols.title": "Convertir símbolos de flecha automáticamente",
-  "settings.autoSymbols.description": "Al escribir una secuencia independiente como --> o ==> y luego Espacio, se convierte en → o ⇒.",
+  "settings.autoSymbols.description": "Al escribir una secuencia independiente como ->, <-> o ==> y luego Espacio, se convierte en →, ↔ o ⇒.",
   "settings.preserveIndent.title": "Mantener sangría en una nueva línea",
   "settings.preserveIndent.description": "Al pulsar Intro en una línea con sangría, se añade la misma sangría a la siguiente línea.",
   "settings.categoryFormats": "Formatos de {category}",

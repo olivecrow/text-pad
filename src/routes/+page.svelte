@@ -99,6 +99,7 @@
   } from "$lib/text-offset-index";
   import { getPreferredNewline, getSnapshotFromTextareaInput } from "$lib/editor-input";
   import { getEditorDuplicationEdit } from "$lib/editor-duplication";
+  import { getArrowSubstitutionSpaceEdit } from "$lib/arrow-substitution";
   import {
     canInsertMarkdownHeadingReplacementMarker,
     getMarkdownHeadingSpaceEdit
@@ -773,15 +774,6 @@
     }
   }
 
-  const renderAutoSubstitutions: Record<string, string> = {
-    '-->': '→',
-    '<--': '←',
-    '<->': '↔',
-    '==>': '⇒',
-    '<==': '⇐',
-    '<=>': '⇔'
-  };
-  const renderAutoSubstitutionTriggers = Object.keys(renderAutoSubstitutions).sort((a, b) => b.length - a.length);
   const editorIndentUnit = '    ';
   const editorHorizontalPadding = 24;
   const fencedCodeHorizontalPadding = 12;
@@ -4809,23 +4801,11 @@
     const { start, end } = getTextareaSelectionInContent();
     if (start !== end || start === 0) return false;
 
-    const trigger = renderAutoSubstitutionTriggers.find((candidate) => {
-      const triggerStart = start - candidate.length;
-      if (triggerStart < 0) return false;
-      if (fileContent.slice(triggerStart, start) !== candidate) return false;
-      return triggerStart === 0 || /\s/.test(fileContent[triggerStart - 1]);
-    });
-    if (!trigger) return false;
+    const edit = getArrowSubstitutionSpaceEdit(fileContent, start);
+    if (!edit) return false;
 
     event.preventDefault();
-
-    const triggerStart = start - trigger.length;
-    const substitution = renderAutoSubstitutions[trigger];
-    const nextContent = `${fileContent.slice(0, triggerStart)}${substitution} ${fileContent.slice(end)}`;
-    commitRenderEditorEdit(nextContent, {
-      start: triggerStart + substitution.length + 1,
-      end: triggerStart + substitution.length + 1
-    });
+    commitRenderEditorEdit(edit.content, edit.selection);
 
     return true;
   }
