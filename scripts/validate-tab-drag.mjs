@@ -11,6 +11,7 @@ const server = await createServer({
 try {
   const tabDrag = await server.ssrLoadModule('/src/lib/tab-drag.ts');
   const fileTabs = await server.ssrLoadModule('/src/lib/file-tabs.ts');
+  const editorSession = await server.ssrLoadModule('/src/lib/editor-session.ts');
   const undo = await server.ssrLoadModule('/src/lib/editor-undo.ts');
 
   assert.equal(tabDrag.tabDetachTargetClaimDelayMs, 50);
@@ -92,6 +93,62 @@ try {
     '\\\\server\\share\\file.txt'
   );
 
+  const sessionTab = (id, fileContent) => ({
+    id,
+    filePath: null,
+    fileName: id,
+    fileContent,
+    selectedDocumentFormatId: 'markdown',
+    encoding: 'utf8',
+    isDirty: false,
+    scrollTop: 0,
+    scrollLeft: 0,
+    selectionStart: 0,
+    selectionEnd: 0,
+    cursorLine: 1,
+    cursorCol: 1,
+    caretOffset: 0
+  });
+  const firstSessionTab = sessionTab('one', 'first');
+  const secondSessionTab = sessionTab('two', 'second');
+  const initialSession = editorSession.createEditorSession(firstSessionTab);
+  const editedSession = editorSession.updateEditorTab(initialSession, 'one', {
+    fileContent: 'first edit',
+    isDirty: true,
+    selectionStart: 10,
+    selectionEnd: 10,
+    caretOffset: 10
+  });
+  assert.equal(editorSession.getActiveEditorTab(editedSession).fileContent, 'first edit');
+  assert.equal(initialSession.tabs[0].fileContent, 'first');
+
+  const twoTabSession = editorSession.setEditorSessionTabs(
+    editedSession,
+    [...editedSession.tabs, secondSessionTab]
+  );
+  assert.equal(twoTabSession.activeTabId, 'one');
+  const activatedSession = editorSession.activateEditorTab(twoTabSession, 'two');
+  assert.equal(editorSession.getActiveEditorTab(activatedSession).id, 'two');
+  const scrolledSession = editorSession.updateEditorTab(activatedSession, 'two', {
+    scrollTop: 480,
+    cursorLine: 24
+  });
+  assert.equal(editorSession.getActiveEditorTab(scrolledSession).scrollTop, 480);
+  assert.equal(scrolledSession.tabs[0].scrollTop, 0);
+
+  const closedActiveSession = editorSession.setEditorSessionTabs(
+    scrolledSession,
+    [scrolledSession.tabs[0]],
+    'two'
+  );
+  assert.equal(closedActiveSession.activeTabId, 'one');
+  assert.equal(editorSession.activateEditorTab(closedActiveSession, 'missing'), closedActiveSession);
+  assert.throws(() => editorSession.setEditorSessionTabs(closedActiveSession, []));
+  assert.throws(() => editorSession.setEditorSessionTabs(
+    closedActiveSession,
+    [firstSessionTab, { ...secondSessionTab, id: firstSessionTab.id }]
+  ));
+
   const initialSnapshot = {
     content: 'one',
     selection: { start: 3, end: 3 }
@@ -119,7 +176,7 @@ try {
   assert.equal(restoredSavedHistory.isDirty(), false);
 
   console.log(
-    'Validated tabs: existing-file reuse, dock bounds, pointer-follow preview, blank-tab preservation, insertion indices, reordering, and undo-state transfer.'
+    'Validated tabs: single-owner editor sessions, existing-file reuse, dock bounds, pointer-follow preview, blank-tab preservation, insertion indices, reordering, and undo-state transfer.'
   );
 } finally {
   await server.close();

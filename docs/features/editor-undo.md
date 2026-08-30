@@ -14,7 +14,7 @@
 - `commitManualEditorEdit`: 메뉴, 단축키, 붙여넣기, 잘라내기, 시간 삽입, 렌더 토큰 클릭처럼 앱이 직접 계산한 편집 결과를 기록하는 내부 함수다.
 - `commitRenderEditorEdit`: 렌더 모드 편집 보조 기능이 직접 계산한 편집 결과를 기록하는 내부 함수다.
 
-새 파일이나 새 모듈에서 편집 기능을 분리하더라도 원문 변경은 위 함수와 같은 단일 기록 경로를 지나야 한다. 낮은 단계의 도우미 함수가 직접 `fileContent`, `textarea.selectionStart`, `textarea.selectionEnd`를 바꾸며 기록을 우회하면 안 된다.
+새 파일이나 새 모듈에서 편집 기능을 분리하더라도 원문 변경은 위 함수와 같은 단일 기록 경로를 지나야 한다. 낮은 단계의 도우미 함수가 활성 `EditorTab.fileContent`, `textarea.selectionStart`, `textarea.selectionEnd`를 따로 바꾸며 기록을 우회하면 안 된다.
 
 ## 기록 단위
 
@@ -65,7 +65,7 @@
 
 - `document.execCommand("undo")`나 `document.execCommand("redo")`를 다시 사용하지 않는다.
 - 브라우저 기본 `historyUndo`, `historyRedo` 입력을 그대로 통과시키지 않는다.
-- 새 편집 기능에서 `fileContent`만 직접 바꾸고 실행 취소 기록을 남기지 않는 경로를 만들지 않는다.
+- 새 편집 기능에서 활성 `EditorTab.fileContent`만 직접 바꾸고 실행 취소 기록을 남기지 않는 경로를 만들지 않는다.
 - 앱 전용 편집의 중간 상태를 여러 실행 취소 단계로 쌓지 않는다.
 
 ## 검증 기준

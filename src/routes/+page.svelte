@@ -38,6 +38,17 @@
   } from "$lib/list-markers";
   import { EditorUndoHistory, EditorUndoWindowBudget, type EditorSelection, type EditorSnapshot, type EditorUndoHistoryState } from "$lib/editor-undo";
   import {
+    activateEditorTab as activateEditorSessionTab,
+    createEditorSession,
+    getActiveEditorTab,
+    getActiveEditorTabIndex,
+    setEditorSessionTabs,
+    updateEditorTab,
+    type EditorTab,
+    type EditorTabUpdates,
+    type TextEncoding
+  } from "$lib/editor-session";
+  import {
     getTabDragPreviewPosition,
     getTabDropIndex,
     insertTabItem,
@@ -141,25 +152,6 @@
     getNativeCaretTextOffsetAtPoint,
     type RenderedTextBoundary
   } from "$lib/rendered-text-geometry";
-
-  type TextEncoding = 'utf8' | 'utf8Bom' | 'utf16Le' | 'utf16Be';
-
-  interface EditorTab {
-    id: string;
-    filePath: string | null;
-    fileName: string;
-    fileContent: string;
-    selectedDocumentFormatId: DocumentFormatId | null;
-    encoding: TextEncoding;
-    isDirty: boolean;
-    scrollTop: number;
-    scrollLeft: number;
-    selectionStart: number;
-    selectionEnd: number;
-    cursorLine: number;
-    cursorCol: number;
-    caretOffset: number;
-  }
 
   interface TabTransferPayload {
     transferId: string;
@@ -424,10 +416,13 @@
     [initialTab.id, new EditorUndoHistory(getTabSnapshot(initialTab))]
   ]);
   let lastEditorSnapshot: EditorSnapshot = getTabSnapshot(initialTab);
+  let editorActivationGeneration = 0;
   const undoWindowBudget = new EditorUndoWindowBudget(128 * 1024 * 1024);
   undoWindowBudget.touch(initialTab.id);
-  let tabs = $state<EditorTab[]>([initialTab]);
-  let activeTabId = $state<string>(initialTab.id);
+  let editorSession = $state(createEditorSession(initialTab));
+  let tabs = $derived(editorSession.tabs);
+  let activeTabId = $derived(editorSession.activeTabId);
+  let activeTab = $derived(getActiveEditorTab(editorSession));
   const minimumTabWidth = 128;
   const preferredTabWidth = 150;
   const tabItemGap = 2;
@@ -456,14 +451,14 @@
   const pendingIncomingTransferResolvers = new Map<string, (received: boolean) => void>();
   let tabTransferListenersPromise: Promise<UnlistenFn[]> | null = null;
   const startupTabTransferMetadata = getStartupTabTransferMetadata();
-  let filePath = $state<string | null>(initialTab.filePath);
-  let fileName = $state<string>(initialTab.fileName);
-  let fileContent = $state<string>(initialTab.fileContent);
-  let selectedDocumentFormatId = $state<DocumentFormatId | null>(initialTab.selectedDocumentFormatId);
+  let filePath = $derived(activeTab?.filePath ?? null);
+  let fileName = $derived(activeTab ? getDisplayFileName(activeTab) : untitledFileName);
+  let fileContent = $derived(activeTab?.fileContent ?? '');
+  let selectedDocumentFormatId = $derived(activeTab?.selectedDocumentFormatId ?? null);
   let textOffsetIndex = $state.raw<TextOffsetIndex>(createTextOffsetIndex(initialTab.fileContent));
   let latestContentChange = $state.raw<TextChange | null>(null);
-  let fileEncoding = $state<TextEncoding>(initialTab.encoding);
-  let isDirty = $state<boolean>(initialTab.isDirty);
+  let fileEncoding = $derived<TextEncoding>(activeTab?.encoding ?? 'utf8');
+  let isDirty = $derived(activeTab?.isDirty ?? false);
   let isNewDocumentFormatPickerOpen = $state(false);
   let newDocumentFormatTriggerEl = $state<HTMLButtonElement | null>(null);
   let newDocumentFormatPickerEl = $state<HTMLDivElement | null>(null);
@@ -486,9 +481,9 @@
   let installedAppVersion = $state<string>(APP_VERSION_FALLBACK);
 
   // 커서 상태 추적
-  let cursorLine = $state<number>(1);
-  let cursorCol = $state<number>(1);
-  let caretOffset = $state<number>(0);
+  let cursorLine = $derived(activeTab?.cursorLine ?? 1);
+  let cursorCol = $derived(activeTab?.cursorCol ?? 1);
+  let caretOffset = $derived(activeTab?.caretOffset ?? 0);
   let editorCaretColor = $state<string>('var(--color-render-text, var(--text-color))');
   let editorCursorStyle = $state<string>('text');
   let hasEditorSelection = $state<boolean>(false);
@@ -570,8 +565,8 @@
   );
   let currentFontSize = $derived(isRenderMode ? renderFontSize : sourceFontSize);
   let tabSize = $state<number>(4);          // 기본 들여쓰기 탭 4칸
-  let scrollTop = $state<number>(0);
-  let scrollLeft = $state<number>(0);
+  let scrollTop = $derived(activeTab?.scrollTop ?? 0);
+  let scrollLeft = $derived(activeTab?.scrollLeft ?? 0);
   let measuredLineHeight = $state<number>(22);
   let clientHeight = $state<number>(500);
   let editorViewportResizeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -822,16 +817,23 @@
 
 
   function getActiveTabIndex(): number {
-    return tabs.findIndex((tab) => tab.id === activeTabId);
+    return getActiveEditorTabIndex(editorSession);
   }
 
   function getActiveTab(): EditorTab | null {
-    const activeIndex = getActiveTabIndex();
-    return activeIndex === -1 ? null : tabs[activeIndex];
+    return activeTab;
   }
 
-  function updateTabById(tabId: string, updates: Partial<EditorTab>) {
-    tabs = tabs.map((tab) => tab.id === tabId ? { ...tab, ...updates } : tab);
+  function updateTabById(tabId: string, updates: EditorTabUpdates) {
+    editorSession = updateEditorTab(editorSession, tabId, updates);
+  }
+
+  function updateActiveTab(updates: EditorTabUpdates) {
+    updateTabById(activeTabId, updates);
+  }
+
+  function replaceSessionTabs(nextTabs: EditorTab[], preferredActiveTabId = activeTabId) {
+    editorSession = setEditorSessionTabs(editorSession, nextTabs, preferredActiveTabId);
   }
 
   function getUndoHistoryForTab(tab: EditorTab): EditorUndoHistory {
@@ -935,50 +937,43 @@
     getActiveUndoHistory().closeGroup();
   }
 
-  function syncActiveTabState() {
+  function captureActiveEditorView() {
     if (pendingInlineColorEditBefore) {
       finishInlineColorPickerEdit();
     }
 
-    const activeTab = getActiveTab();
-    if (!activeTab) return;
+    const tab = getActiveTab();
+    if (!tab) return;
 
     const nextFileName = filePath
       ? fileName
       : getUnsavedDocumentTitle(fileContent, selectedDocumentFormatId);
-    const nextIsDirty = getUndoHistoryForTab(activeTab).isDirty();
-    fileName = nextFileName;
-    isDirty = nextIsDirty;
+    const nextIsDirty = getUndoHistoryForTab(tab).isDirty();
     const selection = getCurrentEditorSelection();
+    const scrollElement = isRenderMode && isEnhancedDocumentWithinBudget
+      ? editorViewportEl
+      : textareaEl;
 
-    updateTabById(activeTab.id, {
-      filePath,
+    updateActiveTab({
       fileName: nextFileName,
-      fileContent,
-      selectedDocumentFormatId,
-      encoding: fileEncoding,
       isDirty: nextIsDirty,
-      scrollTop,
-      scrollLeft,
+      scrollTop: scrollElement?.scrollTop ?? tab.scrollTop,
+      scrollLeft: scrollElement?.scrollLeft ?? tab.scrollLeft,
       selectionStart: selection.start,
-      selectionEnd: selection.end,
-      cursorLine,
-      cursorCol,
-      caretOffset
+      selectionEnd: selection.end
     });
   }
 
-  function restoreEditorView(tab: EditorTab) {
-    scrollTop = tab.scrollTop;
-    scrollLeft = tab.scrollLeft;
-    cursorLine = tab.cursorLine;
-    cursorCol = tab.cursorCol;
-    caretOffset = tab.caretOffset;
+  function restoreEditorView(tab: EditorTab, activationGeneration: number) {
     editorCursorStyle = 'text';
     clearInlineColorPickerState();
 
     requestAnimationFrame(() => {
-      if (!textareaEl) return;
+      if (
+        !textareaEl
+        || editorActivationGeneration !== activationGeneration
+        || activeTabId !== tab.id
+      ) return;
       const selectionStart = Math.min(tab.selectionStart, fileContent.length);
       const selectionEnd = Math.min(tab.selectionEnd, fileContent.length);
 
@@ -997,20 +992,21 @@
 
   function loadTabIntoEditor(tab: EditorTab) {
     const history = getUndoHistoryForTab(tab);
-    setLastEditorSnapshot(getTabSnapshot(tab));
-    activeTabId = tab.id;
-    filePath = tab.filePath;
-    fileName = getDisplayFileName(tab);
+    const nextIsDirty = history.isDirty();
+    const nextTab = nextIsDirty === tab.isDirty
+      ? tab
+      : { ...tab, isDirty: nextIsDirty };
+    if (nextTab !== tab) updateTabById(tab.id, { isDirty: nextTab.isDirty });
+    editorSession = activateEditorSessionTab(editorSession, tab.id);
+    editorActivationGeneration += 1;
+    const activationGeneration = editorActivationGeneration;
+    setLastEditorSnapshot(getTabSnapshot(nextTab));
     latestContentChange = null;
-    textOffsetIndex = createTextOffsetIndex(tab.fileContent);
-    fileContent = tab.fileContent;
-    selectedDocumentFormatId = tab.selectedDocumentFormatId ?? null;
+    textOffsetIndex = createTextOffsetIndex(nextTab.fileContent);
     isNewDocumentFormatPickerOpen = false;
     enforceUndoWindowBudget();
-    fileEncoding = tab.encoding;
-    isDirty = history.isDirty();
     errorMsg = null;
-    restoreEditorView(tab);
+    restoreEditorView(nextTab, activationGeneration);
   }
 
   function updateTabStripMetrics() {
@@ -1169,7 +1165,7 @@
     previewOffsetX: number,
     previewOffsetY: number
   ): OutgoingTabTransfer | null {
-    syncActiveTabState();
+    captureActiveEditorView();
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab) return null;
 
@@ -1323,20 +1319,20 @@
   }
 
   function reorderTabWithinCurrentWindow(tabId: string, dropIndex: number) {
-    syncActiveTabState();
+    captureActiveEditorView();
     const sourceIndex = tabs.findIndex((tab) => tab.id === tabId);
     if (sourceIndex === -1) return;
 
     const nextTabs = reorderTabItems(tabs, sourceIndex, dropIndex);
     if (nextTabs.every((tab, index) => tab.id === tabs[index]?.id)) return;
-    tabs = nextTabs;
+    replaceSessionTabs(nextTabs);
     requestAnimationFrame(() => scrollTabIntoView(tabId));
   }
 
   function insertTransferredTab(delivery: TabTransferDelivery): boolean {
     if (receivedTabTransferIds.has(delivery.transferId)) return true;
 
-    syncActiveTabState();
+    captureActiveEditorView();
     const hasSingleCleanUntitledTab = tabs.length === 1 && isCleanUntitledTab(tabs[0]);
     const shouldReplaceBlank = shouldReplaceDetachedWindowPlaceholder(
       startupTabTransferMetadata?.transferId ?? null,
@@ -1356,9 +1352,9 @@
     if (shouldReplaceBlank) {
       undoWindowBudget.remove(tabs[0].id);
       undoHistories.delete(tabs[0].id);
-      tabs = [receivedTab];
+      replaceSessionTabs([receivedTab], receivedTab.id);
     } else {
-      tabs = insertTabItem(tabs, receivedTab, delivery.dropIndex);
+      replaceSessionTabs(insertTabItem(tabs, receivedTab, delivery.dropIndex));
     }
 
     undoHistories.set(receivedTab.id, receivedHistory);
@@ -1663,7 +1659,7 @@
   });
   function activateTab(tabId: string) {
     if (tabId === activeTabId) return;
-    syncActiveTabState();
+    captureActiveEditorView();
     const nextTab = tabs.find((tab) => tab.id === tabId);
     if (!nextTab) return;
     closeAllDropdown();
@@ -1671,9 +1667,9 @@
   }
 
   function addTab(tab: EditorTab) {
-    syncActiveTabState();
+    captureActiveEditorView();
     resetUndoHistoryForTab(tab);
-    tabs = [...tabs, tab];
+    replaceSessionTabs([...tabs, tab]);
     closeAllDropdown();
     loadTabIntoEditor(tab);
   }
@@ -1686,8 +1682,7 @@
     if (filePath !== null || fileContent.length > 0) return;
 
     isNewDocumentFormatPickerOpen = false;
-    selectedDocumentFormatId = formatId;
-    updateTabById(activeTabId, { selectedDocumentFormatId: formatId });
+    updateActiveTab({ selectedDocumentFormatId: formatId });
 
     const initialContent = getNewDocumentInitialContent(formatId);
     if (initialContent.length > 0) {
@@ -1730,7 +1725,7 @@
   }
 
   function replaceActiveTabWith(tab: EditorTab) {
-    syncActiveTabState();
+    captureActiveEditorView();
     const activeIndex = getActiveTabIndex();
     if (activeIndex === -1) {
       addTab(tab);
@@ -1740,7 +1735,7 @@
     const activeId = tabs[activeIndex].id;
     const nextTab = { ...tab, id: activeId };
     resetUndoHistoryForTab(nextTab);
-    tabs = tabs.map((item) => item.id === activeId ? nextTab : item);
+    replaceSessionTabs(tabs.map((item) => item.id === activeId ? nextTab : item));
     loadTabIntoEditor(nextTab);
   }
 
@@ -1753,7 +1748,7 @@
       undoHistories.delete(tabId);
       const blankTab = createEditorTab();
       resetUndoHistoryForTab(blankTab);
-      tabs = [blankTab];
+      replaceSessionTabs([blankTab], blankTab.id);
       loadTabIntoEditor(blankTab);
       return;
     }
@@ -1761,11 +1756,14 @@
     const nextTabs = tabs.filter((tab) => tab.id !== tabId);
     undoWindowBudget.remove(tabId);
     undoHistories.delete(tabId);
-    tabs = nextTabs;
 
     if (activeTabId === tabId) {
       const nextIndex = Math.min(closingIndex, nextTabs.length - 1);
-      loadTabIntoEditor(nextTabs[nextIndex]);
+      const nextTab = nextTabs[nextIndex];
+      replaceSessionTabs(nextTabs, nextTab.id);
+      loadTabIntoEditor(nextTab);
+    } else {
+      replaceSessionTabs(nextTabs);
     }
   }
 
@@ -1911,7 +1909,7 @@
   });
 
   async function shouldCloseEditorWindow(): Promise<boolean> {
-    syncActiveTabState();
+    captureActiveEditorView();
     const dirtyTabs = untrack(() => tabs.filter((tab) => tab.isDirty));
     if (dirtyTabs.length === 0) return true;
 
@@ -1948,7 +1946,7 @@
   });
 
   async function confirmCloseTab(tabId: string): Promise<boolean> {
-    syncActiveTabState();
+    captureActiveEditorView();
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab || !tab.isDirty) return true;
 
@@ -2005,18 +2003,10 @@
       encoding: savedFile.encoding,
       isDirty: false
     });
-
-    if (tabId === activeTabId) {
-      filePath = savedFile.path;
-      fileName = nextFileName;
-      selectedDocumentFormatId = null;
-      fileEncoding = savedFile.encoding;
-      isDirty = false;
-    }
   }
 
   async function writeTabContent(tabId: string, targetPath: string) {
-    syncActiveTabState();
+    captureActiveEditorView();
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab) return;
 
@@ -2029,7 +2019,7 @@
   }
 
   async function saveTabFile(tabId: string): Promise<boolean> {
-    syncActiveTabState();
+    captureActiveEditorView();
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab) return false;
 
@@ -2055,7 +2045,7 @@
   }
 
   async function saveCurrentFileAs(): Promise<boolean> {
-    syncActiveTabState();
+    captureActiveEditorView();
     const tab = getActiveTab();
     if (!tab) return false;
 
@@ -2750,6 +2740,7 @@
 
     steadyEditorCaretVisible = false;
     editorViewportEl.scrollTop = nextScrollTop;
+    updateActiveTab({ scrollTop: nextScrollTop });
     requestAnimationFrame(() => syncSteadyEditorCaretPosition());
     return true;
   }
@@ -2789,8 +2780,10 @@
       }
       if (revealCaret && Math.abs(nextScrollTop - editorViewportEl.scrollTop) > 0.5) {
         const maximumScrollTop = Math.max(0, renderEditorScrollHeight - editorViewportEl.clientHeight);
+        const clampedScrollTop = Math.max(0, Math.min(nextScrollTop, maximumScrollTop));
         steadyEditorCaretVisible = false;
-        editorViewportEl.scrollTop = Math.max(0, Math.min(nextScrollTop, maximumScrollTop));
+        editorViewportEl.scrollTop = clampedScrollTop;
+        updateActiveTab({ scrollTop: clampedScrollTop });
         requestAnimationFrame(() => syncSteadyEditorCaretPosition());
         return;
       }
@@ -3000,7 +2993,7 @@
     try {
       isLoading = true;
       errorMsg = null;
-      syncActiveTabState();
+      captureActiveEditorView();
       const openedFiles = await invoke<OpenedFile[]>("open_file_paths", { paths });
       for (const openedFile of openedFiles) {
         openFile(openedFile, false);
@@ -3021,7 +3014,7 @@
 
       isLoading = true;
       errorMsg = null;
-      syncActiveTabState();
+      captureActiveEditorView();
       for (const openedFile of openedFiles) {
         openFile(openedFile, false);
       }
@@ -3099,7 +3092,7 @@
 
       isLoading = true;
       errorMsg = null;
-      syncActiveTabState();
+      captureActiveEditorView();
       for (const startupFile of startupFiles) {
         openFile(startupFile);
       }
@@ -3590,21 +3583,27 @@
     if (!textareaEl) return;
     if (!revealCaret) cancelPendingRenderedCaretReveal();
     const isCollapsed = textareaEl.selectionStart === textareaEl.selectionEnd;
-    let { start: pos } = getTextareaSelectionInContent();
+    let selection = getTextareaSelectionInContent();
+    let pos = selection.start;
     const previousCaretOffset = caretOffset;
     if (isRenderMode && isActiveDocumentRenderEnabled && isCollapsed) {
       const safePosition = getSafeRenderedCaretOffset(pos, pendingRenderCaretMovementDirection);
       if (safePosition !== pos) {
         setTextareaSelectionFromContent(safePosition, safePosition);
         pos = safePosition;
+        selection = { start: safePosition, end: safePosition };
       }
     }
     pendingRenderCaretMovementDirection = 0;
     updateEditorSelectionState();
-    caretOffset = pos;
     const lineIndex = findLineIndexForOffset(pos);
-    cursorLine = lineIndex + 1;
-    cursorCol = pos - (lineStartOffsets[lineIndex] ?? 0) + 1;
+    updateActiveTab({
+      selectionStart: selection.start,
+      selectionEnd: selection.end,
+      caretOffset: pos,
+      cursorLine: lineIndex + 1,
+      cursorCol: pos - (lineStartOffsets[lineIndex] ?? 0) + 1
+    });
     updateEditorCaretColor(pos);
     syncSteadyEditorCaretPosition(revealCaret);
     if (isRenderMode && isCollapsed && pos !== previousCaretOffset && steadyEditorCaretVisible) {
@@ -3629,22 +3628,21 @@
     latestContentChange = contentChange;
     textOffsetIndex = suppliedOffsetIndex
       ?? (contentChange ? createTextOffsetIndex(snapshot.content) : getTextOffsetIndex(snapshot.content));
-    fileContent = snapshot.content;
     if (snapshot.content.length > 0) isNewDocumentFormatPickerOpen = false;
-    fileName = filePath
+    const nextFileName = filePath
       ? fileName
-      : getUnsavedDocumentTitle(fileContent, selectedDocumentFormatId);
-    isDirty = getActiveUndoHistory().isDirty();
-    errorMsg = null;
-    reconcileInlineColorPickerState();
-    setLastEditorSnapshot(snapshot);
-    updateTabById(activeTabId, {
-      fileName,
-      fileContent,
-      isDirty,
+      : getUnsavedDocumentTitle(snapshot.content, selectedDocumentFormatId);
+    const nextIsDirty = getActiveUndoHistory().isDirty();
+    updateActiveTab({
+      fileName: nextFileName,
+      fileContent: snapshot.content,
+      isDirty: nextIsDirty,
       selectionStart: snapshot.selection.start,
       selectionEnd: snapshot.selection.end
     });
+    errorMsg = null;
+    reconcileInlineColorPickerState();
+    setLastEditorSnapshot(snapshot);
   }
 
   function applyEditorSnapshot(
@@ -3653,20 +3651,24 @@
     change?: TextChange | null,
     offsetIndex?: TextOffsetIndex
   ) {
+    const editedTabId = activeTabId;
+    const activationGeneration = editorActivationGeneration;
     updateEditorStateForSnapshot(snapshot, change, offsetIndex);
 
     if (selectionAlreadyApplied) {
       updateCursorPosition();
-      syncActiveTabState();
       return;
     }
 
     requestAnimationFrame(() => {
-      if (!textareaEl) return;
+      if (
+        !textareaEl
+        || activeTabId !== editedTabId
+        || editorActivationGeneration !== activationGeneration
+      ) return;
       textareaEl.focus({ preventScroll: true });
       setTextareaSelectionFromContent(snapshot.selection.start, snapshot.selection.end, snapshot.content);
       updateCursorPosition();
-      syncActiveTabState();
     });
   }
 
@@ -3682,6 +3684,8 @@
       offsetIndex?: TextOffsetIndex;
     } = {}
   ) {
+    const editedTabId = activeTabId;
+    const activationGeneration = editorActivationGeneration;
     const change = options.change === undefined
       ? getTextChange(before.content, after.content)
       : options.change;
@@ -3699,8 +3703,11 @@
     ) {
       updateEditorStateForSnapshot(after, change, offsetIndex);
       void tick().then(() => {
+        if (
+          activeTabId !== editedTabId
+          || editorActivationGeneration !== activationGeneration
+        ) return;
         updateCursorPosition();
-        syncActiveTabState();
         if (options.keepRenderCaretVisible) {
           keepEditorCaretVisibleDuringEdit();
         } else {
@@ -4793,7 +4800,7 @@
     try {
       isLoading = true;
       errorMsg = null;
-      syncActiveTabState();
+      captureActiveEditorView();
       closeAllDropdown();
       const openedFile = await invoke<OpenedFile | null>("open_file_dialog", {
         filters: getOpenFileDialogFilters(locale)
@@ -5145,6 +5152,7 @@
       if (renderScrollDelta === 0) return;
 
       editorViewportEl.scrollTop += renderScrollDelta;
+      updateActiveTab({ scrollTop: editorViewportEl.scrollTop });
       e.preventDefault();
       return;
     }
@@ -5153,13 +5161,13 @@
     if (e.deltaX !== 0) {
       // 일반 브라우저 환경에서 가로 휠 동작 시 스크롤 속도를 보정하기 위해 배율(x3) 적용
       textareaEl.scrollLeft += e.deltaX * 3;
-      scrollLeft = textareaEl.scrollLeft;
+      updateActiveTab({ scrollLeft: textareaEl.scrollLeft });
       e.preventDefault();
     }
     // Shift 키를 누르고 세로 휠을 돌릴 때 가로 스크롤 매핑
     else if (e.shiftKey && e.deltaY !== 0) {
       textareaEl.scrollLeft += e.deltaY;
-      scrollLeft = textareaEl.scrollLeft;
+      updateActiveTab({ scrollLeft: textareaEl.scrollLeft });
       e.preventDefault();
     }
   }
@@ -5168,16 +5176,14 @@
   function handleScroll(e: Event) {
     if (isRenderMode && isEnhancedDocumentWithinBudget) return;
     const target = e.target as HTMLTextAreaElement;
-    scrollTop = target.scrollTop;
-    scrollLeft = target.scrollLeft;
+    updateActiveTab({ scrollTop: target.scrollTop, scrollLeft: target.scrollLeft });
     syncSteadyEditorCaretPosition();
   }
 
   function handleEditorViewportScroll(e: Event) {
     if (!isRenderMode || !isEnhancedDocumentWithinBudget) return;
     const target = e.target as HTMLDivElement;
-    scrollTop = target.scrollTop;
-    scrollLeft = target.scrollLeft;
+    updateActiveTab({ scrollTop: target.scrollTop, scrollLeft: target.scrollLeft });
     syncSteadyEditorCaretPosition();
   }
 
@@ -5215,8 +5221,10 @@
           // OS의 delta 값(보통 120 또는 -120)을 받아 가로 스크롤에 직접 반영
           // 윈도우 OS의 가로 스크롤 한 틱 단위가 대개 120이므로, 120px 만큼 스크롤됩니다.
           textareaEl.scrollLeft += delta;
-          scrollTop = textareaEl.scrollTop;
-          scrollLeft = textareaEl.scrollLeft;
+          updateActiveTab({
+            scrollTop: textareaEl.scrollTop,
+            scrollLeft: textareaEl.scrollLeft
+          });
 
           // 디버그 텍스트 갱신
           wheelDebug = `Native dX: ${delta}`;
@@ -5804,34 +5812,38 @@
   }
 
   function applyInlineColorPreview(start: number, end: number, nextValue: string) {
+    const editedTabId = activeTabId;
+    const activationGeneration = editorActivationGeneration;
     const beforeContent = fileContent;
     const nextContent = `${beforeContent.slice(0, start)}${nextValue}${beforeContent.slice(end)}`;
     latestContentChange = getTextChange(beforeContent, nextContent);
     textOffsetIndex = createTextOffsetIndex(nextContent);
-    fileContent = nextContent;
     inlineColorPickerValue = nextValue;
     pendingInlineColorReplacement = { start, end: start + nextValue.length };
-    fileName = filePath ? fileName : getFirstLineTitle(fileContent);
-    isDirty = true;
+    const nextFileName = filePath ? fileName : getFirstLineTitle(nextContent);
+    updateActiveTab({
+      fileName: nextFileName,
+      fileContent: nextContent,
+      isDirty: true,
+      selectionStart: start,
+      selectionEnd: start + nextValue.length
+    });
     errorMsg = null;
     updateEditorCaretColor(caretOffset);
     setLastEditorSnapshot({
-      content: fileContent,
+      content: nextContent,
       selection: {
         start,
         end: start + nextValue.length
       }
     });
-    updateTabById(activeTabId, {
-      fileName,
-      fileContent,
-      isDirty,
-      selectionStart: start,
-      selectionEnd: start + nextValue.length
-    });
 
     requestAnimationFrame(() => {
-      if (!textareaEl) return;
+      if (
+        !textareaEl
+        || activeTabId !== editedTabId
+        || editorActivationGeneration !== activationGeneration
+      ) return;
       setTextareaSelectionFromContent(start, start + nextValue.length);
       updateCursorPosition();
       if (pendingInlineColorReplacement) {

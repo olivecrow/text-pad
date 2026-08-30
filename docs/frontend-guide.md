@@ -14,6 +14,7 @@
 - `src/lib/structured-rendering.ts`: 절대 위치 토큰의 화면 범위 선택, 줄 분할, 들여쓰기 깊이 계산.
 - `src/lib/text-offset-index.ts`: 원문 줄 시작과 CRLF 위치 인덱스, 원문과 `textarea` 선택 위치의 이진 탐색 변환.
 - `src/lib/text-change.ts`, `src/lib/editor-input.ts`: 한 번 계산한 국소 변경 범위와 원문·`textarea` 위치 인덱스를 입력, 실행 취소, 렌더 캐시가 함께 쓰게 하는 편집 입력 모듈.
+- `src/lib/editor-session.ts`: 탭 목록과 활성 탭 식별자의 불변 조건, 탭 활성화·교체·갱신을 소유하는 단일 문서 세션 모듈.
 - `src/lib/editor-layout.ts`: 원문 모드의 균일 줄 높이 계산과 렌더 모드의 증분 줄 높이·목록·울타리 코드 인덱스.
 - `src/lib/line-state-checkpoints.ts`: 여러 줄 주석과 블록 문자열처럼 앞줄 상태가 필요한 파서의 주기적 상태 체크포인트.
 - `src/lib/document-diagnostic.worker.ts`, `src/lib/document-diagnostic-client.ts`: 문법 검사를 주 UI 스레드 밖에서 실행하고 새 입력이 오면 이전 검사를 취소하는 작업자와 요청 관리자.
@@ -36,9 +37,9 @@
 
 ## 주요 상태
 
-- `tabs`, `activeTabId`: 열린 파일 탭 목록과 현재 활성 탭 식별자.
-- `fileContent`: 저장 기준이 되는 원문 텍스트.
-- `filePath`, `fileName`, `selectedDocumentFormatId`, `fileEncoding`, `isDirty`: 활성 탭의 파일 경로, 표시 이름, 저장 전 선택 형식, UTF-8/UTF-16 인코딩, 변경 여부. 파일 경로가 없는 새 탭은 첫 줄을 표시 이름으로 쓰고, 원문이 비어 있을 때만 상단 도구 모음에 형식 선택 버튼을 표시한다.
+- `editorSession`: `src/lib/editor-session.ts` 계약을 따르는 열린 탭 목록과 현재 활성 탭 식별자. 세션에는 항상 하나 이상의 고유한 탭이 있고 활성 식별자는 반드시 그중 하나를 가리킨다.
+- 각 `EditorTab`: 저장 기준 원문, 파일 경로와 이름, 저장 전 선택 형식, UTF-8/UTF-16 인코딩, 변경 여부, 선택 영역, 스크롤과 캐럿 상태를 소유한다. `fileContent`, `filePath`, `isDirty`, `scrollTop` 같은 페이지 값은 활성 탭에서 읽는 파생값이며 별도 복사본으로 저장하지 않는다.
+- 파일 경로가 없는 새 탭은 첫 줄을 표시 이름으로 쓰고, 원문이 비어 있을 때만 상단 도구 모음에 형식 선택 버튼을 표시한다.
 - `defaultNewDocumentFormat`: 이후에 만드는 새 탭에 적용할 기본 형식. `localStorage`와 설정 가져오기·내보내기에 포함하며 기본값은 Markdown이다.
 - 실행 취소(Undo) 기록: 탭 식별자별 메모리 기록으로 유지한다. 다시 실행(Redo)은 실행 취소한 기록 안에서만 가능하다.
 - `isRenderMode`: 원문 모드와 렌더 모드 전환 상태.
@@ -94,12 +95,12 @@
 - 긴 줄과 큰 파일에서 입력 지연이 생기지 않게 한다.
 - 파일을 새로 열면 새 탭이나 깨끗한 빈 탭에서 스크롤 위치를 처음으로 둔다.
 - 운영체제에서 파일을 메인 창에 드롭하면 같은 경로의 기존 탭을 활성화하고, 처음 여는 파일은 기존 활성 탭을 교체하지 않은 새 탭으로 연다.
-- 탭을 전환할 때 활성 탭의 원문, 선택 영역, 스크롤 위치를 먼저 저장하고 새 탭 상태를 복원한다.
+- 편집·저장·스크롤·캐럿 변경은 해당 `EditorTab`을 즉시 갱신한다. 탭 전환 경계에서는 DOM에만 존재하는 최신 선택·스크롤 위치를 활성 탭에 캡처한 뒤 새 활성 탭의 DOM 뷰와 파생 캐시를 복원한다. 원문이나 파일 상태를 별도 활성 변수와 서로 복사하지 않는다.
 - 세부 파일 흐름은 `docs/features/file-workflow.md`를 기준으로 한다.
 
 ## 렌더 모드
 
-렌더 모드는 `textarea` 위에 구문 강조용 배경 레이어를 겹쳐 표시한다. 실제 편집 기준은 계속 `fileContent`다.
+렌더 모드는 `textarea` 위에 구문 강조용 배경 레이어를 겹쳐 표시한다. 실제 편집 기준은 활성 `EditorTab.fileContent`이며 페이지의 `fileContent`는 이를 읽는 파생값이다.
 
 현재 렌더 모드는 다음을 제공한다.
 
