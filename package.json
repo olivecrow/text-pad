@@ -7,7 +7,7 @@
     "dev": "vite dev",
     "build": "npm run validate:capabilities && npm run validate:formats && vite build",
     "preview": "vite preview",
-    "check": "npm run validate:capabilities && npm run validate:formats && npm run test:desktop && npm run test:formats && npm run test:rendering && npm run test:tabs && npm run test:settings && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check": "npm run validate:capabilities && npm run validate:formats && npm run test:desktop && npm run test:formats && npm run test:rendering && npm run test:tabs && npm run test:settings && npm run test:browser && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "validate:i18n": "node scripts/validate-i18n.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "licenses": "node scripts/generate-runtime-notices.mjs",
@@ -19,7 +19,8 @@
     "test:formats": "node scripts/validate-format-samples.mjs",
     "test:tabs": "node scripts/validate-tab-drag.mjs",
     "test:rendering": "node scripts/validate-rendering-core.mjs",
-    "test:settings": "node scripts/validate-settings-transfer.mjs"
+    "test:settings": "node scripts/validate-settings-transfer.mjs",
+    "test:browser": "playwright test"
   },
   "license": "MIT",
   "dependencies": {
@@ -35,6 +36,7 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.61.0",
     "@sveltejs/adapter-static": "^3.0.6",
     "@sveltejs/kit": "^2.9.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",

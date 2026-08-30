@@ -80,7 +80,8 @@ graph TD
 - `npm run validate:i18n`: 번역표 키와 치환 변수 검사.
 - `npm run validate:capabilities`: 편집기·설정창의 Tauri 명령과 최소 권한 계약 검사.
 - `npm run validate:formats`: 중앙 지원 목록, 샘플, Windows 설치 연결의 일치 검사.
-- `npm run check`: Svelte와 TypeScript 검사.
+- `npm run test:browser`: 실제 Chromium DOM에서 렌더 뷰포트 스크롤 회귀 검사. 최초 1회 `npx playwright install chromium`으로 브라우저를 준비한다.
+- `npm run check`: 정적·코어 검사와 브라우저 회귀 검사를 함께 실행한다.
 - `npm run build`: 프론트엔드 정적 빌드.
 - `npm run tauri dev`: Tauri 개발 실행.
 - `npm run tauri:build:signed`: Windows 실행 파일, MSI/NSIS 설치 파일, 업데이터 서명 생성. 최종 빌드는 이 명령만 사용한다.

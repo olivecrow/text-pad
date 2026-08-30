@@ -6096,12 +6096,14 @@
         <!-- 에디터 영역 뷰포트 -->
         <div
           class="editor-viewport"
+          data-testid="editor-viewport"
           bind:this={editorViewportEl}
           onscroll={handleEditorViewportScroll}
         >
           {#if isRenderMode && isEnhancedDocumentWithinBudget}
             <div
               class="editor-render-scroll-extent"
+              data-testid="editor-render-scroll-extent"
               style="height: {renderEditorScrollHeight}px;"
               aria-hidden="true"
             ></div>
@@ -6171,6 +6173,7 @@
           <textarea
             bind:this={textareaEl}
             class="editor-textarea"
+            data-testid="editor-textarea"
             style="height: {isRenderMode && isEnhancedDocumentWithinBudget ? `${renderEditorScrollHeight}px` : '100%'}; font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled && !shouldShowNativeRenderText ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode && isEnhancedDocumentWithinBudget ? editorCursorStyle : 'text'};"
             wrap={isRenderMode && isEnhancedDocumentWithinBudget ? 'soft' : 'off'}
             value={textareaDisplayContent}
@@ -7341,6 +7344,7 @@
   }
 
   .inline-color-picker-native {
+    position: absolute;
     width: 1px;
     height: 1px;
     min-width: 0;

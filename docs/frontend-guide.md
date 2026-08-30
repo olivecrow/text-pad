@@ -187,6 +187,7 @@
 
 - 번역표 변경 후: `npm run validate:i18n`
 - 지원 형식이나 샘플 변경 후: `npm run validate:formats`
+- 렌더 높이, 가상화, 스크롤 입력처럼 실제 DOM 레이아웃에 의존하는 변경 후: `npm run test:browser`
 - 프론트엔드 변경 후: `npm run check`
 - 설정창, Tauri 권한, 패키징에 영향이 있으면: `.agents/skills/text-pad-signed-build/SKILL.md`에 따라 `npm run tauri:build:signed`
 - 화면 구조 변경 후: 실제 앱에서 겹침, 잘림, 포커스 이동을 확인한다.
