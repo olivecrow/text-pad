@@ -135,6 +135,10 @@
   } from "$lib/editor-layout";
   import { getEditorScrollHeight, getRenderWheelScrollDelta } from "$lib/editor-scroll-extent";
   import {
+    createBrowserRenderViewportScheduler,
+    RenderViewportController
+  } from "$lib/render-viewport-controller";
+  import {
     createBrowserDocumentDiagnosticWorkerClient,
     DocumentDiagnosticCancelledError
   } from "$lib/document-diagnostic-client";
@@ -495,9 +499,6 @@
   let steadyEditorCaretHeight = $state<number>(22);
   let steadyEditorCaretTimer: ReturnType<typeof setTimeout> | null = null;
   let steadyEditorCaretBlinkKey = $state<number>(0);
-  let renderCaretRevealGeneration = 0;
-  let pendingRenderCaretRevealGeneration: number | null = null;
-  let renderCaretRevealSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let isEditorFocused = $state<boolean>(false);
   let editorTextMeasureCanvas: HTMLCanvasElement | null = null;
   let editorTextMeasureContext: CanvasRenderingContext2D | null = null;
@@ -569,10 +570,7 @@
   let scrollLeft = $derived(activeTab?.scrollLeft ?? 0);
   let measuredLineHeight = $state<number>(22);
   let clientHeight = $state<number>(500);
-  let editorViewportResizeTimer: ReturnType<typeof setTimeout> | null = null;
-  let pendingEditorViewportWidth = 500;
   let isRenderWrapSettling = $state<boolean>(false);
-  let renderWrapSettleGeneration = 0;
   let pendingNativeInput: { before: EditorSnapshot; inputType: string; isComposing: boolean } | null = null;
   let isComposingEditorText = false;
 
@@ -2368,6 +2366,27 @@
   let charCount = $derived(fileContent.length);
   let textareaDisplayContent = $derived(textOffsetIndex.textareaValue);
   let editorViewportWidth = $state<number>(500);
+  const renderViewportController = isBrowser
+    ? new RenderViewportController({
+        scheduler: createBrowserRenderViewportScheduler(),
+        resizeDebounceMs: editorResizeDebounceMs,
+        caretRevealSettleDelayMs: renderCaretRevealSettleDelayMs,
+        isWrapSettlingEnabled: () => isRenderMode,
+        onViewportWidthChange: (width) => {
+          editorViewportWidth = width;
+        },
+        onViewportHeightChange: (height) => {
+          clientHeight = height;
+        },
+        onWrapSettlingChange: (isSettling) => {
+          isRenderWrapSettling = isSettling;
+        },
+        onCaretSync: (revealCaret) => {
+          syncSteadyEditorCaretPosition(revealCaret);
+        }
+      })
+    : null;
+
   function getEditorTextBoxWidth(): number {
     const fallbackWidth = Math.max(1, editorViewportWidth);
     if (!isBrowser || !textareaEl) return fallbackWidth;
@@ -2460,7 +2479,7 @@
       heights: nextHeights
     };
     void tick().then(() => {
-      syncPendingRenderedCaretRevealAfterLayout();
+      renderViewportController?.syncCaretAfterLayout();
       scheduleRenderedSelectionHighlight();
     });
   }
@@ -2814,49 +2833,9 @@
     }
   }
 
-  function cancelPendingRenderedCaretReveal() {
-    renderCaretRevealGeneration += 1;
-    pendingRenderCaretRevealGeneration = null;
-    if (renderCaretRevealSettleTimer) {
-      clearTimeout(renderCaretRevealSettleTimer);
-      renderCaretRevealSettleTimer = null;
-    }
-  }
-
-  function scheduleRenderedCaretRevealCompletion(generation: number) {
-    if (renderCaretRevealSettleTimer) {
-      clearTimeout(renderCaretRevealSettleTimer);
-    }
-    renderCaretRevealSettleTimer = setTimeout(() => {
-      if (generation !== pendingRenderCaretRevealGeneration) return;
-      syncSteadyEditorCaretPosition(true);
-      pendingRenderCaretRevealGeneration = null;
-      renderCaretRevealSettleTimer = null;
-    }, renderCaretRevealSettleDelayMs);
-  }
-
-  function syncPendingRenderedCaretRevealAfterLayout() {
-    const generation = pendingRenderCaretRevealGeneration;
-    if (generation === null) {
-      syncSteadyEditorCaretPosition();
-      return;
-    }
-
-    syncSteadyEditorCaretPosition(true);
-    scheduleRenderedCaretRevealCompletion(generation);
-  }
-
-  function revealRenderedCaretAfterLayout() {
-    const generation = renderCaretRevealGeneration + 1;
-    renderCaretRevealGeneration = generation;
-    pendingRenderCaretRevealGeneration = generation;
-    syncSteadyEditorCaretPosition(true);
-    scheduleRenderedCaretRevealCompletion(generation);
-  }
-
   function keepEditorCaretVisibleDuringEdit() {
     if (isRenderMode) {
-      revealRenderedCaretAfterLayout();
+      renderViewportController?.requestCaretReveal();
       return;
     }
 
@@ -2892,75 +2871,29 @@
     measureLineHeight();
   });
 
-  function beginRenderWrapSettling() {
-    if (!isRenderMode) return;
-    renderWrapSettleGeneration += 1;
-    isRenderWrapSettling = true;
-  }
-
-  function finishRenderWrapSettlingAfterPaint() {
-    if (!isBrowser) {
-      isRenderWrapSettling = false;
-      return;
-    }
-
-    const generation = renderWrapSettleGeneration + 1;
-    renderWrapSettleGeneration = generation;
-
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (renderWrapSettleGeneration === generation) {
-          isRenderWrapSettling = false;
-        }
-      });
-    });
-  }
-
   // 뷰포트 크기 변경 관찰
   $effect(() => {
-    if (!editorViewportEl) return;
+    const viewport = editorViewportEl;
+    if (!viewport || !renderViewportController) return;
 
-    pendingEditorViewportWidth = editorViewportEl.clientWidth || editorViewportWidth;
-    editorViewportWidth = pendingEditorViewportWidth;
-    clientHeight = editorViewportEl.clientHeight || clientHeight;
-    let hasObservedViewportResize = false;
-
-    const flushEditorViewportWidth = () => {
-      editorViewportWidth = pendingEditorViewportWidth;
-      editorViewportResizeTimer = null;
-      finishRenderWrapSettlingAfterPaint();
-    };
+    renderViewportController.connectViewport(
+      viewport.clientWidth || editorViewportWidth,
+      viewport.clientHeight || clientHeight
+    );
 
     const observer = new ResizeObserver((entries) => {
-      let widthChanged = false;
+      const entry = entries[entries.length - 1];
+      if (!entry) return;
 
-      for (let entry of entries) {
-        const nextWidth = entry.contentRect.width;
-        clientHeight = entry.contentRect.height;
-        widthChanged = widthChanged || Math.abs(nextWidth - pendingEditorViewportWidth) > 0.5;
-        pendingEditorViewportWidth = nextWidth;
-      }
-
-      if (hasObservedViewportResize && widthChanged) {
-        beginRenderWrapSettling();
-      }
-
-      if (editorViewportResizeTimer) {
-        clearTimeout(editorViewportResizeTimer);
-      }
-
-      editorViewportResizeTimer = setTimeout(flushEditorViewportWidth, editorResizeDebounceMs);
-      hasObservedViewportResize = true;
+      renderViewportController.observeViewportSize(
+        entry.contentRect.width,
+        entry.contentRect.height
+      );
     });
-    observer.observe(editorViewportEl);
+    observer.observe(viewport);
     return () => {
       observer.disconnect();
-      renderWrapSettleGeneration += 1;
-      isRenderWrapSettling = false;
-      if (editorViewportResizeTimer) {
-        clearTimeout(editorViewportResizeTimer);
-        editorViewportResizeTimer = null;
-      }
+      renderViewportController.disconnectViewport();
     };
   });
 
@@ -3581,7 +3514,7 @@
 
   function syncCursorState(revealCaret: boolean) {
     if (!textareaEl) return;
-    if (!revealCaret) cancelPendingRenderedCaretReveal();
+    if (!revealCaret) renderViewportController?.cancelCaretReveal();
     const isCollapsed = textareaEl.selectionStart === textareaEl.selectionEnd;
     let selection = getTextareaSelectionInContent();
     let pos = selection.start;
@@ -3898,7 +3831,7 @@
   });
 
   onDestroy(() => {
-    cancelPendingRenderedCaretReveal();
+    renderViewportController?.dispose();
     documentDiagnosticWorkerClient?.dispose();
     renderedLineResizeObserver?.disconnect();
     renderedLineResizeObserver = null;
@@ -5141,7 +5074,7 @@
 
     if (isRenderMode && isEnhancedDocumentWithinBudget) {
       if (!editorViewportEl) return;
-      cancelPendingRenderedCaretReveal();
+      renderViewportController?.cancelCaretReveal();
       const renderScrollDelta = getRenderWheelScrollDelta({
         deltaMode: e.deltaMode,
         deltaY: e.deltaY,
@@ -5189,7 +5122,7 @@
 
   function handleEditorViewportPointerDown() {
     if (isRenderMode && isEnhancedDocumentWithinBudget) {
-      cancelPendingRenderedCaretReveal();
+      renderViewportController?.cancelCaretReveal();
     }
   }
 

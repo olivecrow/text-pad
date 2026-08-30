@@ -45,6 +45,51 @@ function flattenTokens(tokens) {
   return tokens.map((token) => token.children ? flattenTokens(token.children) : token.text || '').join('');
 }
 
+function createFakeRenderViewportScheduler() {
+  let nextHandle = 1;
+  const timeouts = new Map();
+  const animationFrames = new Map();
+
+  return {
+    scheduler: {
+      setTimeout(callback) {
+        const handle = nextHandle;
+        nextHandle += 1;
+        timeouts.set(handle, callback);
+        return handle;
+      },
+      clearTimeout(handle) {
+        timeouts.delete(handle);
+      },
+      requestAnimationFrame(callback) {
+        const handle = nextHandle;
+        nextHandle += 1;
+        animationFrames.set(handle, callback);
+        return handle;
+      },
+      cancelAnimationFrame(handle) {
+        animationFrames.delete(handle);
+      }
+    },
+    get timeoutCount() {
+      return timeouts.size;
+    },
+    get animationFrameCount() {
+      return animationFrames.size;
+    },
+    flushTimeouts() {
+      const callbacks = [...timeouts.values()];
+      timeouts.clear();
+      for (const callback of callbacks) callback();
+    },
+    flushAnimationFrame() {
+      const callbacks = [...animationFrames.values()];
+      animationFrames.clear();
+      for (const callback of callbacks) callback();
+    }
+  };
+}
+
 try {
   const offsets = await server.ssrLoadModule('/src/lib/text-offset-index.ts');
   const geometry = await server.ssrLoadModule('/src/lib/rendered-text-geometry.ts');
@@ -57,6 +102,7 @@ try {
   const editorDuplication = await server.ssrLoadModule('/src/lib/editor-duplication.ts');
   const editorLayout = await server.ssrLoadModule('/src/lib/editor-layout.ts');
   const editorScrollExtent = await server.ssrLoadModule('/src/lib/editor-scroll-extent.ts');
+  const renderViewport = await server.ssrLoadModule('/src/lib/render-viewport-controller.ts');
   const boundedCollections = await server.ssrLoadModule('/src/lib/bounded-collections.ts');
   const editorUndo = await server.ssrLoadModule('/src/lib/editor-undo.ts');
   const diagnosticClient = await server.ssrLoadModule('/src/lib/document-diagnostic-client.ts');
@@ -554,6 +600,71 @@ try {
     shiftKey: true
   }), 0);
 
+  const caretScheduler = createFakeRenderViewportScheduler();
+  const caretSyncs = [];
+  const caretController = new renderViewport.RenderViewportController({
+    scheduler: caretScheduler.scheduler,
+    resizeDebounceMs: 80,
+    caretRevealSettleDelayMs: 200,
+    isWrapSettlingEnabled: () => true,
+    onViewportWidthChange() {},
+    onViewportHeightChange() {},
+    onWrapSettlingChange() {},
+    onCaretSync: (revealCaret) => caretSyncs.push(revealCaret)
+  });
+  caretController.requestCaretReveal();
+  caretController.syncCaretAfterLayout();
+  assert.equal(caretScheduler.timeoutCount, 1);
+  caretController.cancelCaretReveal();
+  assert.equal(caretScheduler.timeoutCount, 0);
+  caretScheduler.flushTimeouts();
+  caretController.syncCaretAfterLayout();
+  caretController.requestCaretReveal();
+  caretScheduler.flushTimeouts();
+  assert.deepEqual(caretSyncs, [true, true, false, true, true]);
+
+  const viewportScheduler = createFakeRenderViewportScheduler();
+  const viewportWidths = [];
+  const viewportHeights = [];
+  const wrapSettlingStates = [];
+  const viewportController = new renderViewport.RenderViewportController({
+    scheduler: viewportScheduler.scheduler,
+    resizeDebounceMs: 80,
+    caretRevealSettleDelayMs: 200,
+    isWrapSettlingEnabled: () => true,
+    onViewportWidthChange: (width) => viewportWidths.push(width),
+    onViewportHeightChange: (height) => viewportHeights.push(height),
+    onWrapSettlingChange: (isSettling) => wrapSettlingStates.push(isSettling),
+    onCaretSync() {}
+  });
+  viewportController.connectViewport(500, 400);
+  viewportController.observeViewportSize(510, 410);
+  assert.deepEqual(wrapSettlingStates, []);
+  viewportScheduler.flushTimeouts();
+  assert.deepEqual(viewportWidths, [500, 510]);
+  assert.equal(viewportScheduler.animationFrameCount, 1);
+  viewportScheduler.flushAnimationFrame();
+  viewportScheduler.flushAnimationFrame();
+  viewportController.observeViewportSize(620, 420);
+  viewportController.observeViewportSize(640, 430);
+  assert.deepEqual(wrapSettlingStates, [true]);
+  assert.equal(viewportScheduler.timeoutCount, 1);
+  viewportScheduler.flushTimeouts();
+  assert.deepEqual(viewportWidths, [500, 510, 640]);
+  assert.deepEqual(viewportHeights, [400, 410, 420, 430]);
+  viewportScheduler.flushAnimationFrame();
+  assert.deepEqual(wrapSettlingStates, [true]);
+  viewportScheduler.flushAnimationFrame();
+  assert.deepEqual(wrapSettlingStates, [true, false]);
+  viewportController.observeViewportSize(700, 440);
+  assert.deepEqual(wrapSettlingStates, [true, false, true]);
+  viewportController.disconnectViewport();
+  assert.equal(viewportScheduler.timeoutCount, 0);
+  assert.equal(viewportScheduler.animationFrameCount, 0);
+  assert.deepEqual(wrapSettlingStates, [true, false, true, false]);
+  viewportScheduler.flushTimeouts();
+  assert.deepEqual(viewportWidths, [500, 510, 640]);
+
   const nestedModeContent = '    1. item\n       continuation';
   const nestedModeIndex = offsets.createTextOffsetIndex(nestedModeContent);
   const nestedModeLayout = editorLayout.getEditorLineLayout(editorLayout.createEditorLineLayoutCache(), {
@@ -788,7 +899,7 @@ try {
   console.log(
     `Validated render core: CRLF offsets, logarithmic hit testing (${rectCalls} reads), `
       + `XML range cache (${xmlParseDuration.toFixed(1)}ms), 250k-line uniform layout (${uniformDuration.toFixed(1)}ms), `
-      + `incremental layout/parser checkpoints, shared input diffs, bounded caches/undo, worker cancellation, `
+      + `incremental layout/parser checkpoints, viewport lifecycle, shared input diffs, bounded caches/undo, worker cancellation, `
       + `auto-pair right-context rules, arrow substitutions, editor duplication, list-marker backspace, Markdown heading application, new-table templates, `
       + `and table copy-on-write.`
   );

@@ -16,6 +16,7 @@
 - `src/lib/text-change.ts`, `src/lib/editor-input.ts`: 한 번 계산한 국소 변경 범위와 원문·`textarea` 위치 인덱스를 입력, 실행 취소, 렌더 캐시가 함께 쓰게 하는 편집 입력 모듈.
 - `src/lib/editor-session.ts`: 탭 목록과 활성 탭 식별자의 불변 조건, 탭 활성화·교체·갱신을 소유하는 단일 문서 세션 모듈.
 - `src/lib/editor-layout.ts`: 원문 모드의 균일 줄 높이 계산과 렌더 모드의 증분 줄 높이·목록·울타리 코드 인덱스.
+- `src/lib/render-viewport-controller.ts`: 편집 뷰포트 폭 변경의 안정화 시점과 렌더 캐럿 재표시의 예약·취소 수명을 소유하는 컨트롤러.
 - `src/lib/line-state-checkpoints.ts`: 여러 줄 주석과 블록 문자열처럼 앞줄 상태가 필요한 파서의 주기적 상태 체크포인트.
 - `src/lib/document-diagnostic.worker.ts`, `src/lib/document-diagnostic-client.ts`: 문법 검사를 주 UI 스레드 밖에서 실행하고 새 입력이 오면 이전 검사를 취소하는 작업자와 요청 관리자.
 - `src/lib/bounded-collections.ts`: 텍스트 폭과 창 간 탭 수신 식별자처럼 장시간 사용할 수 있는 캐시의 크기 제한 자료 구조.
