@@ -125,6 +125,7 @@
     type RenderedLineHeightMeasurements,
     type RenderListLineLayout
   } from "$lib/editor-layout";
+  import { getEditorScrollHeight, getRenderWheelScrollDelta } from "$lib/editor-scroll-extent";
   import {
     createBrowserDocumentDiagnosticWorkerClient,
     DocumentDiagnosticCancelledError
@@ -505,6 +506,9 @@
   let steadyEditorCaretHeight = $state<number>(22);
   let steadyEditorCaretTimer: ReturnType<typeof setTimeout> | null = null;
   let steadyEditorCaretBlinkKey = $state<number>(0);
+  let renderCaretRevealGeneration = 0;
+  let pendingRenderCaretRevealGeneration: number | null = null;
+  let renderCaretRevealSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let isEditorFocused = $state<boolean>(false);
   let editorTextMeasureCanvas: HTMLCanvasElement | null = null;
   let editorTextMeasureContext: CanvasRenderingContext2D | null = null;
@@ -778,8 +782,10 @@
   const editorHorizontalPadding = 24;
   const fencedCodeHorizontalPadding = 12;
   const editorTopPadding = 8;
+  const editorBottomPadding = 8;
   const virtualLineOverscan = 8;
   const editorResizeDebounceMs = 80;
+  const renderCaretRevealSettleDelayMs = 200;
   const delimitedTableReorderDurationMinMs = 50;
   const delimitedTableReorderDurationMaxMs = 2000;
   const delimitedTableReorderDurationStepMs = 50;
@@ -1025,9 +1031,14 @@
 
       textareaEl.focus({ preventScroll: true });
       setTextareaSelectionFromContent(selectionStart, selectionEnd);
-      textareaEl.scrollTop = tab.scrollTop;
+      if (isRenderMode && isEnhancedDocumentWithinBudget) {
+        textareaEl.scrollTop = 0;
+        if (editorViewportEl) editorViewportEl.scrollTop = tab.scrollTop;
+      } else {
+        textareaEl.scrollTop = tab.scrollTop;
+      }
       textareaEl.scrollLeft = tab.scrollLeft;
-      updateCursorPosition();
+      syncCursorState(false);
     });
   }
 
@@ -2593,6 +2604,12 @@
     getListContinuationIndent: getMeasuredListContinuationIndent,
     change: latestContentChange
   }));
+  let renderEditorScrollHeight = $derived(getEditorScrollHeight({
+    baseBottomPadding: editorBottomPadding,
+    clientHeight,
+    renderedContentHeight: renderLineLayout.totalHeight,
+    topPadding: editorTopPadding
+  }));
   let shouldShowNativeRenderText = $derived(isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling);
   let shouldRenderHighlightLayer = $derived(isRenderMode && isEnhancedDocumentWithinBudget && !shouldShowNativeRenderText);
 
@@ -2629,7 +2646,7 @@
       heights: nextHeights
     };
     void tick().then(() => {
-      syncSteadyEditorCaretPosition();
+      syncPendingRenderedCaretRevealAfterLayout();
       scheduleRenderedSelectionHighlight();
     });
   }
@@ -2882,7 +2899,38 @@
     return measureEditorTextEndWidth(text, 0);
   }
 
-  function syncSteadyEditorCaretPosition() {
+  function ensureRenderedCaretLineVisible(offset: number): boolean {
+    if (!editorViewportEl || !isRenderMode || !isEnhancedDocumentWithinBudget) return false;
+
+    const lineIndex = findLineIndexForOffset(offset);
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const lineEnd = getLineEndOffset(fileContent, lineStart);
+    const lineTop = getRenderLineTop(lineIndex) + editorTopPadding;
+    const lineBottom = lineTop + getRenderLineHeight(lineIndex);
+    const viewportTop = editorViewportEl.scrollTop;
+    const viewportBottom = viewportTop + editorViewportEl.clientHeight;
+    let nextScrollTop = viewportTop;
+
+    if (lineBottom <= viewportTop) {
+      nextScrollTop = Math.max(0, lineTop - editorTopPadding);
+    } else if (lineTop >= viewportBottom) {
+      const bottomPadding = offset >= lineEnd ? editorBottomPadding : 0;
+      nextScrollTop = lineBottom + bottomPadding - editorViewportEl.clientHeight;
+    } else {
+      return false;
+    }
+
+    const maximumScrollTop = Math.max(0, renderEditorScrollHeight - editorViewportEl.clientHeight);
+    nextScrollTop = Math.max(0, Math.min(nextScrollTop, maximumScrollTop));
+    if (Math.abs(nextScrollTop - viewportTop) <= 0.5) return false;
+
+    steadyEditorCaretVisible = false;
+    editorViewportEl.scrollTop = nextScrollTop;
+    requestAnimationFrame(() => syncSteadyEditorCaretPosition());
+    return true;
+  }
+
+  function syncSteadyEditorCaretPosition(revealCaret = false) {
     if (!textareaEl) return;
 
     const textareaStart = textareaEl.selectionStart;
@@ -2900,6 +2948,7 @@
       const editorHasFocus = isEditorFocused || document.activeElement === textareaEl;
       steadyEditorCaretVisible = editorHasFocus && isActiveDocumentRenderEnabled && shouldRenderHighlightLayer;
       if (!steadyEditorCaretVisible) return;
+      if (revealCaret && ensureRenderedCaretLineVisible(start)) return;
 
       const caretRect = getRenderedCaretRectForOffset(start);
       if (!caretRect || !editorViewportEl) {
@@ -2908,8 +2957,22 @@
       }
 
       const viewportRect = editorViewportEl.getBoundingClientRect();
+      let nextScrollTop = editorViewportEl.scrollTop;
+      if (caretRect.top < viewportRect.top) {
+        nextScrollTop += caretRect.top - viewportRect.top;
+      } else if (caretRect.bottom > viewportRect.bottom) {
+        nextScrollTop += caretRect.bottom - viewportRect.bottom;
+      }
+      if (revealCaret && Math.abs(nextScrollTop - editorViewportEl.scrollTop) > 0.5) {
+        const maximumScrollTop = Math.max(0, renderEditorScrollHeight - editorViewportEl.clientHeight);
+        steadyEditorCaretVisible = false;
+        editorViewportEl.scrollTop = Math.max(0, Math.min(nextScrollTop, maximumScrollTop));
+        requestAnimationFrame(() => syncSteadyEditorCaretPosition());
+        return;
+      }
+
       steadyEditorCaretLeft = caretRect.left - viewportRect.left;
-      steadyEditorCaretTop = caretRect.top - viewportRect.top;
+      steadyEditorCaretTop = caretRect.top - viewportRect.top + editorViewportEl.scrollTop;
       steadyEditorCaretHeight = Math.max(1, caretRect.height);
       return;
     }
@@ -2934,9 +2997,49 @@
     }
   }
 
+  function cancelPendingRenderedCaretReveal() {
+    renderCaretRevealGeneration += 1;
+    pendingRenderCaretRevealGeneration = null;
+    if (renderCaretRevealSettleTimer) {
+      clearTimeout(renderCaretRevealSettleTimer);
+      renderCaretRevealSettleTimer = null;
+    }
+  }
+
+  function scheduleRenderedCaretRevealCompletion(generation: number) {
+    if (renderCaretRevealSettleTimer) {
+      clearTimeout(renderCaretRevealSettleTimer);
+    }
+    renderCaretRevealSettleTimer = setTimeout(() => {
+      if (generation !== pendingRenderCaretRevealGeneration) return;
+      syncSteadyEditorCaretPosition(true);
+      pendingRenderCaretRevealGeneration = null;
+      renderCaretRevealSettleTimer = null;
+    }, renderCaretRevealSettleDelayMs);
+  }
+
+  function syncPendingRenderedCaretRevealAfterLayout() {
+    const generation = pendingRenderCaretRevealGeneration;
+    if (generation === null) {
+      syncSteadyEditorCaretPosition();
+      return;
+    }
+
+    syncSteadyEditorCaretPosition(true);
+    scheduleRenderedCaretRevealCompletion(generation);
+  }
+
+  function revealRenderedCaretAfterLayout() {
+    const generation = renderCaretRevealGeneration + 1;
+    renderCaretRevealGeneration = generation;
+    pendingRenderCaretRevealGeneration = generation;
+    syncSteadyEditorCaretPosition(true);
+    scheduleRenderedCaretRevealCompletion(generation);
+  }
+
   function keepEditorCaretVisibleDuringEdit() {
     if (isRenderMode) {
-      syncSteadyEditorCaretPosition();
+      revealRenderedCaretAfterLayout();
       return;
     }
 
@@ -3659,8 +3762,9 @@
     });
   }
 
-  function updateCursorPosition() {
+  function syncCursorState(revealCaret: boolean) {
     if (!textareaEl) return;
+    if (!revealCaret) cancelPendingRenderedCaretReveal();
     const isCollapsed = textareaEl.selectionStart === textareaEl.selectionEnd;
     let { start: pos } = getTextareaSelectionInContent();
     const previousCaretOffset = caretOffset;
@@ -3678,12 +3782,16 @@
     cursorLine = lineIndex + 1;
     cursorCol = pos - (lineStartOffsets[lineIndex] ?? 0) + 1;
     updateEditorCaretColor(pos);
-    syncSteadyEditorCaretPosition();
+    syncSteadyEditorCaretPosition(revealCaret);
     if (isRenderMode && isCollapsed && pos !== previousCaretOffset && steadyEditorCaretVisible) {
       restartSteadyEditorCaretBlink();
     }
     setLastEditorSnapshot(getCurrentEditorSnapshot());
     scheduleRenderedSelectionHighlight();
+  }
+
+  function updateCursorPosition() {
+    syncCursorState(true);
   }
 
   function updateEditorStateForSnapshot(
@@ -3959,6 +4067,7 @@
   });
 
   onDestroy(() => {
+    cancelPendingRenderedCaretReveal();
     documentDiagnosticWorkerClient?.dispose();
     renderedLineResizeObserver?.disconnect();
     renderedLineResizeObserver = null;
@@ -5199,6 +5308,23 @@
 
     wheelDebug = `dX:${e.deltaX.toFixed(0)}, dY:${e.deltaY.toFixed(0)}, shift:${e.shiftKey}`;
 
+    if (isRenderMode && isEnhancedDocumentWithinBudget) {
+      if (!editorViewportEl) return;
+      cancelPendingRenderedCaretReveal();
+      const renderScrollDelta = getRenderWheelScrollDelta({
+        deltaMode: e.deltaMode,
+        deltaY: e.deltaY,
+        lineHeight: measuredLineHeight,
+        pageHeight: editorViewportEl.clientHeight,
+        shiftKey: e.shiftKey
+      });
+      if (renderScrollDelta === 0) return;
+
+      editorViewportEl.scrollTop += renderScrollDelta;
+      e.preventDefault();
+      return;
+    }
+
     // deltaX가 존재하면 가로 휠 입력이 있는 것임 (macOS 및 일반 브라우저 환경 등)
     if (e.deltaX !== 0) {
       // 일반 브라우저 환경에서 가로 휠 동작 시 스크롤 속도를 보정하기 위해 배율(x3) 적용
@@ -5216,11 +5342,34 @@
 
   // 스크롤 갱신 핸들러
   function handleScroll(e: Event) {
+    if (isRenderMode && isEnhancedDocumentWithinBudget) return;
     const target = e.target as HTMLTextAreaElement;
     scrollTop = target.scrollTop;
     scrollLeft = target.scrollLeft;
     syncSteadyEditorCaretPosition();
   }
+
+  function handleEditorViewportScroll(e: Event) {
+    if (!isRenderMode || !isEnhancedDocumentWithinBudget) return;
+    const target = e.target as HTMLDivElement;
+    scrollTop = target.scrollTop;
+    scrollLeft = target.scrollLeft;
+    syncSteadyEditorCaretPosition();
+  }
+
+  function handleEditorViewportPointerDown() {
+    if (isRenderMode && isEnhancedDocumentWithinBudget) {
+      cancelPendingRenderedCaretReveal();
+    }
+  }
+
+  $effect(() => {
+    const viewport = editorViewportEl;
+    if (!viewport) return;
+
+    viewport.addEventListener('pointerdown', handleEditorViewportPointerDown);
+    return () => viewport.removeEventListener('pointerdown', handleEditorViewportPointerDown);
+  });
 
   // passive: false 리스너로 등록하여 preventDefault() 오동작 차단 및 Rust 네이티브 가로 휠 이벤트 통합
   $effect(() => {
@@ -5237,6 +5386,7 @@
     const unlistenPromise = hasTauriRuntime()
       ? getCurrentWindow().listen<number>("native-horizontal-wheel", (event: TauriEvent<number>) => {
           if (!textareaEl) return;
+          if (isRenderMode && isEnhancedDocumentWithinBudget) return;
           const delta = event.payload;
           // OS의 delta 값(보통 120 또는 -120)을 받아 가로 스크롤에 직접 반영
           // 윈도우 OS의 가로 스크롤 한 틱 단위가 대개 120이므로, 120px 만큼 스크롤됩니다.
@@ -5770,20 +5920,24 @@
     const margin = 8;
 
     if (!tokenRect) {
-      setInlineColorPickerPosition({ left: margin, top: margin });
+      setInlineColorPickerPosition({
+        left: margin,
+        top: editorViewportEl.scrollTop + margin
+      });
       return;
     }
 
     const target = {
       left: tokenRect.left - viewportRect.left,
-      top: tokenRect.top - viewportRect.top,
+      top: tokenRect.top - viewportRect.top + editorViewportEl.scrollTop,
       width: tokenRect.width,
       height: tokenRect.height
     };
     const viewportWidth = Math.max(viewportRect.width, pickerAnchorSize + margin * 2);
     const viewportHeight = Math.max(viewportRect.height, pickerAnchorSize + margin * 2);
     const maxLeft = viewportWidth - pickerAnchorSize - margin;
-    const maxTop = viewportHeight - pickerAnchorSize - margin;
+    const minTop = editorViewportEl.scrollTop + margin;
+    const maxTop = editorViewportEl.scrollTop + viewportHeight - pickerAnchorSize - margin;
 
     const candidates = [
       { left: target.left + target.width + gap, top: target.top + target.height / 2 },
@@ -5792,7 +5946,7 @@
       { left: target.left, top: target.top - gap }
     ].map((candidate) => ({
       left: clamp(candidate.left, margin, maxLeft),
-      top: clamp(candidate.top, margin, maxTop)
+      top: clamp(candidate.top, minTop, maxTop)
     }));
 
     const positioned = candidates[0];
@@ -6044,7 +6198,15 @@
     editorCursorStyle = 'text';
     hideSteadyEditorCaret();
     clearInlineColorPickerState();
-    requestAnimationFrame(() => updateCursorPosition());
+    requestAnimationFrame(() => {
+      if (isRenderMode && isEnhancedDocumentWithinBudget) {
+        if (editorViewportEl) editorViewportEl.scrollTop = scrollTop;
+        if (textareaEl) textareaEl.scrollTop = 0;
+      } else if (textareaEl) {
+        textareaEl.scrollTop = scrollTop;
+      }
+      syncCursorState(false);
+    });
   }
 </script>
 
@@ -7222,11 +7384,19 @@
         <div
           class="editor-viewport"
           bind:this={editorViewportEl}
+          onscroll={handleEditorViewportScroll}
         >
+          {#if isRenderMode && isEnhancedDocumentWithinBudget}
+            <div
+              class="editor-render-scroll-extent"
+              style="height: {renderEditorScrollHeight}px;"
+              aria-hidden="true"
+            ></div>
+          {/if}
           <!-- 렌더 모드 Backdrop -->
           {#if shouldRenderHighlightLayer}
-            <div class="editor-backdrop">
-              <div class="backdrop-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
+            <div class="editor-backdrop" style="height: {renderEditorScrollHeight}px;">
+              <div class="backdrop-scroll-container">
                 {#each Array(endLine - startLine + 1) as _, idx}
                   {@const lineIdx = startLine + idx}
                   {@const line = parsedLines[idx]}
@@ -7288,7 +7458,7 @@
           <textarea
             bind:this={textareaEl}
             class="editor-textarea"
-            style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled && !shouldShowNativeRenderText ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode && isEnhancedDocumentWithinBudget ? editorCursorStyle : 'text'};"
+            style="height: {isRenderMode && isEnhancedDocumentWithinBudget ? `${renderEditorScrollHeight}px` : '100%'}; font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled && !shouldShowNativeRenderText ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode && isEnhancedDocumentWithinBudget ? editorCursorStyle : 'text'};"
             wrap={isRenderMode && isEnhancedDocumentWithinBudget ? 'soft' : 'off'}
             value={textareaDisplayContent}
             onkeydown={handleEditorKeyDown}
@@ -8464,6 +8634,16 @@
     overflow: hidden;
   }
 
+  .render-mode .editor-viewport {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .editor-render-scroll-extent {
+    width: 1px;
+    pointer-events: none;
+  }
+
   .editor-backdrop {
     position: absolute;
     top: 0;
@@ -8669,6 +8849,7 @@
     white-space: pre-wrap;
     overflow-wrap: break-word;
     word-break: keep-all;
+    overflow: hidden;
   }
 
   .render-mode .editor-textarea::selection {

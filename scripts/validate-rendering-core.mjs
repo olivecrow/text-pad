@@ -56,6 +56,7 @@ try {
   const editorInput = await server.ssrLoadModule('/src/lib/editor-input.ts');
   const editorDuplication = await server.ssrLoadModule('/src/lib/editor-duplication.ts');
   const editorLayout = await server.ssrLoadModule('/src/lib/editor-layout.ts');
+  const editorScrollExtent = await server.ssrLoadModule('/src/lib/editor-scroll-extent.ts');
   const boundedCollections = await server.ssrLoadModule('/src/lib/bounded-collections.ts');
   const editorUndo = await server.ssrLoadModule('/src/lib/editor-undo.ts');
   const diagnosticClient = await server.ssrLoadModule('/src/lib/document-diagnostic-client.ts');
@@ -511,6 +512,47 @@ try {
   });
   assert.equal(sourceAfterWrapped.visitedLineCount, 0);
   assert.equal(sourceAfterWrapped.listLayouts.length, 0);
+
+  assert.equal(editorScrollExtent.getEditorScrollHeight({
+    baseBottomPadding: 8,
+    clientHeight: 500,
+    renderedContentHeight: 1_184,
+    topPadding: 8
+  }), 1_200);
+  assert.equal(editorScrollExtent.getEditorScrollHeight({
+    baseBottomPadding: 8,
+    clientHeight: 500,
+    renderedContentHeight: 200,
+    topPadding: 8
+  }), 500);
+  assert.equal(editorScrollExtent.getRenderWheelScrollDelta({
+    deltaMode: 0,
+    deltaY: 240,
+    lineHeight: 20,
+    pageHeight: 500,
+    shiftKey: false
+  }), 240);
+  assert.equal(editorScrollExtent.getRenderWheelScrollDelta({
+    deltaMode: 1,
+    deltaY: -3,
+    lineHeight: 20,
+    pageHeight: 500,
+    shiftKey: false
+  }), -60);
+  assert.equal(editorScrollExtent.getRenderWheelScrollDelta({
+    deltaMode: 2,
+    deltaY: 1,
+    lineHeight: 20,
+    pageHeight: 500,
+    shiftKey: false
+  }), 500);
+  assert.equal(editorScrollExtent.getRenderWheelScrollDelta({
+    deltaMode: 0,
+    deltaY: 240,
+    lineHeight: 20,
+    pageHeight: 500,
+    shiftKey: true
+  }), 0);
 
   const nestedModeContent = '    1. item\n       continuation';
   const nestedModeIndex = offsets.createTextOffsetIndex(nestedModeContent);
