@@ -19,7 +19,6 @@
     getSuggestedFileExtensionForContent,
     isDocumentFormatEditEnabled,
     isDocumentFormatRenderEnabled,
-    isConfigurableDocumentFormatId,
     normalizeDocumentFeatureSettings,
     getOpenFileDialogFilters,
     parseDocumentForRender,
@@ -60,7 +59,6 @@
   import AboutDialog from "$lib/AboutDialog.svelte";
   import {
     getLanguageNativeName,
-    isAppLocale,
     isRtlLocale,
     resolveSystemLocale,
     supportedLanguages,
@@ -111,8 +109,7 @@
     createDefaultAutoPairAllowedFollowingStrings,
     maximumAutoPairAllowedFollowingStringCount,
     maximumAutoPairAllowedFollowingStringLength,
-    normalizeAutoPairAllowedFollowingString,
-    parseAutoPairAllowedFollowingStrings
+    normalizeAutoPairAllowedFollowingString
   } from "$lib/auto-pair";
   import { getTextChange, type TextChange } from "$lib/text-change";
   import {
@@ -134,8 +131,10 @@
     parseSettingsFile,
     serializeSettingsFile,
     type AppSettingsSnapshot,
-    type SettingsImportErrorReason
+    type SettingsImportErrorReason,
+    type SettingsThemePalette
   } from "$lib/settings-transfer";
+  import { SettingsRepository } from "$lib/settings-repository";
   import {
     createRenderedTextBoundaryIndex,
     findClosestRenderedTextOffset,
@@ -241,8 +240,15 @@
   let nextUntitledNumber = 1;
   const invalidFileNameCharsPattern = /[<>:"/\\|?*\x00-\x1F]/g;
   const isBrowser = typeof window !== 'undefined';
-  const languagePreferenceKey = 'pref_language';
-  const defaultNewDocumentFormatPreferenceKey = 'pref_default_new_document_format';
+  function createBrowserSettingsRepository(): SettingsRepository | null {
+    if (!isBrowser) return null;
+    try {
+      return new SettingsRepository(window.localStorage);
+    } catch {
+      return null;
+    }
+  }
+  const settingsRepository = createBrowserSettingsRepository();
   const documentRenderCache = createDocumentRenderCache();
   const editorLineLayoutCache = createEditorLineLayoutCache();
   const fencedCodeBlockCache = createFencedCodeBlockCache();
@@ -260,21 +266,9 @@
   const openFilesRequestedEvent = 'text-pad-open-files-requested';
   const tabTransferIdQueryKey = 'tabTransferId';
   const tabTransferSourceQueryKey = 'tabTransferSource';
-  function getInitialLanguagePreference(): LanguagePreference {
-    if (!isBrowser) return 'system';
-    const savedPreference = localStorage.getItem(languagePreferenceKey);
-    return savedPreference === 'system' || isAppLocale(savedPreference) ? savedPreference : 'system';
-  }
-
-  function parseDefaultNewDocumentFormat(value: string | null): DocumentFormatId {
-    return isConfigurableDocumentFormatId(value) ? value : defaultNewDocumentFormatId;
-  }
-
   let systemLocale = $state<AppLocale>(resolveSystemLocale(isBrowser ? navigator.languages : []));
-  let languagePreference = $state<LanguagePreference>(getInitialLanguagePreference());
-  let defaultNewDocumentFormat = $state<DocumentFormatId>(
-    parseDefaultNewDocumentFormat(isBrowser ? localStorage.getItem(defaultNewDocumentFormatPreferenceKey) : null)
-  );
+  let languagePreference = $state<LanguagePreference>('system');
+  let defaultNewDocumentFormat = $state<DocumentFormatId>(defaultNewDocumentFormatId);
   let locale = $derived<AppLocale>(languagePreference === 'system' ? systemLocale : languagePreference);
   let untitledFileName = $derived(translate(locale, 'app.untitled'));
 
@@ -606,29 +600,10 @@
   // 설정창에서 편집 중인 테마
   let editingTheme = $state<'light' | 'dark'>('light');
 
-  interface ThemeColors {
-    codeBg: string;
-    codeText: string;
-    keyStrong: string;
-    keyMedium: string;
-    keyLight: string;
-    string: string;
-    number: string;
-    listMarker: string;
-    comment: string;
-    guide: string;
-    renderBg: string;
-    renderText: string;
-    renderFontWeight: string;
-    paren: string;
-    bracket: string;
-    brace: string;
-  }
+  type ThemeColors = SettingsThemePalette;
 
   type ColorField = Exclude<keyof ThemeColors, 'renderFontWeight'>;
   const hexColorRegex = /^#[0-9a-fA-F]{6}$/;
-  const previousLightCodeBgDefault = '#f1f5f9';
-  const previousDarkCodeTextDefaults = new Set(['#38bdf8', '#4fc1ff']);
 
   // 시스템 테마별 기본 강조 색상
   function getSystemDefaultColors(isDark: boolean): ThemeColors {
@@ -694,8 +669,6 @@
   );
 
   let canPersistPreferences = $state<boolean>(false);
-  const documentFeaturePreferenceKey = 'pref_document_format_features';
-  const markdownRenderPreferenceKey = 'pref_markdown_render_settings';
   function getCloseSaveButtons() {
     return {
       yes: t('dialog.saveChanges.save'),
@@ -747,7 +720,6 @@
     "'": "'",
     '`': '`'
   };
-  const renderAutoPairAllowedFollowingStringsPreferenceKey = 'pref_render_auto_pair_allowed_following_strings';
   const renderAutoClosingCharacters = new Set(Object.values(renderAutoClosingPairs));
 
   function addRenderAutoPairAllowedFollowingString() {
@@ -792,25 +764,6 @@
   const editorMovementKeys = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
   let pendingRenderCaretMovementDirection: -1 | 0 | 1 = 0;
   let markdownHeadingReplacementCaret: number | null = null;
-
-  function parseDocumentFeatureSettingsValue(value: string | null): DocumentFeatureSettings {
-    if (!value) return createDefaultDocumentFeatureSettings();
-
-    try {
-      return normalizeDocumentFeatureSettings(JSON.parse(value));
-    } catch {
-      return createDefaultDocumentFeatureSettings();
-    }
-  }
-
-  function parseMarkdownRenderSettingsValue(value: string | null): MarkdownRenderSettings {
-    if (!value) return createDefaultMarkdownRenderSettings();
-    try {
-      return normalizeMarkdownRenderSettings(JSON.parse(value));
-    } catch {
-      return createDefaultMarkdownRenderSettings();
-    }
-  }
 
   function getDocumentFormatSettingsView(formatId: DocumentFormatId): FormatSettingsView {
     return `format:${formatId}`;
@@ -1887,88 +1840,16 @@
     }
   }
 
-  // 마운트 시 localStorage Preferences 로드
+  // 마운트 시 버전된 설정 스냅샷을 로드하고 이전 개별 키를 한 번만 이관한다.
   $effect(() => {
     if (!isBrowser) return;
-
-    const savedLanguagePreference = localStorage.getItem(languagePreferenceKey);
-    if (savedLanguagePreference === 'system' || isAppLocale(savedLanguagePreference)) {
-      languagePreference = savedLanguagePreference;
-    }
     systemLocale = resolveSystemLocale(navigator.languages);
-    defaultNewDocumentFormat = parseDefaultNewDocumentFormat(
-      localStorage.getItem(defaultNewDocumentFormatPreferenceKey)
-    );
-
-    const savedThemeMode = localStorage.getItem('pref_theme_mode');
-    if (savedThemeMode === 'system' || savedThemeMode === 'light' || savedThemeMode === 'dark') {
-      themeMode = savedThemeMode;
+    if (settingsRepository) {
+      const loadedSettings = untrack(() => settingsRepository.load(getCurrentSettingsSnapshot(), {
+        legacySystemIsDark: systemIsDark
+      }));
+      applySettingsSnapshot(loadedSettings);
     }
-
-    const savedSourceFontSize = localStorage.getItem('pref_source_font_size');
-    if (savedSourceFontSize) sourceFontSize = parseInt(savedSourceFontSize, 10);
-
-    const savedRenderFontSize = localStorage.getItem('pref_render_font_size');
-    if (savedRenderFontSize) renderFontSize = parseInt(savedRenderFontSize, 10);
-
-    const savedTabSize = localStorage.getItem('pref_tab_size');
-    if (savedTabSize) tabSize = parseInt(savedTabSize, 10);
-
-    renderAutoPairEditing = localStorage.getItem('pref_render_auto_pair_editing') !== 'false';
-    renderAutoPairAllowedFollowingStrings = parseAutoPairAllowedFollowingStrings(
-      localStorage.getItem(renderAutoPairAllowedFollowingStringsPreferenceKey)
-    );
-    renderAutoSymbolSubstitution = localStorage.getItem('pref_render_auto_symbol_substitution') !== 'false';
-    renderPreserveIndentOnEnter = localStorage.getItem('pref_render_preserve_indent_on_enter') !== 'false';
-    delimitedTableHighlightHeader = localStorage.getItem('pref_delimited_table_highlight_header') !== 'false';
-    delimitedTableShowRowIndices = localStorage.getItem('pref_delimited_table_show_row_indices') !== 'false';
-    delimitedTableAnimateReorder = localStorage.getItem('pref_delimited_table_animate_reorder') !== 'false';
-    delimitedTableReorderDurationMs = normalizeDelimitedTableReorderDuration(
-      localStorage.getItem('pref_delimited_table_reorder_duration_ms')
-    );
-    documentFeatureSettings = parseDocumentFeatureSettingsValue(localStorage.getItem(documentFeaturePreferenceKey));
-    markdownRenderSettings = parseMarkdownRenderSettingsValue(localStorage.getItem(markdownRenderPreferenceKey));
-
-    renderFontFamily = localStorage.getItem('pref_render_font_family') || 'nanum-gothic';
-
-    const loadColors = (isDark: boolean): ThemeColors => {
-      const prefix = isDark ? 'pref_dark_' : 'pref_light_';
-      const defaults = getSystemDefaultColors(isDark);
-
-      // Migration from old keys (if new key doesn't exist but old key does, use old key once, or just fallback to default)
-      const savedCodeBg = localStorage.getItem(`${prefix}codeBg`)
-        || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_code_bg') : null);
-      const codeBg = !isDark && savedCodeBg?.toLowerCase() === previousLightCodeBgDefault
-        ? defaults.codeBg
-        : savedCodeBg || defaults.codeBg;
-      const savedCodeText = localStorage.getItem(`${prefix}codeText`)
-        || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_code_text') : null);
-      const codeText = isDark && savedCodeText && previousDarkCodeTextDefaults.has(savedCodeText.toLowerCase())
-        ? defaults.codeText
-        : savedCodeText || defaults.codeText;
-
-      return {
-        codeBg,
-        codeText,
-        keyStrong: localStorage.getItem(`${prefix}keyStrong`) || defaults.keyStrong,
-        keyMedium: localStorage.getItem(`${prefix}keyMedium`) || defaults.keyMedium,
-        keyLight: localStorage.getItem(`${prefix}keyLight`) || defaults.keyLight,
-        string: localStorage.getItem(`${prefix}string`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_string') : null) || defaults.string,
-        number: localStorage.getItem(`${prefix}number`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_number') : null) || defaults.number,
-        listMarker: localStorage.getItem(`${prefix}listMarker`) || defaults.listMarker,
-        comment: localStorage.getItem(`${prefix}comment`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_comment') : null) || defaults.comment,
-        guide: localStorage.getItem(`${prefix}guide`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_indent_guide') : null) || defaults.guide,
-        renderBg: localStorage.getItem(`${prefix}renderBg`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_render_bg') : null) || defaults.renderBg,
-        renderText: localStorage.getItem(`${prefix}renderText`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_render_text') : null) || defaults.renderText,
-        renderFontWeight: localStorage.getItem(`${prefix}renderFontWeight`) || defaults.renderFontWeight,
-        paren: localStorage.getItem(`${prefix}paren`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_paren') : null) || defaults.paren,
-        bracket: localStorage.getItem(`${prefix}bracket`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_bracket') : null) || defaults.bracket,
-        brace: localStorage.getItem(`${prefix}brace`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_brace') : null) || defaults.brace,
-      };
-    };
-
-    lightColors = loadColors(false);
-    darkColors = loadColors(true);
 
     requestAnimationFrame(() => {
       setTimeout(() => {
@@ -1977,37 +1858,10 @@
     });
   });
 
-  // 상태 변경 감지 자동 로컬스토리지 동기화
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(languagePreferenceKey, languagePreference); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(defaultNewDocumentFormatPreferenceKey, defaultNewDocumentFormat); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_theme_mode', themeMode); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_source_font_size', sourceFontSize.toString()); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_font_size', renderFontSize.toString()); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_tab_size', tabSize.toString()); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_pair_editing', renderAutoPairEditing ? 'true' : 'false'); });
+  // 설정 전체를 한 번 정규화한 뒤 단일 저장 단위로 기록한다.
   $effect(() => {
-    if (isBrowser && canPersistPreferences) {
-      localStorage.setItem(renderAutoPairAllowedFollowingStringsPreferenceKey, JSON.stringify(renderAutoPairAllowedFollowingStrings));
-    }
-  });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_symbol_substitution', renderAutoSymbolSubstitution ? 'true' : 'false'); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_preserve_indent_on_enter', renderPreserveIndentOnEnter ? 'true' : 'false'); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_highlight_header', delimitedTableHighlightHeader ? 'true' : 'false'); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_show_row_indices', delimitedTableShowRowIndices ? 'true' : 'false'); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_animate_reorder', delimitedTableAnimateReorder ? 'true' : 'false'); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_reorder_duration_ms', delimitedTableReorderDurationMs.toString()); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(documentFeaturePreferenceKey, JSON.stringify(documentFeatureSettings)); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(markdownRenderPreferenceKey, JSON.stringify(markdownRenderSettings)); });
-  $effect(() => { if (isBrowser && canPersistPreferences && renderFontFamily) localStorage.setItem('pref_render_font_family', renderFontFamily); });
-
-  $effect(() => {
-    if (!isBrowser || !canPersistPreferences) return;
-    Object.entries(lightColors).forEach(([key, value]) => localStorage.setItem(`pref_light_${key}`, value));
-  });
-
-  $effect(() => {
-    if (!isBrowser || !canPersistPreferences) return;
-    Object.entries(darkColors).forEach(([key, value]) => localStorage.setItem(`pref_dark_${key}`, value));
+    if (!isBrowser || !canPersistPreferences || !settingsRepository) return;
+    settingsRepository.save(getCurrentSettingsSnapshot());
   });
 
   // 마운트 시 독립 설정창 감지 및 메인 창 종료 시퀀스
@@ -2219,41 +2073,11 @@
     return true;
   }
 
-  // storage 변경 감지 핸들러 (창 간 실시간 동기화)
+  // 완성된 설정 스냅샷만 창 사이에 동기화한다.
   function handleStorageChange(e: StorageEvent) {
-    if (!e.key) return;
-    if (e.key === languagePreferenceKey && e.newValue && (e.newValue === 'system' || isAppLocale(e.newValue))) languagePreference = e.newValue;
-    if (e.key === defaultNewDocumentFormatPreferenceKey) {
-      defaultNewDocumentFormat = parseDefaultNewDocumentFormat(e.newValue);
-    }
-    if (e.key === 'pref_theme_mode' && e.newValue && (e.newValue === 'system' || e.newValue === 'light' || e.newValue === 'dark')) themeMode = e.newValue;
-    if (e.key === 'pref_source_font_size' && e.newValue) sourceFontSize = parseInt(e.newValue, 10);
-    if (e.key === 'pref_render_font_size' && e.newValue) renderFontSize = parseInt(e.newValue, 10);
-    if (e.key === 'pref_tab_size' && e.newValue) tabSize = parseInt(e.newValue, 10);
-    if (e.key === 'pref_render_auto_pair_editing' && e.newValue) renderAutoPairEditing = e.newValue !== 'false';
-    if (e.key === renderAutoPairAllowedFollowingStringsPreferenceKey) {
-      renderAutoPairAllowedFollowingStrings = parseAutoPairAllowedFollowingStrings(e.newValue);
-    }
-    if (e.key === 'pref_render_auto_symbol_substitution' && e.newValue) renderAutoSymbolSubstitution = e.newValue !== 'false';
-    if (e.key === 'pref_render_preserve_indent_on_enter' && e.newValue) renderPreserveIndentOnEnter = e.newValue !== 'false';
-    if (e.key === 'pref_delimited_table_highlight_header' && e.newValue) delimitedTableHighlightHeader = e.newValue !== 'false';
-    if (e.key === 'pref_delimited_table_show_row_indices' && e.newValue) delimitedTableShowRowIndices = e.newValue !== 'false';
-    if (e.key === 'pref_delimited_table_animate_reorder' && e.newValue) delimitedTableAnimateReorder = e.newValue !== 'false';
-    if (e.key === 'pref_delimited_table_reorder_duration_ms' && e.newValue) {
-      delimitedTableReorderDurationMs = normalizeDelimitedTableReorderDuration(e.newValue);
-    }
-    if (e.key === documentFeaturePreferenceKey) documentFeatureSettings = parseDocumentFeatureSettingsValue(e.newValue);
-    if (e.key === markdownRenderPreferenceKey) markdownRenderSettings = parseMarkdownRenderSettingsValue(e.newValue);
-    if (e.key === 'pref_render_font_family' && e.newValue) renderFontFamily = e.newValue;
-
-    if (e.key.startsWith('pref_light_') && e.newValue) {
-      const field = e.key.replace('pref_light_', '') as keyof ThemeColors;
-      lightColors[field] = e.newValue;
-    }
-    if (e.key.startsWith('pref_dark_') && e.newValue) {
-      const field = e.key.replace('pref_dark_', '') as keyof ThemeColors;
-      darkColors[field] = e.newValue;
-    }
+    if (!settingsRepository || e.key !== settingsRepository.storageKey) return;
+    const settings = settingsRepository.parseStorageValue(e.newValue);
+    if (settings) applySettingsSnapshot(settings);
   }
 
   $effect(() => {

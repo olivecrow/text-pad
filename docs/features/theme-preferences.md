@@ -1,6 +1,8 @@
 # 테마와 설정 저장 계약
 
-사용자 설정은 브라우저 로컬 저장소인 `localStorage`에 저장한다. 설정창과 메인 창은 같은 저장소를 공유하고, 브라우저 저장소 변경 알림인 `storage` 이벤트로 주요 변경을 반영한다.
+사용자 설정은 브라우저 로컬 저장소인 `localStorage`의 `text-pad.settings` 키 하나에 버전이 붙은 전체 스냅샷으로 저장한다. 설정창과 메인 창은 같은 저장소를 공유하고, 브라우저 저장소 변경 알림인 `storage` 이벤트에서 완성된 스냅샷을 검증한 뒤 한 번에 반영한다. 일부 설정만 먼저 적용되는 중간 상태를 창 사이에 전달하지 않는다.
+
+앱 내부 저장과 JSON 가져오기는 `src/lib/settings-transfer.ts`의 같은 정규화 규칙을 사용한다. 글자 크기·표 이동 시간 같은 숫자는 허용 범위로 제한하고, 열거형·불리언·색상·중첩 설정은 형식이 맞을 때만 적용한다. 저장소 접근 실패나 잘못된 JSON은 앱을 중단시키지 않으며 기본 스냅샷을 유지한다.
 
 CSV/TSV 표의 첫 행 강조, 행 번호 표시, 행·열 이동 애니메이션 사용 여부와 이동 시간도 같은 저장소에 보관하며, 이 설정들은 원문 파일 내용에 포함하지 않는다.
 
@@ -36,28 +38,18 @@ CSV/TSV 표의 첫 행 강조, 행 번호 표시, 행·열 이동 애니메이�
 
 실제 표시 테마는 `currentTheme`으로 계산한다. `system`일 때는 운영체제 다크 모드 여부를 기준으로 `light` 또는 `dark`가 된다.
 
-## 저장되는 주요 값
+## 저장 스냅샷
 
-- `pref_language`: `system` 또는 사용자가 명시적으로 고른 지원 언어 코드.
-- `pref_theme_mode`: 테마 모드.
-- `pref_source_font_size`: 원문 모드 글자 크기.
-- `pref_render_font_size`: 렌더 모드 글자 크기.
-- `pref_tab_size`: 탭 표시 폭.
-- `pref_delimited_table_highlight_header`: CSV/TSV 첫 행 강조 여부.
-- `pref_delimited_table_show_row_indices`: CSV/TSV 왼쪽 행 번호 표시 여부.
-- `pref_delimited_table_animate_reorder`: CSV/TSV 행·열 드래그 이동 애니메이션 사용 여부.
-- `pref_delimited_table_reorder_duration_ms`: CSV/TSV 행·열 이동 시간. 50~2,000밀리초 범위에서 50밀리초 단위로 저장한다.
-- `pref_render_font_family`: 렌더 모드 글꼴 선택.
-- `pref_render_auto_pair_editing`: 렌더 모드 쌍 문자 자동 입력과 삭제 사용 여부.
-- `pref_render_auto_pair_allowed_following_strings`: 렌더 모드에서 캐럿 오른쪽에 있어도 새 자동 쌍 입력을 허용하는 사용자 편집 문자열 목록의 JSON 배열. 공백은 이 값과 무관하게 항상 허용한다.
-- `pref_render_auto_symbol_substitution`: 렌더 모드 화살표 기호 자동 변환 사용 여부.
-- `pref_render_preserve_indent_on_enter`: 렌더 모드 줄바꿈 시 들여쓰기 유지 사용 여부.
-- `pref_document_format_features`: 파일 형식별 렌더 표시와 렌더 편집 사용 여부. JSON 문자열 형태로 저장하며, 각 형식 식별자 아래에 `render`와 `edit` 값을 둔다.
-- `pref_markdown_render_settings`: 모든 Markdown 문서에 공통인 제목 표식 숨김, 1·2단계 구분선, 제목 1~6단계별 크기 비율과 굵기. 잘못된 크기는 80~145% 범위로 제한하고 굵기는 지원하는 400~800 값으로 정규화한다.
-- `pref_light_*`: 라이트 테마 렌더 색상과 굵기.
-- `pref_dark_*`: 다크 테마 렌더 색상과 굵기.
+내부 스냅샷은 JSON 내보내기와 같은 `format`, `schemaVersion`, `settings` 구조를 사용하되 파일용 참고 정보인 `appVersion`과 `exportedAt`은 넣지 않는다. `settings`는 다음 단위로 나뉜다.
 
-이전 단일 색상 키인 `pref_color_*` 값은 다크 테마 초기값을 만들 때만 보조로 읽는다.
+- `general`: 표시 언어, 테마 모드, 새 문서 기본 형식.
+- `source`: 원문 모드 글자 크기.
+- `render`: 렌더 글자 크기, 들여쓰기 폭, 글꼴, 편집 보조 기능, 라이트·다크 팔레트.
+- `render.formats`: 형식별 렌더·편집 허용 여부, Markdown 제목 표시, CSV/TSV 표 표시와 이동 애니메이션.
+
+`src/lib/settings-repository.ts`가 이 스냅샷의 읽기, 정규화, 쓰기와 창 간 파싱을 소유한다. 현재 앱보다 새 스키마의 저장값은 알려진 항목만 적용하되, 사용자가 실제로 설정을 바꾸기 전에는 원문을 다시 쓰지 않아 알 수 없는 미래 항목을 보존한다. 값 하나를 추가할 때 페이지에 별도 저장 효과나 `storage` 분기를 더하지 않고 `AppSettingsSnapshot`과 공용 정규화 규칙을 확장한다.
+
+기존 버전의 `pref_*` 개별 키는 새 스냅샷이 없을 때만 읽는다. 새 스냅샷 저장에 성공한 뒤에만 기존 키를 제거하므로 저장 실패 시 다음 실행에서 다시 이관할 수 있다. 이전 단일 색상 키인 `pref_color_*`는 기존 조건에 맞는 다크 테마 초기값을 만드는 데만 사용한다.
 
 ## 렌더 색상
 

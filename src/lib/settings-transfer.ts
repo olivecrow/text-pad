@@ -101,7 +101,7 @@ interface ImportStatistics {
 
 type UnknownRecord = Record<string, unknown>;
 
-const colorFields = [
+export const settingsThemeColorFields = [
   'codeBg',
   'codeText',
   'keyStrong',
@@ -118,6 +118,11 @@ const colorFields = [
   'bracket',
   'brace'
 ] as const satisfies readonly (Exclude<keyof SettingsThemePalette, 'renderFontWeight'>)[];
+
+export const settingsThemePaletteFields = [
+  ...settingsThemeColorFields,
+  'renderFontWeight'
+] as const satisfies readonly (keyof SettingsThemePalette)[];
 
 const themeWeights = new Set(['300', '400', '500', '600', '700']);
 const markdownWeights = new Set(['400', '500', '600', '700', '800']);
@@ -238,8 +243,8 @@ function applyPalette(
   target: SettingsThemePalette,
   statistics: ImportStatistics
 ) {
-  markUnknownKeys(candidate, [...colorFields, 'renderFontWeight'], statistics);
-  for (const field of colorFields) {
+  markUnknownKeys(candidate, settingsThemePaletteFields, statistics);
+  for (const field of settingsThemeColorFields) {
     applyValue(candidate, field, normalizeHexColor, (value) => target[field] = value, statistics);
   }
   applyValue(
@@ -477,18 +482,40 @@ function applySettingsCandidate(
   return { settings, statistics };
 }
 
+export function normalizeSettingsSnapshot(
+  candidate: unknown,
+  defaults: AppSettingsSnapshot
+): AppSettingsSnapshot {
+  const record = asRecord(candidate);
+  if (!record) return cloneSettings(defaults);
+  return applySettingsCandidate(migrateLegacySettings(record), defaults).settings;
+}
+
+function createSettingsDocument(
+  settings: AppSettingsSnapshot,
+  metadata?: { appVersion: string; exportedAt: string }
+) {
+  return {
+    format: settingsFileFormat,
+    schemaVersion: settingsSchemaVersion,
+    ...(metadata ?? {}),
+    settings
+  };
+}
+
+export function serializeSettingsSnapshot(settings: AppSettingsSnapshot): string {
+  return JSON.stringify(createSettingsDocument(settings));
+}
+
 export function serializeSettingsFile(
   settings: AppSettingsSnapshot,
   appVersion: string,
   exportedAt = new Date()
 ): string {
-  return JSON.stringify({
-    format: settingsFileFormat,
-    schemaVersion: settingsSchemaVersion,
+  return JSON.stringify(createSettingsDocument(settings, {
     appVersion,
-    exportedAt: exportedAt.toISOString(),
-    settings
-  }, null, 2);
+    exportedAt: exportedAt.toISOString()
+  }), null, 2);
 }
 
 export function parseSettingsFile(

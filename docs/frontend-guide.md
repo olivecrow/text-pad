@@ -49,7 +49,7 @@
 - `isSettingsWindow`: 현재 창이 독립 설정창인지 구분한다.
 - `isCheckingForUpdate`, `isInstallingUpdate`, `transientStatusMessage`: 업데이트 작업과 하단 임시 상태 표시.
 
-설정값은 `localStorage`에 저장하고, 다른 창에는 브라우저 `storage` 이벤트로 반영한다.
+설정값은 `src/lib/settings-repository.ts`가 `localStorage`의 버전된 단일 스냅샷으로 저장한다. 다른 창에는 브라우저 `storage` 이벤트로 완성된 스냅샷만 전달하고, `src/lib/settings-transfer.ts`와 공유하는 정규화 규칙을 통과한 뒤 전체 상태에 반영한다. 이전 `pref_*` 개별 키는 새 스냅샷이 없을 때 한 번 이관하며, 새 저장이 성공한 뒤에만 제거한다.
 
 설정창의 `일반` 화면은 표시 언어와 새 문서 기본 형식을 설정하고, 현재 설정 스냅샷을 버전이 붙은 JSON으로 내보낸다. 새 문서 기본 형식은 새 탭 생성 시 탭별 `selectedDocumentFormatId`의 초기값으로 복사하며 이미 열린 탭은 바꾸지 않는다. 가져올 때는 알려진 유효 항목만 현재 상태에 병합하고, 누락된 새 설정과 지원하지 않는 미래 항목 때문에 앱 동작이 중단되지 않게 한다.
 
@@ -143,7 +143,7 @@
 
 ## 다국어 UI
 
-표시 언어는 `src/lib/i18n/en.ts`의 영어 기준표와 같은 키를 가진 언어별 번역표에서 가져온다. 시스템 언어는 `navigator.languages`의 순서대로 해석하며 지원 언어가 없으면 영어를 사용한다. 사용자가 설정에서 고른 언어는 시스템 언어보다 우선하고 `pref_language`에 저장한다.
+표시 언어는 `src/lib/i18n/en.ts`의 영어 기준표와 같은 키를 가진 언어별 번역표에서 가져온다. 시스템 언어는 `navigator.languages`의 순서대로 해석하며 지원 언어가 없으면 영어를 사용한다. 사용자가 설정에서 고른 언어는 시스템 언어보다 우선하고 버전된 설정 스냅샷의 `general.language`에 저장한다.
 
 화면에 보이는 메뉴, 설정, 대화상자, 상태, 문법 검사와 오류 접두사는 번역 키를 사용한다. 파일 원문과 파일 이름은 번역하지 않는다. 아랍어 UI에서는 문서 방향을 오른쪽에서 왼쪽으로 바꾸되 사용자 원문 입력 요소는 `dir="auto"`로 유지한다. 세부 계약은 `docs/features/localization.md`를 기준으로 한다.
 

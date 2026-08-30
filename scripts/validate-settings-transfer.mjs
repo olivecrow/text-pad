@@ -1,6 +1,32 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'vite';
 
+class MemorySettingsStorage {
+  values;
+  setCalls = [];
+  removeCalls = [];
+  failWrites = false;
+
+  constructor(entries = {}) {
+    this.values = new Map(Object.entries(entries));
+  }
+
+  getItem(key) {
+    return this.values.get(key) ?? null;
+  }
+
+  setItem(key, value) {
+    if (this.failWrites) throw new Error('write failed');
+    this.setCalls.push([key, value]);
+    this.values.set(key, value);
+  }
+
+  removeItem(key) {
+    this.removeCalls.push(key);
+    this.values.delete(key);
+  }
+}
+
 const server = await createServer({
   root: process.cwd(),
   appType: 'custom',
@@ -10,6 +36,7 @@ const server = await createServer({
 
 try {
   const transfer = await server.ssrLoadModule('/src/lib/settings-transfer.ts');
+  const settingsRepositoryModule = await server.ssrLoadModule('/src/lib/settings-repository.ts');
   const documentFormats = await server.ssrLoadModule('/src/lib/document-formats.ts');
   const markdown = await server.ssrLoadModule('/src/lib/markdown-settings.ts');
 
@@ -160,7 +187,96 @@ try {
     { ok: false, reason: 'file_too_large' }
   );
 
-  console.log('Validated settings transfer: versioned round-trip, legacy migration, future-field skipping, normalization, and malformed input handling.');
+  const legacyStorage = new MemorySettingsStorage({
+    pref_language: 'ko',
+    pref_default_new_document_format: 'tsv',
+    pref_source_font_size: 'not-a-number',
+    pref_render_font_size: '999',
+    pref_tab_size: '3',
+    pref_render_auto_pair_editing: 'false',
+    pref_render_auto_pair_allowed_following_strings: JSON.stringify([';', '=>']),
+    pref_delimited_table_reorder_duration_ms: '188',
+    pref_document_format_features: JSON.stringify({ json: { render: false, edit: true } }),
+    pref_light_codeBg: '#f1f5f9',
+    pref_dark_codeText: '#38bdf8',
+    pref_dark_renderBg: '#abcdef'
+  });
+  const legacyRepository = new settingsRepositoryModule.SettingsRepository(legacyStorage);
+  const migrated = legacyRepository.load(current, { legacySystemIsDark: true });
+  assert.equal(migrated.general.language, 'ko');
+  assert.equal(migrated.general.defaultNewDocumentFormat, 'tsv');
+  assert.equal(migrated.source.fontSize, current.source.fontSize);
+  assert.equal(migrated.render.fontSize, 72);
+  assert.equal(migrated.render.indentWidth, current.render.indentWidth);
+  assert.equal(migrated.render.editing.autoPair, false);
+  assert.deepEqual(migrated.render.editing.autoPairAllowedFollowingStrings, [';', '=>']);
+  assert.equal(migrated.render.formats.table.reorderDurationMs, 200);
+  assert.equal(migrated.render.formats.features.json.render, false);
+  assert.equal(migrated.render.colors.light.codeBg, current.render.colors.light.codeBg);
+  assert.equal(migrated.render.colors.dark.codeText, current.render.colors.dark.codeText);
+  assert.equal(migrated.render.colors.dark.renderBg, '#ABCDEF');
+  assert.equal(legacyStorage.setCalls.length, 1);
+  assert.ok(legacyStorage.getItem(settingsRepositoryModule.settingsStorageKey));
+  assert.equal(legacyStorage.getItem('pref_language'), null);
+  assert.ok(legacyStorage.removeCalls.includes('pref_dark_renderBg'));
+
+  const changed = structuredClone(migrated);
+  changed.source.fontSize = -100;
+  changed.render.indentWidth = 3;
+  changed.render.colors.light.renderBg = '#aabbcc';
+  assert.equal(legacyRepository.save(changed), true);
+  const normalizedSaved = JSON.parse(legacyStorage.getItem(settingsRepositoryModule.settingsStorageKey));
+  assert.equal(normalizedSaved.settings.source.fontSize, 6);
+  assert.equal(normalizedSaved.settings.render.indentWidth, current.render.indentWidth);
+  assert.equal(normalizedSaved.settings.render.colors.light.renderBg, '#AABBCC');
+  const writeCountAfterChange = legacyStorage.setCalls.length;
+  assert.equal(legacyRepository.save(changed), true);
+  assert.equal(legacyStorage.setCalls.length, writeCountAfterChange);
+
+  const remote = structuredClone(current);
+  remote.general.theme = 'light';
+  remote.source.fontSize = 24;
+  const remoteValue = JSON.stringify({
+    format: transfer.settingsFileFormat,
+    schemaVersion: transfer.settingsSchemaVersion,
+    settings: remote
+  });
+  assert.deepEqual(legacyRepository.parseStorageValue(remoteValue), remote);
+  assert.equal(legacyRepository.parseStorageValue('{broken'), null);
+  assert.equal(legacyRepository.parseStorageValue(null), null);
+
+  const futureStoredValue = JSON.stringify({
+    format: transfer.settingsFileFormat,
+    schemaVersion: 99,
+    settings: {
+      general: { language: 'ja', futurePreference: true },
+      futureSection: { enabled: true }
+    }
+  });
+  const futureStorage = new MemorySettingsStorage({
+    [settingsRepositoryModule.settingsStorageKey]: futureStoredValue
+  });
+  const futureRepository = new settingsRepositoryModule.SettingsRepository(futureStorage);
+  assert.equal(futureRepository.load(current).general.language, 'ja');
+  assert.equal(futureStorage.getItem(settingsRepositoryModule.settingsStorageKey), futureStoredValue);
+  assert.equal(futureStorage.setCalls.length, 0);
+
+  const failedMigrationStorage = new MemorySettingsStorage({ pref_language: 'ja' });
+  failedMigrationStorage.failWrites = true;
+  const failedMigrationRepository = new settingsRepositoryModule.SettingsRepository(failedMigrationStorage);
+  assert.equal(failedMigrationRepository.load(current).general.language, 'ja');
+  assert.equal(failedMigrationStorage.getItem('pref_language'), 'ja');
+  assert.equal(failedMigrationStorage.removeCalls.length, 0);
+
+  const corruptStorage = new MemorySettingsStorage({
+    [settingsRepositoryModule.settingsStorageKey]: '{broken'
+  });
+  const corruptRepository = new settingsRepositoryModule.SettingsRepository(corruptStorage);
+  assert.deepEqual(corruptRepository.load(current), current);
+  assert.equal(corruptRepository.save(current), true);
+  assert.doesNotThrow(() => JSON.parse(corruptStorage.getItem(settingsRepositoryModule.settingsStorageKey)));
+
+  console.log('Validated settings transfer and repository: versioned round-trip, one-shot legacy migration, shared normalization, atomic persistence, cross-window parsing, and malformed input handling.');
 } finally {
   await server.close();
 }
