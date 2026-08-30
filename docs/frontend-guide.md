@@ -31,6 +31,7 @@
 - `src/lib/theme-colors.ts`: 시스템 기본 팔레트, 16진수 색상 정규화와 읽기 쉬운 전경색 계산을 공유하는 순수 색상 모듈.
 - `src/lib/delimited-table.ts`: CSV/TSV 파싱, 직렬화, 셀·행·열 변경 계산.
 - `src/lib/DelimitedTableEditor.svelte`: CSV/TSV 표 편집 화면과 행·열 조작.
+- `src/lib/EditorMenuBar.svelte`: 파일·편집·도움말 메뉴와 오른쪽 도구 모음의 표현 및 메뉴 전환을 소유하고, 실제 편집·파일·창 명령은 명시적인 콜백 계약으로 호출하는 컴포넌트.
 - `src/lib/tab-drag.ts`: 탭 드래그 메타데이터, 드롭 삽입 위치와 같은 창 안 재정렬 계산.
 - `src/lib/app-updater.ts`: 설치 버전 조회, 업데이트 확인·설치·재시작 연결.
 - `src/lib/AboutDialog.svelte`: 버전, 릴리스 날짜, 라이선스와 오픈소스 출처를 표시하는 정보 창.

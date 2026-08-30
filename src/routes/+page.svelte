@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ask, message } from "@tauri-apps/plugin-dialog";
-  import { ChevronDown, Copy, Download, FileCode2, FileText, Minus, PaintRoller, Settings, Square, Sun, Moon, Plus, X } from "@lucide/svelte";
+  import { ChevronDown, Copy, Minus, Square, Plus, X } from "@lucide/svelte";
   import {
     configurableDocumentFormatCategories,
     configurableDocumentFormats,
@@ -62,6 +62,7 @@
   } from "$lib/markdown-settings";
   import { onDestroy, tick, untrack } from "svelte";
   import AboutDialog from "$lib/AboutDialog.svelte";
+  import EditorMenuBar from "$lib/EditorMenuBar.svelte";
   import SettingsWindow from "$lib/SettingsWindow.svelte";
   import {
     getLanguageNativeName,
@@ -4612,21 +4613,6 @@
   }
 
   // 메뉴 제어
-  function toggleDropdown(menu: 'file' | 'edit' | 'help', event: MouseEvent) {
-    event.stopPropagation();
-    if (openDropdown === menu) {
-      openDropdown = null;
-    } else {
-      openDropdown = menu;
-    }
-  }
-
-  function handleMouseEnter(menu: 'file' | 'edit' | 'help') {
-    if (openDropdown !== null) {
-      openDropdown = menu;
-    }
-  }
-
   function closeAllDropdown() {
     openDropdown = null;
     isTabOverflowMenuOpen = false;
@@ -5721,6 +5707,37 @@
       syncCursorState(false);
     });
   }
+
+  function toggleThemeMode() {
+    if (themeMode === 'system') {
+      themeMode = systemIsDark ? 'light' : 'dark';
+    } else {
+      themeMode = themeMode === 'light' ? 'dark' : 'light';
+    }
+  }
+
+  const editorMenuCommands = {
+    newFile: handleNewFile,
+    openFile: handleOpenFile,
+    saveFile: handleSaveFile,
+    saveFileAs: handleSaveAsFile,
+    exit: handleExit,
+    undo: handleUndo,
+    redo: handleRedo,
+    cut: handleCut,
+    copy: handleCopy,
+    paste: handlePaste,
+    deleteSelection: handleDelete,
+    selectAll: handleSelectAll,
+    insertDateTime,
+    checkForUpdates: handleManualUpdateCheck,
+    installUpdate: handleAvailableUpdateInstall,
+    openAbout: handleAboutDialogOpen,
+    toggleNewDocumentFormatPicker,
+    toggleTheme: toggleThemeMode,
+    toggleRenderMode,
+    openSettings: handleSettingsTrigger
+  };
 </script>
 
 <svelte:window onkeydown={handleKeyDown} onclick={closeAllDropdown} />
@@ -5965,206 +5982,24 @@
       </div>
     {/if}
 
-    <!-- 메뉴바 영역 -->
-    <nav class="menu-bar">
-      <div class="menu-left">
-        <div class="menu-item-container">
-          <button
-            class="menu-trigger"
-            class:active={openDropdown === 'file'}
-            onclick={(e) => toggleDropdown('file', e)}
-            onmouseenter={() => handleMouseEnter('file')}
-          >
-            {t('menu.file')}
-          </button>
-          {#if openDropdown === 'file'}
-            <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
-              <button class="dropdown-item" onclick={handleNewFile}>
-                <span class="item-label">{t('menu.newTab')}</span>
-                <span class="shortcut-label">Ctrl+N</span>
-              </button>
-              <button class="dropdown-item" onclick={handleOpenFile}>
-                <span class="item-label">{t('menu.open')}</span>
-                <span class="shortcut-label">Ctrl+O</span>
-              </button>
-              <button class="dropdown-item" onclick={handleSaveFile}>
-                <span class="item-label">{t('menu.save')}</span>
-                <span class="shortcut-label">Ctrl+S</span>
-              </button>
-              <button class="dropdown-item" onclick={handleSaveAsFile}>
-                <span class="item-label">{t('menu.saveAs')}</span>
-                <span class="shortcut-label">Ctrl+Shift+S</span>
-              </button>
-              <div class="menu-divider"></div>
-              <button class="dropdown-item" onclick={handleExit}>
-                <span class="item-label">{t('menu.exit')}</span>
-                <span class="shortcut-label">Alt+F4</span>
-              </button>
-            </div>
-          {/if}
-        </div>
-
-        <div class="menu-item-container">
-          <button
-            class="menu-trigger"
-            class:active={openDropdown === 'edit'}
-            onclick={(e) => toggleDropdown('edit', e)}
-            onmouseenter={() => handleMouseEnter('edit')}
-          >
-            {t('menu.edit')}
-          </button>
-          {#if openDropdown === 'edit'}
-            <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
-              <button class="dropdown-item" onclick={handleUndo} disabled={!canUndoActiveTab()}>
-                <span class="item-label">{t('menu.undo')}</span>
-                <span class="shortcut-label">Ctrl+Z</span>
-              </button>
-              <button class="dropdown-item" onclick={handleRedo} disabled={!canRedoActiveTab()}>
-                <span class="item-label">{t('menu.redo')}</span>
-                <span class="shortcut-label">Ctrl+Y</span>
-              </button>
-              <div class="menu-divider"></div>
-              <button class="dropdown-item" onclick={handleCut} disabled={!fileContent}>
-                <span class="item-label">{t('menu.cut')}</span>
-                <span class="shortcut-label">Ctrl+X</span>
-              </button>
-              <button class="dropdown-item" onclick={handleCopy} disabled={!fileContent}>
-                <span class="item-label">{t('menu.copy')}</span>
-                <span class="shortcut-label">Ctrl+C</span>
-              </button>
-              <button class="dropdown-item" onclick={handlePaste}>
-                <span class="item-label">{t('menu.paste')}</span>
-                <span class="shortcut-label">Ctrl+V</span>
-              </button>
-              <button class="dropdown-item" onclick={handleDelete} disabled={!fileContent}>
-                <span class="item-label">{t('menu.delete')}</span>
-                <span class="shortcut-label">Del</span>
-              </button>
-              <div class="menu-divider"></div>
-              <button class="dropdown-item" onclick={handleSelectAll}>
-                <span class="item-label">{t('menu.selectAll')}</span>
-                <span class="shortcut-label">Ctrl+A</span>
-              </button>
-              <button class="dropdown-item" onclick={insertDateTime}>
-                <span class="item-label">{t('menu.dateTime')}</span>
-                <span class="shortcut-label">F5</span>
-              </button>
-            </div>
-          {/if}
-        </div>
-
-        <div class="menu-item-container">
-          <button
-            class="menu-trigger"
-            class:active={openDropdown === 'help'}
-            onclick={(e) => toggleDropdown('help', e)}
-            onmouseenter={() => handleMouseEnter('help')}
-          >
-            {t('menu.help')}
-          </button>
-          {#if openDropdown === 'help'}
-            <div class="dropdown-menu help-menu">
-              <button
-                class="dropdown-item"
-                onclick={handleManualUpdateCheck}
-                disabled={isCheckingForUpdate || isInstallingUpdate}
-              >
-                <span class="item-label">
-                  {isInstallingUpdate ? t('update.menuInstalling') : isCheckingForUpdate ? t('update.menuChecking') : t('update.menuCheck')}
-                </span>
-              </button>
-              <div class="menu-divider"></div>
-              <button class="dropdown-item" onclick={handleAboutDialogOpen}>
-                <span class="item-label">{t('menu.about')}</span>
-              </button>
-            </div>
-          {/if}
-        </div>
-
-        <!-- 에러 표시 간소화 -->
-        {#if errorMsg || documentDiagnostic}
-          <div
-            class="menu-error-indicator"
-            class:syntax-error={!errorMsg && !!documentDiagnostic}
-            title={errorMsg || documentDiagnostic?.message}
-          >
-            ⚠️ {errorMsg || documentDiagnostic?.message}
-          </div>
-        {/if}
-      </div>
-
-      <!-- 우측 업데이트, 테마, 렌더 모드 및 설정 버튼 -->
-      <div class="menu-right">
-        {#if availableAppUpdate}
-          <button
-            type="button"
-            class="available-update-button"
-            onclick={handleAvailableUpdateInstall}
-            disabled={isCheckingForUpdate || isInstallingUpdate}
-            aria-label={`${t('update.install')} ${availableAppUpdate.version}`}
-            title={`${t('update.install')} ${availableAppUpdate.version}`}
-          >
-            <Download size={14} aria-hidden="true" />
-            <span>{t('update.install')}</span>
-            <span class="available-update-version">{availableAppUpdate.version}</span>
-          </button>
-        {/if}
-
-        {#if shouldShowNewDocumentFormatToolbar}
-          <button
-            bind:this={newDocumentFormatTriggerEl}
-            type="button"
-            class="new-document-format-trigger"
-            class:active={isNewDocumentFormatPickerOpen}
-            aria-haspopup="dialog"
-            aria-expanded={isNewDocumentFormatPickerOpen}
-            aria-controls="new-document-format-picker"
-            onclick={toggleNewDocumentFormatPicker}
-          >
-            <FileText size={14} aria-hidden="true" />
-            <span>{t('newDocument.formatPrompt')}</span>
-            <ChevronDown size={12} aria-hidden="true" />
-          </button>
-        {/if}
-
-        <button
-          class="theme-mode-toggle"
-          onclick={() => {
-            if (themeMode === 'system') themeMode = systemIsDark ? 'light' : 'dark';
-            else themeMode = themeMode === 'light' ? 'dark' : 'light';
-          }}
-          title={t('toolbar.changeTheme')}
-        >
-          {#if currentTheme === 'dark'}
-            <Moon size={18} />
-          {:else}
-            <Sun size={18} />
-          {/if}
-        </button>
-
-        <button
-          class="render-mode-toggle"
-          class:active={isRenderMode}
-          onclick={toggleRenderMode}
-          title={isRenderMode ? t('toolbar.switchToSource') : t('toolbar.switchToRender')}
-        >
-          {#if isRenderMode}
-            <PaintRoller size={18} />
-          {:else}
-            <FileCode2 size={18} />
-          {/if}
-        </button>
-
-        <button
-          class="settings-trigger"
-          onclick={handleSettingsTrigger}
-          title={t('toolbar.settings')}
-        >
-          <Settings size={18} />
-        </button>
-      </div>
-    </nav>
-
+    <EditorMenuBar
+      {locale}
+      bind:openDropdown
+      canUndo={canUndoActiveTab()}
+      canRedo={canRedoActiveTab()}
+      hasContent={fileContent.length > 0}
+      errorMessage={errorMsg || documentDiagnostic?.message || null}
+      isSyntaxError={!errorMsg && !!documentDiagnostic}
+      availableUpdateVersion={availableAppUpdate?.version ?? null}
+      {isCheckingForUpdate}
+      {isInstallingUpdate}
+      {shouldShowNewDocumentFormatToolbar}
+      {isNewDocumentFormatPickerOpen}
+      bind:newDocumentFormatTriggerEl
+      {currentTheme}
+      {isRenderMode}
+      commands={editorMenuCommands}
+    />
     <!-- 편집 공간 -->
     <main
       class="editor-area"
@@ -6682,27 +6517,6 @@
     text-shadow: none;
   }
 
-  .render-mode-toggle, .theme-mode-toggle {
-    background: transparent;
-    border: none;
-    color: var(--text-color);
-    font-size: 0.95rem;
-    padding: 0.2rem 0.4rem;
-    margin-right: 0.25rem;
-    cursor: pointer;
-    border-radius: 4px;
-    transition: background-color 0.1s;
-    outline: none;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .render-mode-toggle:hover, .render-mode-toggle.active,
-  .theme-mode-toggle:hover {
-    background-color: var(--bg-menu-hover);
-  }
-
   :global(body) {
     margin: 0;
     padding: 0;
@@ -7083,212 +6897,6 @@
   .window-control-btn:focus-visible {
     outline: 2px solid var(--accent-color);
     outline-offset: -3px;
-  }
-
-  /* 메뉴바 디자인 */
-  .menu-bar {
-    position: relative;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background-color: var(--bg-window);
-    height: 32px;
-    padding: 0 0.5rem;
-    border-bottom: 1px solid var(--border-color);
-    user-select: none;
-    box-sizing: border-box;
-    z-index: 100;
-  }
-
-  .menu-left {
-    display: flex;
-    align-items: center;
-    gap: 0.15rem;
-    flex: 1;
-  }
-
-  .menu-right {
-    display: flex;
-    align-items: center;
-    gap: 0.1rem;
-  }
-
-  .available-update-button {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.3rem;
-    height: 24px;
-    padding: 0 0.5rem;
-    margin-right: 0.25rem;
-    border: 1px solid var(--accent-color);
-    border-radius: 5px;
-    background-color: transparent;
-    color: var(--accent-color);
-    font-family: var(--font-ui);
-    font-size: 0.75rem;
-    font-weight: 600;
-    line-height: 1;
-    cursor: pointer;
-    transition: background-color 0.1s, color 0.1s;
-  }
-
-  .available-update-button:hover:not(:disabled) {
-    background-color: var(--accent-color);
-    color: white;
-  }
-
-  .available-update-button:focus-visible {
-    outline: 2px solid var(--accent-color);
-    outline-offset: 1px;
-  }
-
-  .available-update-button:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-
-  .available-update-version {
-    font-size: 0.68rem;
-    font-variant-numeric: tabular-nums;
-    opacity: 0.78;
-  }
-
-  .new-document-format-trigger {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    height: 24px;
-    padding: 0 7px;
-    margin-right: 0.25rem;
-    border: 1px solid var(--border-color);
-    border-radius: 5px;
-    background: transparent;
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.72rem;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .new-document-format-trigger:hover,
-  .new-document-format-trigger.active {
-    background-color: var(--bg-menu-hover);
-  }
-
-  .new-document-format-trigger:focus-visible {
-    outline: 1px solid var(--accent-color);
-    outline-offset: 1px;
-  }
-
-  .menu-item-container {
-    position: relative;
-  }
-
-  .menu-trigger, .settings-trigger {
-    background: transparent;
-    border: none;
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.8rem;
-    padding: 0.25rem 0.5rem;
-    cursor: pointer;
-    border-radius: 4px;
-    transition: background-color 0.1s;
-    outline: none;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .settings-trigger {
-    font-size: 0.95rem;
-    padding: 0.2rem 0.4rem;
-    margin-right: 0.25rem;
-  }
-
-  .menu-trigger:hover, .menu-trigger.active,
-  .settings-trigger:hover, .settings-trigger.active {
-    background-color: var(--bg-menu-hover);
-  }
-
-  /* 드롭다운 메뉴 */
-  .dropdown-menu {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    background-color: var(--bg-dropdown);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    box-shadow: var(--shadow-menu);
-    min-width: 240px;
-    padding: 0.25rem;
-    display: flex;
-    flex-direction: column;
-    z-index: 20;
-    margin-top: 2px;
-  }
-
-  .dropdown-menu.help-menu {
-    min-width: 190px;
-  }
-
-  .dropdown-item {
-    background: transparent;
-    border: none;
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.8rem;
-    padding: 0.35rem 0.75rem;
-    text-align: left;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    cursor: pointer;
-    border-radius: 4px;
-    outline: none;
-    transition: background-color 0.08s;
-  }
-
-  .dropdown-item:hover:not(:disabled) {
-    background-color: var(--bg-menu-hover);
-  }
-
-  .dropdown-item:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  .item-label {
-    flex: 1;
-  }
-
-  .shortcut-label {
-    color: var(--text-muted);
-    font-size: 0.75rem;
-    margin-left: 1.5rem;
-  }
-
-  .menu-divider {
-    height: 1px;
-    background-color: var(--border-color);
-    margin: 0.25rem 0.5rem;
-  }
-
-  .menu-error-indicator {
-    margin-left: auto;
-    font-size: 0.75rem;
-    color: #ef4444;
-    padding-right: 0.5rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 250px;
-  }
-
-  .menu-error-indicator.syntax-error {
-    color: #dc2626;
   }
 
   /* 메인 편집기 공간 */
