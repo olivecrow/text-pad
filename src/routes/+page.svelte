@@ -1,9 +1,5 @@
 <script lang="ts">
   import { ask, message } from "@tauri-apps/plugin-dialog";
-  import { PhysicalPosition } from "@tauri-apps/api/dpi";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { emit, emitTo, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
-  import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { Braces, ChevronDown, Code2, Copy, Download, FileCode2, FileText, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, Table2, Upload, X } from "@lucide/svelte";
   import {
     configurableDocumentFormatCategories,
@@ -140,6 +136,12 @@
     type SavedTextFile as SavedFile
   } from "$lib/desktop-file-service";
   import {
+    desktopWindows,
+    type DesktopEvent as TauriEvent,
+    type DesktopUnlisten as UnlistenFn,
+    type DesktopWindowHandle
+  } from "$lib/desktop-window-service";
+  import {
     createBrowserRenderViewportScheduler,
     RenderViewportController
   } from "$lib/render-viewport-controller";
@@ -267,9 +269,7 @@
   }
 
   function hasTauriRuntime(): boolean {
-    if (!isBrowser) return false;
-    const runtimeWindow = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown };
-    return '__TAURI_INTERNALS__' in runtimeWindow || '__TAURI__' in runtimeWindow;
+    return isBrowser && desktopWindows.isAvailable();
   }
 
   function getStartupTabTransferMetadata(): TabDragMetadata | null {
@@ -281,21 +281,10 @@
   }
 
   function getCurrentEditorWindowLabel(): string {
-    if (!hasTauriRuntime()) return 'browser';
-    try {
-      return getCurrentWindow().label;
-    } catch {
-      return 'browser';
-    }
+    return desktopWindows.currentLabel();
   }
   function getInitialIsSettingsWindow(): boolean {
-    if (!hasTauriRuntime()) return false;
-
-    try {
-      return getCurrentWindow().label === 'settings';
-    } catch {
-      return false;
-    }
+    return desktopWindows.currentLabel() === 'settings';
   }
 
   function getFileNameFromPath(path: string): string {
@@ -1241,7 +1230,7 @@
     transfer: OutgoingTabTransfer
   ) {
     if (!hasTauriRuntime()) return;
-    void emit(eventName, getTabPointerPayload(transfer)).catch((error) => {
+    void desktopWindows.emit(eventName, getTabPointerPayload(transfer)).catch((error) => {
       console.error('Failed to broadcast tab pointer event:', error);
     });
   }
@@ -1375,7 +1364,7 @@
         resolve(received);
       });
 
-      void emitTo(metadata.sourceWindowLabel, tabTransferRequestEvent, {
+      void desktopWindows.emitTo(metadata.sourceWindowLabel, tabTransferRequestEvent, {
         ...metadata,
         targetWindowLabel: getCurrentEditorWindowLabel(),
         dropIndex
@@ -1402,7 +1391,7 @@
     if (!currentTab) return;
 
     try {
-      await emitTo(request.targetWindowLabel, tabTransferDeliveryEvent, {
+      await desktopWindows.emitTo(request.targetWindowLabel, tabTransferDeliveryEvent, {
         transferId: transfer.transferId,
         sourceWindowLabel: transfer.sourceWindowLabel,
         tab: transfer.tab,
@@ -1418,7 +1407,7 @@
     const delivery = event.payload;
     try {
       if (!insertTransferredTab(delivery)) return;
-      await emitTo(delivery.sourceWindowLabel, tabTransferAcceptedEvent, {
+      await desktopWindows.emitTo(delivery.sourceWindowLabel, tabTransferAcceptedEvent, {
         transferId: delivery.transferId,
         targetWindowLabel: getCurrentEditorWindowLabel()
       } satisfies TabTransferAccepted);
@@ -1434,7 +1423,7 @@
 
     if (tabs.length === 1 && hasTauriRuntime()) {
       try {
-        await getCurrentWindow().destroy();
+        await desktopWindows.current().destroy();
       } catch (error) {
         console.error('Failed to close empty tab window:', error);
       }
@@ -1472,7 +1461,7 @@
       [tabTransferSourceQueryKey]: transfer.sourceWindowLabel
     });
     const hasScreenPosition = transfer.screenX !== 0 || transfer.screenY !== 0;
-    const detachedWindow = new WebviewWindow(label, {
+    const detachedWindow = desktopWindows.create(label, {
       url: `${window.location.origin}/?${searchParams.toString()}`,
       title: getDisplayFileName(transfer.tab),
       width: 800,
@@ -1615,7 +1604,7 @@
 
   function ensureTabTransferListeners(): Promise<UnlistenFn[]> {
     if (tabTransferListenersPromise) return tabTransferListenersPromise;
-    const eventWindow = getCurrentWindow();
+    const eventWindow = desktopWindows.current();
     tabTransferListenersPromise = Promise.all([
       eventWindow.listen<TabTransferRequest>(tabTransferRequestEvent, handleTabTransferRequest),
       eventWindow.listen<TabTransferDelivery>(tabTransferDeliveryEvent, handleTabTransferDelivery),
@@ -1857,17 +1846,17 @@
   // 마운트 시 독립 설정창 감지 및 메인 창 종료 시퀀스
   $effect(() => {
     if (!isBrowser || !hasTauriRuntime()) return;
-    const label = getCurrentWindow().label;
+    const label = desktopWindows.current().label;
     isSettingsWindow = label === 'settings';
     if (isSettingsWindow) {
       activeSettingsView = 'general';
-      getCurrentWindow().onCloseRequested((event) => {
+      desktopWindows.current().onCloseRequested((event) => {
         event.preventDefault();
-        getCurrentWindow().hide();
+        desktopWindows.current().hide();
       });
     } else {
       let unlistenClose: (() => void) | undefined;
-      getCurrentWindow().onCloseRequested(async (event) => {
+      desktopWindows.current().onCloseRequested(async (event) => {
         event.preventDefault();
 
         if (isHandlingCloseRequest) return;
@@ -1877,17 +1866,17 @@
           if (!canClose) return;
 
           try {
-            const editorWindows = (await WebviewWindow.getAll())
+            const editorWindows = (await desktopWindows.getAll())
               .filter((window) => window.label !== 'settings' && window.label !== label);
             if (editorWindows.length === 0) {
-              const settingsWin = await WebviewWindow.getByLabel('settings');
+              const settingsWin = await desktopWindows.getByLabel('settings');
               if (settingsWin) {
                 await settingsWin.destroy();
               }
             }
           } catch {}
 
-          await getCurrentWindow().destroy();
+          await desktopWindows.current().destroy();
         } finally {
           isHandlingCloseRequest = false;
         }
@@ -1917,7 +1906,7 @@
     if (!hasTauriRuntime()) return;
 
     try {
-      isWindowMaximized = await getCurrentWindow().isMaximized();
+      isWindowMaximized = await desktopWindows.current().isMaximized();
     } catch {}
   }
 
@@ -1926,7 +1915,7 @@
 
     let unlistenResized: UnlistenFn | undefined;
     void refreshWindowMaximizedState();
-    getCurrentWindow().onResized(() => {
+    desktopWindows.current().onResized(() => {
       void refreshWindowMaximizedState();
     }).then((unlisten) => {
       unlistenResized = unlisten;
@@ -2965,7 +2954,7 @@
 
     let isDisposed = false;
     let unlistenOpenRequest: UnlistenFn | undefined;
-    getCurrentWindow().listen(openFilesRequestedEvent, schedulePendingInstanceFilesOpen)
+    desktopWindows.current().listen(openFilesRequestedEvent, schedulePendingInstanceFilesOpen)
       .then((unlisten) => {
         if (isDisposed) {
           unlisten();
@@ -2989,7 +2978,7 @@
 
     let isDisposed = false;
     let unlistenDragDrop: UnlistenFn | undefined;
-    getCurrentWindow().onDragDropEvent((event) => {
+    desktopWindows.current().onDragDropEvent((event) => {
       if (event.payload.type === 'drop') {
         void openDroppedFiles(event.payload.paths);
       }
@@ -3038,7 +3027,7 @@
   }
 
   async function showMainWindowAfterStartup() {
-    const appWindow = getCurrentWindow();
+    const appWindow = desktopWindows.current();
 
     try {
       await Promise.all([
@@ -3234,7 +3223,7 @@
     }
     const receivedStartupTransfer = await receiveStartupTabTransfer();
     if (startupTabTransferMetadata && !receivedStartupTransfer) {
-      await getCurrentWindow().destroy().catch(() => {});
+      await desktopWindows.current().destroy().catch(() => {});
       return;
     }
     if (!startupTabTransferMetadata) {
@@ -3262,7 +3251,7 @@
   // 창 제목 동기화 (Rune Effect)
   $effect(() => {
     if (!hasTauriRuntime()) return;
-    const appWindow = getCurrentWindow();
+    const appWindow = desktopWindows.current();
     const title = getCurrentWindowTitle();
     appWindow.setTitle(title).catch(() => {});
   });
@@ -4755,13 +4744,13 @@
   function handleExit() {
     // onCloseRequested 이벤트 리스너가 저장 여부를 묻고
     // 설정창도 함께 닫아주므로 여기서 바로 close만 호출합니다.
-    getCurrentWindow().close().catch(() => {});
+    desktopWindows.current().close().catch(() => {});
   }
 
   async function handleTitlebarMouseDown(event: MouseEvent) {
     if (!hasTauriRuntime() || event.buttons !== 1 || event.detail > 2) return;
     event.preventDefault();
-    const appWindow = getCurrentWindow();
+    const appWindow = desktopWindows.current();
 
     if (event.detail === 2) {
       await appWindow.toggleMaximize().catch((err) => {
@@ -4779,13 +4768,13 @@
   async function handleWindowMinimize(event: MouseEvent) {
     event.stopPropagation();
     if (!hasTauriRuntime()) return;
-    await getCurrentWindow().minimize().catch(() => {});
+    await desktopWindows.current().minimize().catch(() => {});
   }
 
   async function handleWindowToggleMaximize(event: MouseEvent) {
     event.stopPropagation();
     if (!hasTauriRuntime()) return;
-    await getCurrentWindow().toggleMaximize().catch(() => {});
+    await desktopWindows.current().toggleMaximize().catch(() => {});
     await refreshWindowMaximizedState();
   }
 
@@ -4795,8 +4784,8 @@
   }
 
   // 설정 창 열기 (독립 윈도우)
-  async function centerSettingsWindowOverMain(settingsWindow: WebviewWindow) {
-    const mainWindow = getCurrentWindow();
+  async function centerSettingsWindowOverMain(settingsWindow: DesktopWindowHandle) {
+    const mainWindow = desktopWindows.current();
     const [mainPosition, mainSize, settingsSize] = await Promise.all([
       mainWindow.outerPosition(),
       mainWindow.outerSize(),
@@ -4805,10 +4794,10 @@
 
     const x = Math.round(mainPosition.x + (mainSize.width - settingsSize.width) / 2);
     const y = Math.round(mainPosition.y + (mainSize.height - settingsSize.height) / 2);
-    await settingsWindow.setPosition(new PhysicalPosition(x, y));
+    await settingsWindow.setPosition({ x, y });
   }
 
-  async function centerSettingsWindowOnFirstOpen(settingsWindow: WebviewWindow) {
+  async function centerSettingsWindowOnFirstOpen(settingsWindow: DesktopWindowHandle) {
     if (hasCenteredSettingsWindowThisSession) return;
 
     try {
@@ -4822,7 +4811,7 @@
   async function handleSettingsTrigger(e: MouseEvent) {
     e.stopPropagation();
     try {
-      const win = await WebviewWindow.getByLabel('settings');
+      const win = await desktopWindows.getByLabel('settings');
       if (win) {
         await centerSettingsWindowOnFirstOpen(win);
         await win.show();
@@ -4830,7 +4819,7 @@
       } else {
         const settingsUrl = isBrowser ? window.location.origin + '/' : '/';
 
-        const settingsWin = new WebviewWindow('settings', {
+        const settingsWin = desktopWindows.create('settings', {
           url: settingsUrl,
           title: t('settings.windowTitle'),
           width: 800,
@@ -5139,7 +5128,7 @@
     // Windows WebView2에서는 가로 휠 조작 시 브라우저 내 wheel 이벤트의 deltaX가 아예 0이 되는 버그가 있습니다.
     // 이를 우회하기 위해 Rust 백엔드에서 WM_MOUSEHWHEEL 메시지를 후킹하여 가로 휠 델타를 직접 수신받습니다.
     const unlistenPromise = hasTauriRuntime()
-      ? getCurrentWindow().listen<number>("native-horizontal-wheel", (event: TauriEvent<number>) => {
+      ? desktopWindows.current().listen<number>("native-horizontal-wheel", (event: TauriEvent<number>) => {
           if (!textareaEl) return;
           if (isRenderMode && isEnhancedDocumentWithinBudget) return;
           const delta = event.payload;

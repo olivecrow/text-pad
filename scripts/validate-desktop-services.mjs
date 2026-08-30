@@ -10,6 +10,7 @@ const server = await createServer({
 
 try {
   const desktopFileModule = await server.ssrLoadModule('/src/lib/desktop-file-service.ts');
+  const desktopWindowModule = await server.ssrLoadModule('/src/lib/desktop-window-service.ts');
   const calls = [];
   const openedFile = { path: 'C:\\docs\\note.md', content: '# note', encoding: 'utf8' };
   const savedFile = { path: 'C:\\docs\\saved.md', encoding: 'utf8' };
@@ -57,7 +58,12 @@ try {
     { command: 'write_file_content', args: writeOptions }
   ]);
 
-  console.log('Validated desktop file service command names and request/response serialization.');
+  assert.equal(desktopWindowModule.desktopWindows.isAvailable(), false);
+  assert.equal(desktopWindowModule.desktopWindows.currentLabel('test-browser'), 'test-browser');
+
+  console.log(
+    'Validated desktop file commands, request/response serialization, and browser-safe window fallback.'
+  );
 } finally {
   await server.close();
 }

@@ -65,6 +65,9 @@ assertExactSet(desktopFileCommands, expectedGeneratedCommands, 'Desktop file ada
 if (/\binvoke\s*\(/.test(frontendSource)) {
   throw new Error('The page must use the desktop file adapter instead of invoking Tauri commands directly.');
 }
+if (/@tauri-apps\/api\/(?:core|dpi|event|window|webviewWindow)/.test(frontendSource)) {
+  throw new Error('The page must use desktop adapters instead of importing Tauri core APIs directly.');
+}
 
 assertExactSet(mainCapability.windows, ['main', 'editor-*'], 'Editor capability windows');
 assertExactSet(

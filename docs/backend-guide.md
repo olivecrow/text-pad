@@ -11,6 +11,7 @@
 - `src-tauri/src/instance.rs`: 단일 앱 프로세스 유지, 두 번째 실행 인수의 대상 편집기 창 선택과 파일 열기 요청 큐.
 - `src-tauri/src/windows_wheel.rs`: Windows 가로 휠 처리.
 - `src/lib/desktop-file-service.ts`: 프론트엔드가 Rust 파일 명령의 이름과 요청·응답 직렬화 형식을 직접 다루지 않게 하는 단일 어댑터.
+- `src/lib/desktop-window-service.ts`: Tauri 창 객체, 물리 좌표와 창 간 이벤트 타입을 화면 로직 밖으로 격리하는 프론트엔드 어댑터.
 - `src-tauri/capabilities/default.json`, `src-tauri/capabilities/settings.json`: 창별 프론트엔드 명령 권한.
 - `src-tauri/tauri.conf.json`: 창 설정과 빌드 설정.
 - `.github/workflows/release.yml`: `main`의 버전 태그에서 서명된 Windows 릴리스와 업데이트 메타데이터를 만드는 작업.
@@ -64,6 +65,7 @@
 - 앱 전용 파일 명령은 `build.rs`의 애플리케이션 명세가 생성한 개별 허용 권한으로만 노출하며, WebView에 운영체제 파일 시스템의 원시 접근 권한을 부여하지 않는다.
 - `src-tauri/capabilities/settings.json`은 `settings` 창에 이벤트 수신, 기본 창 조회, 숨기기 권한과 설정 JSON을 사용자가 직접 고른 경로에서 가져오거나 내보내기 위한 `open_file_dialog`, `save_file_dialog` 권한만 부여한다.
 - 설정창에는 시작 파일, 이미 승인된 임의 경로 열기·덮어쓰기, 업데이트, URL·메시지창, 새 창 생성·파괴 권한을 부여하지 않는다. `npm run validate:capabilities`는 이 최소 권한 집합과 `build.rs` 명령 명세의 불일치를 실패로 처리한다.
+- 화면 컴포넌트는 Tauri 코어의 명령·창·이벤트·좌표 API를 직접 가져오지 않는다. 파일 작업은 `desktop-file-service.ts`, 창 제어와 이벤트는 `desktop-window-service.ts`를 거치며, 권한 검증은 메인 페이지의 직접 Tauri 코어 import를 실패로 처리한다.
 
 `tauri-plugin-window-state`는 편집기 창의 위치와 크기를 복원하되 독립 설정창은 복원하지 않으므로 `settings` 창을 denylist에 둔다.
 
