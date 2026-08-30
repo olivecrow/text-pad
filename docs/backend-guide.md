@@ -59,9 +59,9 @@
 - 설정 버튼은 기존 `settings` 창을 찾고, 없으면 동적으로 만든 뒤 `show()`와 `setFocus()`를 호출한다.
 - 설정창 닫기 요청은 창을 파괴하지 않고 `hide()`로 숨긴다.
 - `src-tauri/capabilities/default.json`은 `main`과 `editor-*` 편집기 창에 파일 명령, 창 간 이벤트, 업데이트, 재시작, URL 열기, 메시지창, 창 생성과 제어 권한을 부여한다.
-- 앱 전용 파일 명령은 `build.rs`의 애플리케이션 명세가 생성한 개별 허용 권한을 편집기 창에만 연결한다.
-- `src-tauri/capabilities/settings.json`은 `settings` 창에 이벤트 수신, 기본 창 조회, 숨기기 권한만 부여한다.
-- 프론트엔드에는 파일 열기·저장 대화상자 권한을 주지 않으며, 일반 메시지 대화상자와 웹 URL 열기만 허용한다.
+- 앱 전용 파일 명령은 `build.rs`의 애플리케이션 명세가 생성한 개별 허용 권한으로만 노출하며, WebView에 운영체제 파일 시스템의 원시 접근 권한을 부여하지 않는다.
+- `src-tauri/capabilities/settings.json`은 `settings` 창에 이벤트 수신, 기본 창 조회, 숨기기 권한과 설정 JSON을 사용자가 직접 고른 경로에서 가져오거나 내보내기 위한 `open_file_dialog`, `save_file_dialog` 권한만 부여한다.
+- 설정창에는 시작 파일, 이미 승인된 임의 경로 열기·덮어쓰기, 업데이트, URL·메시지창, 새 창 생성·파괴 권한을 부여하지 않는다. `npm run validate:capabilities`는 이 최소 권한 집합과 `build.rs` 명령 명세의 불일치를 실패로 처리한다.
 
 `tauri-plugin-window-state`는 편집기 창의 위치와 크기를 복원하되 독립 설정창은 복원하지 않으므로 `settings` 창을 denylist에 둔다.
 
@@ -107,5 +107,6 @@ Windows WebView2는 일부 마우스 가로 휠 입력을 브라우저 `wheel` �
 ## 검증
 
 - 백엔드 또는 Tauri 설정 변경 후: `.agents/skills/text-pad-signed-build/SKILL.md`에 따라 `npm run tauri:build:signed`
+- 창 capability 또는 앱 명령 변경 후: `npm run validate:capabilities`
 - 지원 형식 변경 후: `npm run validate:formats`
 - 프론트엔드와 함께 바뀐 경우: `npm run check` 후 `npm run tauri:build:signed`

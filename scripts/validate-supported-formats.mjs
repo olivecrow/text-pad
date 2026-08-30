@@ -155,18 +155,6 @@ if (JSON.stringify(wixFileAssociationExtensions) !== JSON.stringify(extensions)
   throw new Error('MSI Default Apps registrations must exactly match supported-text-formats.json order and extensions.');
 }
 
-const mainCapability = JSON.parse(fs.readFileSync(
-  path.join(root, 'src-tauri', 'capabilities', 'default.json'),
-  'utf8'
-));
-if (!mainCapability.permissions?.includes('allow-open-file-paths')) {
-  throw new Error('The main window capability must allow open_file_paths for native file drops.');
-}
-const tauriBuildSource = fs.readFileSync(path.join(root, 'src-tauri', 'build.rs'), 'utf8');
-if (!tauriBuildSource.includes('"open_file_paths"')) {
-  throw new Error('The Tauri app manifest must generate a permission for open_file_paths.');
-}
-
 const frontendSource = fs.readFileSync(path.join(root, 'src', 'lib', 'document-formats.ts'), 'utf8');
 const backendSource = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'file_commands.rs'), 'utf8');
 if (!frontendSource.includes("from '../../supported-text-formats.json'")) {

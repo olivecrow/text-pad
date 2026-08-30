@@ -78,6 +78,7 @@ graph TD
 ## 주요 명령
 
 - `npm run validate:i18n`: 번역표 키와 치환 변수 검사.
+- `npm run validate:capabilities`: 편집기·설정창의 Tauri 명령과 최소 권한 계약 검사.
 - `npm run validate:formats`: 중앙 지원 목록, 샘플, Windows 설치 연결의 일치 검사.
 - `npm run check`: Svelte와 TypeScript 검사.
 - `npm run build`: 프론트엔드 정적 빌드.
