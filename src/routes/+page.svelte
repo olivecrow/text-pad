@@ -107,6 +107,7 @@
     type TextOffsetIndex
   } from "$lib/text-offset-index";
   import { getPreferredNewline, getSnapshotFromTextareaInput } from "$lib/editor-input";
+  import { EditorCommandPipeline } from "$lib/editor-command-pipeline";
   import { getEditorDuplicationEdit } from "$lib/editor-duplication";
   import { getArrowSubstitutionSpaceEdit } from "$lib/arrow-substitution";
   import {
@@ -4683,24 +4684,26 @@
     return true;
   }
 
-  function handleRenderEditorKeyDown(event: KeyboardEvent) {
-    prepareRenderMarkdownHeadingReplacementMarker(event);
-    if (handleRenderListBoundaryArrowLeft(event)) return;
-    if (handleRenderListSoftBreakEnter(event)) return;
-    if (handleRenderExitEmptyListEnter(event)) return;
-    if (handleRenderContinueListEnter(event)) return;
-    if (handleRenderListContinuationEnter(event)) return;
-    if (handleRenderPreserveIndentEnter(event)) return;
-    if (handleRenderListMarkerBackspace(event)) return;
-    if (handleRenderListContinuationBackspace(event)) return;
-    if (handleRenderEmptyIndentedLineBackspace(event)) return;
-    if (handleRenderTabIndent(event)) return;
-    if (handleRenderIndentBackspace(event)) return;
-    if (handleRenderAutoPairBackspace(event)) return;
-    if (handleRenderMarkdownHeadingSpace(event)) return;
-    if (handleRenderAutoSubstitutionSpace(event)) return;
-    handleRenderAutoPairInput(event);
-  }
+  const renderEditorCommandPipeline = new EditorCommandPipeline<KeyboardEvent>([
+    { id: 'fenced-code-selection-guard', priority: 10, execute: handleRenderFencedCodeSelectionEdit },
+    { id: 'fenced-code-block-backspace', priority: 20, execute: handleRenderFencedCodeBlockBackspace },
+    { id: 'fenced-code-boundary-deletion-guard', priority: 30, execute: handleRenderFencedCodeBoundaryDeletion },
+    { id: 'list-boundary-arrow-left', priority: 40, execute: handleRenderListBoundaryArrowLeft },
+    { id: 'list-soft-break-enter', priority: 50, execute: handleRenderListSoftBreakEnter },
+    { id: 'empty-list-exit-enter', priority: 60, execute: handleRenderExitEmptyListEnter },
+    { id: 'continue-list-enter', priority: 70, execute: handleRenderContinueListEnter },
+    { id: 'list-continuation-enter', priority: 80, execute: handleRenderListContinuationEnter },
+    { id: 'preserve-indent-enter', priority: 90, execute: handleRenderPreserveIndentEnter },
+    { id: 'list-marker-backspace', priority: 100, execute: handleRenderListMarkerBackspace },
+    { id: 'list-continuation-backspace', priority: 110, execute: handleRenderListContinuationBackspace },
+    { id: 'empty-indented-line-backspace', priority: 120, execute: handleRenderEmptyIndentedLineBackspace },
+    { id: 'tab-indent', priority: 130, execute: handleRenderTabIndent },
+    { id: 'indent-backspace', priority: 140, execute: handleRenderIndentBackspace },
+    { id: 'auto-pair-backspace', priority: 150, execute: handleRenderAutoPairBackspace },
+    { id: 'markdown-heading-space', priority: 160, execute: handleRenderMarkdownHeadingSpace },
+    { id: 'auto-substitution-space', priority: 170, execute: handleRenderAutoSubstitutionSpace },
+    { id: 'auto-pair-input', priority: 180, execute: handleRenderAutoPairInput }
+  ]);
 
   function handleEditorKeyDown(event: KeyboardEvent) {
     if (editorMovementKeys.has(event.key)) {
@@ -4717,10 +4720,8 @@
       markdownHeadingReplacementCaret = null;
       return;
     }
-    if (handleRenderFencedCodeSelectionEdit(event)) return;
-    if (handleRenderFencedCodeBlockBackspace(event)) return;
-    if (handleRenderFencedCodeBoundaryDeletion(event)) return;
-    handleRenderEditorKeyDown(event);
+    prepareRenderMarkdownHeadingReplacementMarker(event);
+    renderEditorCommandPipeline.execute(event);
   }
 
   // 새 탭 생성

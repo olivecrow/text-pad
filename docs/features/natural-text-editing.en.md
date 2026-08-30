@@ -370,24 +370,27 @@ The current render-mode priority is:
 
 The common `Ctrl+D` editing shortcut is handled first as an independent duplication command in both source and render modes. The priority below applies to render-mode editing-assistance input without Ctrl, Alt, or Meta.
 
+Each editing-assistance command registers a unique identifier and a non-duplicated integer priority. `EditorCommandPipeline` sorts commands by that value regardless of their position in the registration array and stops after the first applicable command. A new command must state its intended position between existing commands through its priority; duplicate identifiers or priorities fail during application initialization.
+
 1. Block deletion selections that include only part of a fenced-code delimiter
 2. Disable fenced-block syntax on Backspace from the immediately following line
 3. Block single-character deletion across a newline adjacent to a fenced-code delimiter
-4. Create a marker-free list continuation line with Shift+Enter
-5. End the list with Enter on an empty marker item
-6. Continue a list marker and renumber following items on Enter
-7. Create the next item and renumber following items from a list continuation line on Enter
-8. Preserve indentation on Enter for a general line
-9. Remove the marker-tail character with Backspace at a list body start
-10. Join a list continuation line with Backspace at its body start
-11. Join an otherwise empty automatically indented line on Backspace
-12. Indent or outdent lines with Tab or Shift+Tab
-13. Delete leading indentation with Backspace
-14. Delete an empty automatic pair with Backspace
-15. Apply a Markdown heading or replace its existing level when confirmed by Space
-16. Apply a context-aware substitution confirmed by Space
-17. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
-18. Fall back to default `textarea` input when none of the conditions match
+4. Move to the previous line end with ArrowLeft from the body start of a list continuation line
+5. Create a marker-free list continuation line with Shift+Enter
+6. End the list with Enter on an empty marker item
+7. Continue a list marker and renumber following items on Enter
+8. Create the next item and renumber following items from a list continuation line on Enter
+9. Preserve indentation on Enter for a general line
+10. Remove the marker-tail character with Backspace at a list body start
+11. Join a list continuation line with Backspace at its body start
+12. Join an otherwise empty automatically indented line on Backspace
+13. Indent or outdent lines with Tab or Shift+Tab
+14. Delete leading indentation with Backspace
+15. Delete an empty automatic pair with Backspace
+16. Apply a Markdown heading or replace its existing level when confirmed by Space
+17. Apply a context-aware substitution confirmed by Space
+18. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
+19. Fall back to default `textarea` input when none of the conditions match
 
 Do not chain one editing-assistance helper from inside another. The top-level input path selects exactly one feature by priority, and that feature records the final source text and selection only once.
 
@@ -421,6 +424,7 @@ When editing assistance is added or changed, verify at least the following:
 ## text-pad implementation locations
 
 - `src/routes/+page.svelte`: top-level render-mode input, caret and selection conversion, and edit-result recording.
+- `src/lib/editor-command-pipeline.ts`: shared execution path that validates unique command identifiers and priorities and stops at the first applicable command.
 - `src/lib/arrow-substitution.ts`: arrow-trigger recognition, source replacement, and final-caret calculation confirmed by Space.
 - `src/lib/markdown-heading-edit.ts`: calculation of Markdown heading-marker application and existing-level replacement confirmed by Space.
 - `src/lib/list-markers.ts`: list-marker recognition, sequence advancement, and depth-based style selection.

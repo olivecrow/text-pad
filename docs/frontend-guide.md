@@ -14,6 +14,7 @@
 - `src/lib/structured-rendering.ts`: 절대 위치 토큰의 화면 범위 선택, 줄 분할, 들여쓰기 깊이 계산.
 - `src/lib/text-offset-index.ts`: 원문 줄 시작과 CRLF 위치 인덱스, 원문과 `textarea` 선택 위치의 이진 탐색 변환.
 - `src/lib/text-change.ts`, `src/lib/editor-input.ts`: 한 번 계산한 국소 변경 범위와 원문·`textarea` 위치 인덱스를 입력, 실행 취소, 렌더 캐시가 함께 쓰게 하는 편집 입력 모듈.
+- `src/lib/editor-command-pipeline.ts`: 키 입력 명령의 고유 식별자와 명시적 우선순위를 검증하고 첫 적용 명령만 실행하는 공통 파이프라인.
 - `src/lib/editor-session.ts`: 탭 목록과 활성 탭 식별자의 불변 조건, 탭 활성화·교체·갱신을 소유하는 단일 문서 세션 모듈.
 - `src/lib/editor-layout.ts`: 원문 모드의 균일 줄 높이 계산과 렌더 모드의 증분 줄 높이·목록·울타리 코드 인덱스.
 - `src/lib/render-viewport-controller.ts`: 편집 뷰포트 폭 변경의 안정화 시점과 렌더 캐럿 재표시의 예약·취소 수명을 소유하는 컨트롤러.

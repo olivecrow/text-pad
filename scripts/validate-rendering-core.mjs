@@ -99,6 +99,7 @@ try {
   const listMarkers = await server.ssrLoadModule('/src/lib/list-markers.ts');
   const textChanges = await server.ssrLoadModule('/src/lib/text-change.ts');
   const editorInput = await server.ssrLoadModule('/src/lib/editor-input.ts');
+  const editorCommands = await server.ssrLoadModule('/src/lib/editor-command-pipeline.ts');
   const editorDuplication = await server.ssrLoadModule('/src/lib/editor-duplication.ts');
   const editorLayout = await server.ssrLoadModule('/src/lib/editor-layout.ts');
   const editorScrollExtent = await server.ssrLoadModule('/src/lib/editor-scroll-extent.ts');
@@ -139,6 +140,30 @@ try {
       );
     }
   }
+
+  const commandTrace = [];
+  const commandPipeline = new editorCommands.EditorCommandPipeline([
+    { id: 'fallback', priority: 30, execute: () => { commandTrace.push('fallback'); return false; } },
+    { id: 'first', priority: 10, execute: () => { commandTrace.push('first'); return false; } },
+    { id: 'handled', priority: 20, execute: () => { commandTrace.push('handled'); return true; } }
+  ]);
+  assert.deepEqual(commandPipeline.getOrderedCommandIds(), ['first', 'handled', 'fallback']);
+  assert.equal(commandPipeline.execute({ key: 'Enter' }), 'handled');
+  assert.deepEqual(commandTrace, ['first', 'handled']);
+  assert.throws(
+    () => new editorCommands.EditorCommandPipeline([
+      { id: 'duplicate', priority: 10, execute: () => false },
+      { id: 'duplicate', priority: 20, execute: () => false }
+    ]),
+    /Duplicate editor command id/
+  );
+  assert.throws(
+    () => new editorCommands.EditorCommandPipeline([
+      { id: 'first', priority: 10, execute: () => false },
+      { id: 'second', priority: 10, execute: () => false }
+    ]),
+    /Duplicate editor command priority/
+  );
 
   const maximumOffset = 2_000_000;
   const columns = 1_000;
@@ -899,7 +924,7 @@ try {
   console.log(
     `Validated render core: CRLF offsets, logarithmic hit testing (${rectCalls} reads), `
       + `XML range cache (${xmlParseDuration.toFixed(1)}ms), 250k-line uniform layout (${uniformDuration.toFixed(1)}ms), `
-      + `incremental layout/parser checkpoints, viewport lifecycle, shared input diffs, bounded caches/undo, worker cancellation, `
+      + `incremental layout/parser checkpoints, viewport lifecycle, prioritized editor commands, shared input diffs, bounded caches/undo, worker cancellation, `
       + `auto-pair right-context rules, arrow substitutions, editor duplication, list-marker backspace, Markdown heading application, new-table templates, `
       + `and table copy-on-write.`
   );
