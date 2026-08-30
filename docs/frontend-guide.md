@@ -16,6 +16,7 @@
 - `src/lib/text-change.ts`, `src/lib/editor-input.ts`: 한 번 계산한 국소 변경 범위와 원문·`textarea` 위치 인덱스를 입력, 실행 취소, 렌더 캐시가 함께 쓰게 하는 편집 입력 모듈.
 - `src/lib/editor-command-pipeline.ts`: 키 입력 명령의 고유 식별자와 명시적 우선순위를 검증하고 첫 적용 명령만 실행하는 공통 파이프라인.
 - `src/lib/editor-session.ts`: 탭 목록과 활성 탭 식별자의 불변 조건, 탭 활성화·교체·갱신을 소유하는 단일 문서 세션 모듈.
+- `src/lib/desktop-file-service.ts`: 파일 열기·저장·시작 파일·후속 실행 파일·동적 창 휠 초기화의 Tauri 명령 이름과 직렬화 형식을 숨기는 프론트엔드 어댑터.
 - `src/lib/editor-layout.ts`: 원문 모드의 균일 줄 높이 계산과 렌더 모드의 증분 줄 높이·목록·울타리 코드 인덱스.
 - `src/lib/render-viewport-controller.ts`: 편집 뷰포트 폭 변경의 안정화 시점과 렌더 캐럿 재표시의 예약·취소 수명을 소유하는 컨트롤러.
 - `src/lib/line-state-checkpoints.ts`: 여러 줄 주석과 블록 문자열처럼 앞줄 상태가 필요한 파서의 주기적 상태 체크포인트.

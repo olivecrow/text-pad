@@ -1,6 +1,5 @@
 <script lang="ts">
   import { ask, message } from "@tauri-apps/plugin-dialog";
-  import { invoke } from "@tauri-apps/api/core";
   import { PhysicalPosition } from "@tauri-apps/api/dpi";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { emit, emitTo, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
@@ -136,6 +135,11 @@
   } from "$lib/editor-layout";
   import { getEditorScrollHeight, getRenderWheelScrollDelta } from "$lib/editor-scroll-extent";
   import {
+    desktopFiles,
+    type OpenedTextFile as OpenedFile,
+    type SavedTextFile as SavedFile
+  } from "$lib/desktop-file-service";
+  import {
     createBrowserRenderViewportScheduler,
     RenderViewportController
   } from "$lib/render-viewport-controller";
@@ -221,17 +225,6 @@
     top: number;
   }
 
-
-  interface OpenedFile {
-    path: string;
-    content: string;
-    encoding: TextEncoding;
-  }
-
-  interface SavedFile {
-    path: string;
-    encoding: TextEncoding;
-  }
 
   let nextTabId = 1;
   let nextUntitledNumber = 1;
@@ -2009,7 +2002,7 @@
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab) return;
 
-    await invoke("write_file_content", {
+    await desktopFiles.writeFileContent({
       path: targetPath,
       content: tab.fileContent,
       encoding: tab.encoding
@@ -2027,7 +2020,7 @@
       return true;
     }
 
-    const savedFile = await invoke<SavedFile | null>("save_file_dialog", {
+    const savedFile = await desktopFiles.saveFileDialog({
       defaultName: getSuggestedSaveFileName(tab),
       content: tab.fileContent,
       encoding: null,
@@ -2048,7 +2041,7 @@
     const tab = getActiveTab();
     if (!tab) return false;
 
-    const savedFile = await invoke<SavedFile | null>("save_file_dialog", {
+    const savedFile = await desktopFiles.saveFileDialog({
       defaultName: getSuggestedSaveFileName(tab),
       content: tab.fileContent,
       encoding: tab.filePath ? tab.encoding : null,
@@ -2154,7 +2147,7 @@
     isSettingsTransferBusy = true;
     settingsTransferStatus = null;
     try {
-      const savedFile = await invoke<SavedFile | null>('save_file_dialog', {
+      const savedFile = await desktopFiles.saveFileDialog({
         defaultName: 'text-pad-settings.json',
         content: serializeSettingsFile(getCurrentSettingsSnapshot(), installedAppVersion),
         encoding: 'utf8',
@@ -2181,9 +2174,9 @@
     isSettingsTransferBusy = true;
     settingsTransferStatus = null;
     try {
-      const openedFile = await invoke<OpenedFile | null>('open_file_dialog', {
-        filters: [{ name: t('settings.transfer.jsonFilter'), extensions: ['json'] }]
-      });
+      const openedFile = await desktopFiles.openFileDialog([
+        { name: t('settings.transfer.jsonFilter'), extensions: ['json'] }
+      ]);
       if (!openedFile) return;
 
       const result = parseSettingsFile(openedFile.content, getCurrentSettingsSnapshot());
@@ -2928,7 +2921,7 @@
       isLoading = true;
       errorMsg = null;
       captureActiveEditorView();
-      const openedFiles = await invoke<OpenedFile[]>("open_file_paths", { paths });
+      const openedFiles = await desktopFiles.openFilePaths(paths);
       for (const openedFile of openedFiles) {
         openFile(openedFile, false);
       }
@@ -2943,7 +2936,7 @@
     if (isSettingsWindow) return;
 
     try {
-      const openedFiles = await invoke<OpenedFile[]>('take_pending_open_files');
+      const openedFiles = await desktopFiles.takePendingOpenFiles();
       if (!openedFiles.length) return;
 
       isLoading = true;
@@ -3021,7 +3014,7 @@
     hasLoadedStartupFiles = true;
 
     try {
-      const startupFiles = await invoke<OpenedFile[]>("get_startup_files");
+      const startupFiles = await desktopFiles.getStartupFiles();
       if (!startupFiles.length) return;
 
       isLoading = true;
@@ -3235,7 +3228,7 @@
 
   async function initializeMainWindowAfterStartup() {
     if (getCurrentEditorWindowLabel() !== 'main') {
-      void invoke('setup_editor_window_wheel').catch((error) => {
+      void desktopFiles.setupEditorWindowWheel().catch((error) => {
         console.error('Failed to initialize horizontal wheel for editor window:', error);
       });
     }
@@ -4736,9 +4729,7 @@
       errorMsg = null;
       captureActiveEditorView();
       closeAllDropdown();
-      const openedFile = await invoke<OpenedFile | null>("open_file_dialog", {
-        filters: getOpenFileDialogFilters(locale)
-      });
+      const openedFile = await desktopFiles.openFileDialog(getOpenFileDialogFilters(locale));
 
       if (openedFile) {
         openFile(openedFile);

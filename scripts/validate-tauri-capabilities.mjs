@@ -32,6 +32,10 @@ const mainCapability = readJson(path.join('src-tauri', 'capabilities', 'default.
 const settingsCapability = readJson(path.join('src-tauri', 'capabilities', 'settings.json'));
 const tauriBuildSource = fs.readFileSync(path.join(root, 'src-tauri', 'build.rs'), 'utf8');
 const frontendSource = fs.readFileSync(path.join(root, 'src', 'routes', '+page.svelte'), 'utf8');
+const desktopFileServiceSource = fs.readFileSync(
+  path.join(root, 'src', 'lib', 'desktop-file-service.ts'),
+  'utf8'
+);
 
 const generatedCommands = [...tauriBuildSource.matchAll(/^\s*"([a-z_]+)",?$/gm)]
   .map((match) => match[1]);
@@ -45,6 +49,22 @@ const expectedGeneratedCommands = [
   'take_pending_open_files'
 ];
 assertExactSet(generatedCommands, expectedGeneratedCommands, 'Tauri app command manifest');
+
+const desktopFileCommandBlockStart = desktopFileServiceSource.indexOf('export const desktopFileCommands');
+const desktopFileCommandBlockEnd = desktopFileServiceSource.indexOf('} as const;', desktopFileCommandBlockStart);
+if (desktopFileCommandBlockStart < 0 || desktopFileCommandBlockEnd < 0) {
+  throw new Error('The desktop file command adapter contract could not be located.');
+}
+const desktopFileCommands = [
+  ...desktopFileServiceSource
+    .slice(desktopFileCommandBlockStart, desktopFileCommandBlockEnd)
+    .matchAll(/^\s+[a-zA-Z]+:\s*'([a-z_]+)',?$/gm)
+].map((match) => match[1]);
+assertExactSet(desktopFileCommands, expectedGeneratedCommands, 'Desktop file adapter commands');
+
+if (/\binvoke\s*\(/.test(frontendSource)) {
+  throw new Error('The page must use the desktop file adapter instead of invoking Tauri commands directly.');
+}
 
 assertExactSet(mainCapability.windows, ['main', 'editor-*'], 'Editor capability windows');
 assertExactSet(
@@ -73,11 +93,14 @@ if (settingsTransferStart < 0 || settingsTransferEnd < 0) {
   throw new Error('The settings transfer handlers could not be located.');
 }
 const settingsTransferSource = frontendSource.slice(settingsTransferStart, settingsTransferEnd);
-for (const command of ['open_file_dialog', 'save_file_dialog']) {
-  if (!settingsTransferSource.includes(`'${command}'`) && !settingsTransferSource.includes(`"${command}"`)) {
-    throw new Error(`The settings transfer UI no longer invokes ${command}; review its capability permission.`);
-  }
-}
+const settingsTransferAdapterCalls = [
+  ...settingsTransferSource.matchAll(/\bdesktopFiles\.([a-zA-Z]+)\s*\(/g)
+].map((match) => match[1]);
+assertExactSet(
+  settingsTransferAdapterCalls,
+  ['openFileDialog', 'saveFileDialog'],
+  'Settings window desktop file adapter calls'
+);
 
 console.log(
   `Validated Tauri capability boundaries for editor and settings windows (${generatedCommands.length} app commands).`
