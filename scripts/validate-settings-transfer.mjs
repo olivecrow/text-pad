@@ -37,6 +37,7 @@ const server = await createServer({
 try {
   const transfer = await server.ssrLoadModule('/src/lib/settings-transfer.ts');
   const settingsRepositoryModule = await server.ssrLoadModule('/src/lib/settings-repository.ts');
+  const themeColors = await server.ssrLoadModule('/src/lib/theme-colors.ts');
   const documentFormats = await server.ssrLoadModule('/src/lib/document-formats.ts');
   const markdown = await server.ssrLoadModule('/src/lib/markdown-settings.ts');
 
@@ -53,6 +54,14 @@ try {
     renderText: '#D6EAF0',
     renderFontWeight: '400'
   };
+  assert.equal(themeColors.getSystemDefaultColors(false).renderBg, '#f8fafc');
+  assert.equal(themeColors.getSystemDefaultColors(true).renderBg, '#0a0a0b');
+  assert.equal(themeColors.normalizeHexColor(' #aabbcc '), '#AABBCC');
+  assert.equal(themeColors.normalizeHexColor('#abc'), null);
+  assert.equal(themeColors.getColorInputValue('invalid'), '#000000');
+  assert.equal(themeColors.formatColorCode(' #aabbcc '), '#AABBCC');
+  assert.equal(themeColors.getReadableTextColor('#FFFFFF'), '#000000');
+  assert.equal(themeColors.getReadableTextColor('#000000'), '#ffffff');
   const current = {
     general: {
       language: 'system',

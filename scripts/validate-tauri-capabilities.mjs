@@ -28,6 +28,20 @@ function commandPermission(command) {
   return `allow-${command.replaceAll('_', '-')}`;
 }
 
+function getFunctionSource(source, signature) {
+  const functionStart = source.indexOf(signature);
+  const bodyStart = source.indexOf('{', functionStart);
+  if (functionStart < 0 || bodyStart < 0) return null;
+
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    if (source[index] === '{') depth += 1;
+    if (source[index] === '}') depth -= 1;
+    if (depth === 0) return source.slice(functionStart, index + 1);
+  }
+  return null;
+}
+
 const mainCapability = readJson(path.join('src-tauri', 'capabilities', 'default.json'));
 const settingsCapability = readJson(path.join('src-tauri', 'capabilities', 'settings.json'));
 const tauriBuildSource = fs.readFileSync(path.join(root, 'src-tauri', 'build.rs'), 'utf8');
@@ -90,12 +104,14 @@ assertExactSet(
   'Settings capability permissions'
 );
 
-const settingsTransferStart = frontendSource.indexOf('async function handleExportSettings()');
-const settingsTransferEnd = frontendSource.indexOf('function normalizeHexColor', settingsTransferStart);
-if (settingsTransferStart < 0 || settingsTransferEnd < 0) {
+const settingsTransferSources = [
+  getFunctionSource(frontendSource, 'async function handleExportSettings()'),
+  getFunctionSource(frontendSource, 'async function handleImportSettings()')
+];
+if (settingsTransferSources.some((source) => source === null)) {
   throw new Error('The settings transfer handlers could not be located.');
 }
-const settingsTransferSource = frontendSource.slice(settingsTransferStart, settingsTransferEnd);
+const settingsTransferSource = settingsTransferSources.join('\n');
 const settingsTransferAdapterCalls = [
   ...settingsTransferSource.matchAll(/\bdesktopFiles\.([a-zA-Z]+)\s*\(/g)
 ].map((match) => match[1]);

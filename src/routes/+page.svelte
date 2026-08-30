@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ask, message } from "@tauri-apps/plugin-dialog";
-  import { Braces, ChevronDown, Code2, Copy, Download, FileCode2, FileText, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, Table2, Upload, X } from "@lucide/svelte";
+  import { ChevronDown, Copy, Download, FileCode2, FileText, Minus, PaintRoller, Settings, Square, Sun, Moon, Plus, X } from "@lucide/svelte";
   import {
     configurableDocumentFormatCategories,
     configurableDocumentFormats,
@@ -19,7 +19,7 @@
     parseDocumentForRender,
     getSaveFileDialogFilters
   } from "$lib/document-formats";
-  import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatCategory, DocumentFormatCategoryId, DocumentFormatId } from "$lib/document-formats";
+  import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatCategory, DocumentFormatId } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
   import {
     formatListMarker,
@@ -58,11 +58,11 @@
     markdownHeadingLevels,
     normalizeMarkdownRenderSettings,
     type MarkdownHeadingLevel,
-    type MarkdownHeadingStyle,
     type MarkdownRenderSettings
   } from "$lib/markdown-settings";
   import { onDestroy, tick, untrack } from "svelte";
   import AboutDialog from "$lib/AboutDialog.svelte";
+  import SettingsWindow from "$lib/SettingsWindow.svelte";
   import {
     getLanguageNativeName,
     isRtlLocale,
@@ -113,10 +113,7 @@
   import { BoundedLruCache, BoundedRecentSet } from "$lib/bounded-collections";
   import {
     canInsertAutoPairAt,
-    createDefaultAutoPairAllowedFollowingStrings,
-    maximumAutoPairAllowedFollowingStringCount,
-    maximumAutoPairAllowedFollowingStringLength,
-    normalizeAutoPairAllowedFollowingString
+    createDefaultAutoPairAllowedFollowingStrings
   } from "$lib/auto-pair";
   import { getTextChange, type TextChange } from "$lib/text-change";
   import {
@@ -157,6 +154,13 @@
     type SettingsThemePalette
   } from "$lib/settings-transfer";
   import { SettingsRepository } from "$lib/settings-repository";
+  import {
+    getColorCodeStyle,
+    getColorInputValue,
+    getReadableTextColor,
+    normalizeHexColor,
+    getSystemDefaultColors
+  } from "$lib/theme-colors";
   import {
     createRenderedTextBoundaryIndex,
     findClosestRenderedTextOffset,
@@ -496,22 +500,9 @@
 
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | 'help' | null>(null);
-  type FormatSettingsView = `format:${DocumentFormatId}`;
-  type FormatCategorySettingsView = `category:${DocumentFormatCategoryId}`;
-  type SettingsView = 'general' | 'sourceAppearance' | 'renderAppearance' | 'renderEditing' | FormatCategorySettingsView | FormatSettingsView;
   type SettingsTransferStatus = { kind: 'success' | 'warning' | 'error'; message: string };
   let settingsTransferStatus = $state<SettingsTransferStatus | null>(null);
   let isSettingsTransferBusy = $state<boolean>(false);
-  let activeSettingsView = $state<SettingsView>('general');
-  let isSourceSettingsExpanded = $state<boolean>(true);
-  let isRenderSettingsExpanded = $state<boolean>(true);
-  let expandedFormatCategories = $state<Record<DocumentFormatCategoryId, boolean>>({
-    document: true,
-    structured: true,
-    project: true,
-    table: true,
-    subtitle: true
-  });
   let hasCenteredSettingsWindowThisSession = false;
 
   // 폰트 크기 이원화
@@ -522,15 +513,6 @@
   let isRenderMode = $state<boolean>(true); // 기본값은 렌더 모드
   let renderAutoPairEditing = $state<boolean>(true);
   let renderAutoPairAllowedFollowingStrings = $state<string[]>(createDefaultAutoPairAllowedFollowingStrings());
-  let renderAutoPairAllowedFollowingStringDraft = $state<string>('');
-  let normalizedRenderAutoPairAllowedFollowingStringDraft = $derived(
-    normalizeAutoPairAllowedFollowingString(renderAutoPairAllowedFollowingStringDraft)
-  );
-  let canAddRenderAutoPairAllowedFollowingString = $derived(
-    normalizedRenderAutoPairAllowedFollowingStringDraft !== null
-    && !renderAutoPairAllowedFollowingStrings.includes(normalizedRenderAutoPairAllowedFollowingStringDraft)
-    && renderAutoPairAllowedFollowingStrings.length < maximumAutoPairAllowedFollowingStringCount
-  );
   let renderAutoSymbolSubstitution = $state<boolean>(true);
   let renderPreserveIndentOnEnter = $state<boolean>(true);
   let delimitedTableHighlightHeader = $state<boolean>(true);
@@ -539,14 +521,6 @@
   let delimitedTableReorderDurationMs = $state<number>(150);
   let documentFeatureSettings = $state<DocumentFeatureSettings>(createDefaultDocumentFeatureSettings());
   let markdownRenderSettings = $state<MarkdownRenderSettings>(createDefaultMarkdownRenderSettings());
-  let activeSettingsCategory = $derived(
-    configurableDocumentFormatCategories.find(
-      (category) => activeSettingsView === getDocumentFormatCategorySettingsView(category.id)
-    ) ?? null
-  );
-  let activeSettingsFormat = $derived(
-    configurableDocumentFormats.find((format) => activeSettingsView === getDocumentFormatSettingsView(format.id)) ?? null
-  );
   let currentFontSize = $derived(isRenderMode ? renderFontSize : sourceFontSize);
   let tabSize = $state<number>(4);          // 기본 들여쓰기 탭 4칸
   let scrollTop = $derived(activeTab?.scrollTop ?? 0);
@@ -573,52 +547,7 @@
   let systemIsDark = $state<boolean>(false);
   let currentTheme = $derived(themeMode === 'system' ? (systemIsDark ? 'dark' : 'light') : themeMode);
 
-  // 설정창에서 편집 중인 테마
-  let editingTheme = $state<'light' | 'dark'>('light');
-
   type ThemeColors = SettingsThemePalette;
-
-  type ColorField = Exclude<keyof ThemeColors, 'renderFontWeight'>;
-  const hexColorRegex = /^#[0-9a-fA-F]{6}$/;
-
-  // 시스템 테마별 기본 강조 색상
-  function getSystemDefaultColors(isDark: boolean): ThemeColors {
-    return isDark ? {
-      renderBg: '#0a0a0b',
-      renderText: '#d6eaf0',
-      renderFontWeight: '400',
-      codeBg: '#1e293b',
-      codeText: '#94a3b8',
-      keyStrong: '#0284c7',
-      keyMedium: '#38bdf8',
-      keyLight: '#7dd3fc',
-      string: '#F3AF82',
-      number: '#dffe8b',
-      listMarker: '#A5B4FC',
-      comment: '#64748b',
-      guide: '#334155',
-      paren: '#ECA7BC',
-      bracket: '#C87EBA',
-      brace: '#CD81E9'
-    } : {
-      renderBg: '#f8fafc',
-      renderText: '#0f172a',
-      renderFontWeight: '500',
-      codeBg: '#e2e8f0',
-      codeText: '#0284c7',
-      keyStrong: '#0369a1',
-      keyMedium: '#0284c7',
-      keyLight: '#38bdf8',
-      string: '#b91c1c',
-      number: '#d97706',
-      listMarker: '#4F46E5',
-      comment: '#475569',
-      guide: '#cbd5e1',
-      paren: '#a57800',
-      bracket: '#b31c62',
-      brace: '#097a70'
-    };
-  }
 
   let lightColors = $state<ThemeColors>(getSystemDefaultColors(false));
   let darkColors = $state<ThemeColors>(getSystemDefaultColors(true));
@@ -698,34 +627,6 @@
   };
   const renderAutoClosingCharacters = new Set(Object.values(renderAutoClosingPairs));
 
-  function addRenderAutoPairAllowedFollowingString() {
-    const value = normalizedRenderAutoPairAllowedFollowingStringDraft;
-    if (
-      !value
-      || renderAutoPairAllowedFollowingStrings.includes(value)
-      || renderAutoPairAllowedFollowingStrings.length >= maximumAutoPairAllowedFollowingStringCount
-    ) {
-      return;
-    }
-
-    renderAutoPairAllowedFollowingStrings = [...renderAutoPairAllowedFollowingStrings, value];
-    renderAutoPairAllowedFollowingStringDraft = '';
-  }
-
-  function removeRenderAutoPairAllowedFollowingString(value: string) {
-    renderAutoPairAllowedFollowingStrings = renderAutoPairAllowedFollowingStrings.filter(
-      (candidate) => candidate !== value
-    );
-  }
-
-  function handleRenderAutoPairAllowedFollowingStringKeydown(event: KeyboardEvent) {
-    if (event.key !== 'Enter' || event.isComposing) return;
-    event.preventDefault();
-    if (canAddRenderAutoPairAllowedFollowingString) {
-      addRenderAutoPairAllowedFollowingString();
-    }
-  }
-
   const editorIndentUnit = '    ';
   const editorHorizontalPadding = 24;
   const fencedCodeHorizontalPadding = 12;
@@ -741,59 +642,8 @@
   let pendingRenderCaretMovementDirection: -1 | 0 | 1 = 0;
   let markdownHeadingReplacementCaret: number | null = null;
 
-  function getDocumentFormatSettingsView(formatId: DocumentFormatId): FormatSettingsView {
-    return `format:${formatId}`;
-  }
-
-  function getDocumentFormatCategorySettingsView(
-    categoryId: DocumentFormatCategoryId
-  ): FormatCategorySettingsView {
-    return `category:${categoryId}`;
-  }
-
   function getDocumentFormatsForCategory(category: DocumentFormatCategory) {
     return configurableDocumentFormats.filter((format) => category.formatIds.includes(format.id));
-  }
-
-  function selectDocumentFormatCategory(categoryId: DocumentFormatCategoryId) {
-    const categoryView = getDocumentFormatCategorySettingsView(categoryId);
-    const wasActive = activeSettingsView === categoryView;
-    activeSettingsView = categoryView;
-    expandedFormatCategories = {
-      ...expandedFormatCategories,
-      [categoryId]: wasActive ? !expandedFormatCategories[categoryId] : true
-    };
-  }
-
-  function setDocumentFormatFeature(
-    formatId: DocumentFormatId,
-    feature: keyof DocumentFeatureSettings[DocumentFormatId],
-    enabled: boolean
-  ) {
-    documentFeatureSettings = {
-      ...documentFeatureSettings,
-      [formatId]: {
-        ...documentFeatureSettings[formatId],
-        [feature]: enabled
-      }
-    };
-  }
-
-  function setMarkdownHeadingStyle(
-    level: MarkdownHeadingLevel,
-    field: keyof MarkdownHeadingStyle,
-    value: number | MarkdownHeadingStyle['fontWeight']
-  ) {
-    markdownRenderSettings = {
-      ...markdownRenderSettings,
-      headings: {
-        ...markdownRenderSettings.headings,
-        [level]: {
-          ...markdownRenderSettings.headings[level],
-          [field]: value
-        }
-      }
-    };
   }
 
 
@@ -866,12 +716,6 @@
       delimitedTableReorderDurationMinMs,
       Math.min(stepped, delimitedTableReorderDurationMaxMs)
     );
-  }
-
-  function formatDelimitedTableReorderDuration(durationMs: number): string {
-    return t('common.seconds', {
-      seconds: (durationMs / 1000).toFixed(durationMs % 1000 === 0 ? 0 : 2)
-    });
   }
 
   function getTextOffsetIndex(content: string): TextOffsetIndex {
@@ -1809,16 +1653,6 @@
     document.documentElement.dir = isRtlLocale(locale) ? 'rtl' : 'ltr';
   });
 
-  // 기본 색상 복원
-  function resetColorsToDefault() {
-    if (!isBrowser) return;
-    if (editingTheme === 'dark') {
-      darkColors = getSystemDefaultColors(true);
-    } else {
-      lightColors = getSystemDefaultColors(false);
-    }
-  }
-
   // 마운트 시 버전된 설정 스냅샷을 로드하고 이전 개별 키를 한 번만 이관한다.
   $effect(() => {
     if (!isBrowser) return;
@@ -1849,7 +1683,6 @@
     const label = desktopWindows.current().label;
     isSettingsWindow = label === 'settings';
     if (isSettingsWindow) {
-      activeSettingsView = 'general';
       desktopWindows.current().onCloseRequested((event) => {
         event.preventDefault();
         desktopWindows.current().hide();
@@ -2194,76 +2027,6 @@
     }
   }
 
-
-  function normalizeHexColor(value: string): string | null {
-    const trimmed = value.trim();
-    return hexColorRegex.test(trimmed) ? trimmed.toUpperCase() : null;
-  }
-
-  function getColorInputValue(value: string): string {
-    return normalizeHexColor(value) ?? '#000000';
-  }
-
-  function formatColorCode(value: string): string {
-    return normalizeHexColor(value) ?? (value.trim().toUpperCase() || '#000000');
-  }
-
-  function getReadableTextColor(value: string): string {
-    const hex = getColorInputValue(value).slice(1);
-    const red = parseInt(hex.slice(0, 2), 16);
-    const green = parseInt(hex.slice(2, 4), 16);
-    const blue = parseInt(hex.slice(4, 6), 16);
-
-    const toLinear = (channel: number) => {
-      const normalized = channel / 255;
-      return normalized <= 0.03928
-        ? normalized / 12.92
-        : Math.pow((normalized + 0.055) / 1.055, 2.4);
-    };
-
-    const luminance = 0.2126 * toLinear(red) + 0.7152 * toLinear(green) + 0.0722 * toLinear(blue);
-    return luminance > 0.179 ? '#000000' : '#ffffff';
-  }
-
-  function getColorCodeStyle(value: string): string {
-    const backgroundColor = getColorInputValue(value);
-    return `background-color: ${backgroundColor}; color: ${getReadableTextColor(backgroundColor)};`;
-  }
-
-  function openColorPicker(inputId: string) {
-    if (!isBrowser) return;
-    const colorInput = document.getElementById(inputId) as (HTMLInputElement & { showPicker?: () => void }) | null;
-    if (!colorInput) return;
-
-    colorInput.focus({ preventScroll: true });
-
-    try {
-      if (typeof colorInput.showPicker === 'function') {
-        colorInput.showPicker();
-      } else {
-        colorInput.click();
-      }
-    } catch {
-      colorInput.click();
-    }
-  }
-
-  function handleColorTextPointerDown(inputId: string, event: PointerEvent) {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    openColorPicker(inputId);
-  }
-
-  function handleColorInput(colors: ThemeColors, field: ColorField, event: Event) {
-    const target = event.currentTarget as HTMLInputElement;
-    colors[field] = target.value.toUpperCase();
-  }
-
-  function handleColorCodeKeydown(inputId: string, event: KeyboardEvent) {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
-    openColorPicker(inputId);
-  }
 
 
   function getLineTextForLayout(content: string, offsets: number[], lineIndex: number): string {
@@ -5290,7 +5053,7 @@
     const { start, end } = pendingInlineColorReplacement;
     const currentValue = fileContent.slice(start, end);
 
-    if (!hexColorRegex.test(currentValue)) {
+    if (normalizeHexColor(currentValue) === null) {
       clearInlineColorPickerState();
     }
   }
@@ -5310,7 +5073,7 @@
     for (let start = minStart; start <= maxStart; start++) {
       const end = start + colorCodeLength;
       const value = text.slice(start, end);
-      if (!hexColorRegex.test(value)) continue;
+      if (normalizeHexColor(value) === null) continue;
       if (!hasWhitespaceWordBoundary(text, start, end)) continue;
       if (requireCaretInside ? offset > start && offset < end : offset >= start && offset < end) {
         return { start, end, value };
@@ -5964,670 +5727,35 @@
 
 {#snippet renderToken(token: Token)}{#if token.children && token.children.length > 0}<span class={getTokenClass(token)}>{#each token.children as child}{@render renderToken(child)}{/each}</span>{:else if token.type === 'boolean'}<span class={getTokenClass(token)} data-token-start={token.start ?? null} data-token-end={token.end ?? null} data-boolean-start={token.start} data-boolean-end={token.end} data-boolean-value={token.text}>{token.text || ''}</span>{:else if token.type === 'color'}<span class={getTokenClass(token)} style={getColorCodeStyle(token.text || '')} data-token-start={token.start ?? null} data-token-end={token.end ?? null} data-color-start={token.start} data-color-end={token.end}>{token.text || ''}</span>{:else}<span class={getTokenClass(token)} data-token-start={token.start ?? null} data-token-end={token.end ?? null}>{token.text || ''}</span>{/if}{/snippet}
 
-{#snippet colorSettingRow(id: string, labelText: string, colors: ThemeColors, field: ColorField)}
-  {@const pickerId = `${id}-picker`}
-  <div class="settings-row color-row">
-    <label for={id}>{labelText}</label>
-    <div class="color-picker-wrapper">
-      <input
-        id={pickerId}
-        class="color-picker-native"
-        type="color"
-        value={getColorInputValue(colors[field])}
-        oninput={(event) => handleColorInput(colors, field, event)}
-        tabindex="-1"
-        aria-hidden="true"
-      />
-      <input
-        id={id}
-        type="text"
-        readonly
-        class="color-text-input"
-        value={formatColorCode(colors[field])}
-        style={getColorCodeStyle(colors[field])}
-        onpointerdown={(event) => handleColorTextPointerDown(pickerId, event)}
-        onkeydown={(event) => handleColorCodeKeydown(pickerId, event)}
-        aria-label={labelText}
-      />
-    </div>
-  </div>
-{/snippet}
-
 {#if isSettingsWindow}
-  <div class="settings-window-container" style="
-    --color-hl-code-bg: {activeColors.codeBg};
-    --color-hl-code-text: {activeColors.codeText};
-    --color-hl-key-strong: {activeColors.keyStrong};
-    --color-hl-key-medium: {activeColors.keyMedium};
-    --color-hl-key-light: {activeColors.keyLight};
-    --color-hl-string: {activeColors.string};
-    --color-hl-number: {activeColors.number};
-    --color-hl-list-marker: {activeColors.listMarker};
-    --color-hl-comment: {activeColors.comment};
-    --color-indent-guide: {activeColors.guide};
-    --color-render-bg: {activeColors.renderBg};
-    --color-render-text: {activeColors.renderText};
-    --font-render-family: {currentRenderFontFamilyCSS};
-    --font-render-weight: {activeColors.renderFontWeight};
-    --color-hl-paren: {activeColors.paren};
-    --color-hl-bracket: {activeColors.bracket};
-    --color-hl-brace: {activeColors.brace};
-  ">
-    <div class="settings-body window-mode">
-      <!-- 좌측 네비게이션 메뉴 -->
-      <aside class="settings-sidebar" aria-label={t('settings.sidebarLabel')}>
-        <button
-          type="button"
-          class="sidebar-item"
-          class:active={activeSettingsView === 'general'}
-          onclick={() => activeSettingsView = 'general'}
-        >
-          <Settings size={16} class="tab-icon"/> {t('settings.general')}
-        </button>
-
-        <div class="sidebar-tree-group">
-          <button
-            type="button"
-            class="sidebar-group"
-            aria-expanded={isSourceSettingsExpanded}
-            onclick={() => isSourceSettingsExpanded = !isSourceSettingsExpanded}
-          >
-            <ChevronDown size={14} class={isSourceSettingsExpanded ? 'tree-chevron' : 'tree-chevron collapsed'}/>
-            <FileCode2 size={16} class="tab-icon"/> {t('settings.sourceMode')}
-          </button>
-          {#if isSourceSettingsExpanded}
-            <button
-              type="button"
-              class="sidebar-item tree-child"
-              class:active={activeSettingsView === 'sourceAppearance'}
-              onclick={() => activeSettingsView = 'sourceAppearance'}
-            >
-              <PaintRoller size={15} class="tab-icon"/> {t('settings.appearance')}
-            </button>
-          {/if}
-        </div>
-
-        <div class="sidebar-tree-group">
-          <button
-            type="button"
-            class="sidebar-group"
-            aria-expanded={isRenderSettingsExpanded}
-            onclick={() => isRenderSettingsExpanded = !isRenderSettingsExpanded}
-          >
-            <ChevronDown size={14} class={isRenderSettingsExpanded ? 'tree-chevron' : 'tree-chevron collapsed'}/>
-            <PaintRoller size={16} class="tab-icon"/> {t('settings.renderMode')}
-          </button>
-          {#if isRenderSettingsExpanded}
-            <button
-              type="button"
-              class="sidebar-item tree-child"
-              class:active={activeSettingsView === 'renderAppearance'}
-              onclick={() => activeSettingsView = 'renderAppearance'}
-            >
-              <PaintRoller size={15} class="tab-icon"/> {t('settings.appearance')}
-            </button>
-            <button
-              type="button"
-              class="sidebar-item tree-child"
-              class:active={activeSettingsView === 'renderEditing'}
-              onclick={() => activeSettingsView = 'renderEditing'}
-            >
-              <PenLine size={15} class="tab-icon"/> {t('settings.editing')}
-            </button>
-            {#each configurableDocumentFormatCategories as category}
-              <div class="sidebar-tree-group format-category-group">
-                <button
-                  type="button"
-                  class="sidebar-item tree-child sidebar-category"
-                  class:active={activeSettingsView === getDocumentFormatCategorySettingsView(category.id)}
-                  aria-expanded={expandedFormatCategories[category.id]}
-                  onclick={() => selectDocumentFormatCategory(category.id)}
-                >
-                  <ChevronDown
-                    size={12}
-                    class={expandedFormatCategories[category.id] ? 'tree-chevron' : 'tree-chevron collapsed'}
-                  />
-                  {#if category.id === 'document'}
-                    <FileText size={15} class="tab-icon"/>
-                  {:else if category.id === 'structured'}
-                    <Braces size={15} class="tab-icon"/>
-                  {:else if category.id === 'table'}
-                    <Table2 size={15} class="tab-icon"/>
-                  {:else if category.id === 'subtitle'}
-                    <FileText size={15} class="tab-icon"/>
-                  {:else}
-                    <Code2 size={15} class="tab-icon"/>
-                  {/if}
-                  {t(category.labelKey)}
-                </button>
-                {#if expandedFormatCategories[category.id]}
-                  {#each getDocumentFormatsForCategory(category) as format}
-                    <button
-                      type="button"
-                      class="sidebar-item tree-grandchild"
-                      class:active={activeSettingsView === getDocumentFormatSettingsView(format.id)}
-                      onclick={() => activeSettingsView = getDocumentFormatSettingsView(format.id)}
-                    >
-                      <FileCode2 size={14} class="tab-icon"/> {t(format.labelKey)}
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {/each}
-          {/if}
-        </div>
-      </aside>
-
-      <!-- 우측 메인 콘텐츠 영역 -->
-      <div class="settings-main">
-        {#if activeSettingsView === 'general'}
-          <div class="settings-section">
-            <h4 class="section-title">{t('settings.languageSection')}</h4>
-            <div class="settings-row">
-              <label for="language-select-window">{t('settings.languageLabel')}</label>
-              <select id="language-select-window" bind:value={languagePreference} class="tab-size-select language-select">
-                <option value="system">{t('settings.systemLanguage', { language: getLanguageNativeName(systemLocale) })}</option>
-                {#each supportedLanguages as language}
-                  <option value={language.code}>{language.nativeName}</option>
-                {/each}
-              </select>
-            </div>
-            <p class="settings-category-note">{t('settings.languageDescription')}</p>
-          </div>
-          <div class="settings-section">
-            <h4 class="section-title">{t('settings.newDocumentSection')}</h4>
-            <div class="settings-row">
-              <label for="default-new-document-format-select">{t('settings.defaultNewDocumentFormat')}</label>
-              <select
-                id="default-new-document-format-select"
-                bind:value={defaultNewDocumentFormat}
-                class="tab-size-select"
-                style="width: 195px;"
-              >
-                {#each configurableDocumentFormatCategories as category}
-                  <optgroup label={t(category.labelKey)}>
-                    {#each getDocumentFormatsForCategory(category) as format}
-                      <option value={format.id}>{t(format.labelKey)}</option>
-                    {/each}
-                  </optgroup>
-                {/each}
-              </select>
-            </div>
-            <p class="settings-category-note">{t('settings.defaultNewDocumentFormatDescription')}</p>
-          </div>
-          <div class="settings-section">
-            <h4 class="section-title">{t('settings.transfer.title')}</h4>
-            <p class="settings-category-note">{t('settings.transfer.description')}</p>
-            <div class="settings-transfer-actions">
-              <button
-                type="button"
-                class="settings-transfer-button"
-                disabled={isSettingsTransferBusy}
-                onclick={() => void handleImportSettings()}
-              >
-                <Upload size={15} aria-hidden="true"/>
-                {t('settings.transfer.import')}
-              </button>
-              <button
-                type="button"
-                class="settings-transfer-button"
-                disabled={isSettingsTransferBusy}
-                onclick={() => void handleExportSettings()}
-              >
-                <Download size={15} aria-hidden="true"/>
-                {t('settings.transfer.export')}
-              </button>
-            </div>
-            {#if settingsTransferStatus}
-              <p
-                class="settings-transfer-status"
-                class:warning={settingsTransferStatus.kind === 'warning'}
-                class:error={settingsTransferStatus.kind === 'error'}
-                role={settingsTransferStatus.kind === 'error' ? 'alert' : 'status'}
-                aria-live="polite"
-              >
-                {settingsTransferStatus.message}
-              </p>
-            {/if}
-          </div>
-        {:else if activeSettingsView === 'sourceAppearance'}
-          <div class="settings-section">
-            <h4 class="section-title">{t('settings.fontSettings')}</h4>
-            <div class="settings-row">
-              <label for="source-font-size-input-window">{t('settings.fontSize')}</label>
-              <div class="size-control">
-                <input
-                  id="source-font-size-input-window"
-                  type="number"
-                  min="6"
-                  max="72"
-                  bind:value={sourceFontSize}
-                  class="font-size-num"
-                />
-                <button class="adjust-btn" onclick={() => sourceFontSize = Math.max(6, sourceFontSize - 1)}>-</button>
-                <button class="adjust-btn" onclick={() => sourceFontSize = Math.min(72, sourceFontSize + 1)}>+</button>
-              </div>
-            </div>
-          </div>
-        {:else if activeSettingsView === 'renderAppearance'}
-          <div class="settings-section">
-            <h4 class="section-title">{t('settings.displayAndFont')}</h4>
-            <div class="settings-row">
-              <label for="render-font-size-input-window">{t('settings.fontSize')}</label>
-              <div class="size-control">
-                <input
-                  id="render-font-size-input-window"
-                  type="number"
-                  min="6"
-                  max="72"
-                  bind:value={renderFontSize}
-                  class="font-size-num"
-                />
-                <button class="adjust-btn" onclick={() => renderFontSize = Math.max(6, renderFontSize - 1)}>-</button>
-                <button class="adjust-btn" onclick={() => renderFontSize = Math.min(72, renderFontSize + 1)}>+</button>
-              </div>
-            </div>
-
-            <div class="settings-row">
-              <label for="tab-size-select-window">{t('settings.indentWidth')}</label>
-              <select id="tab-size-select-window" bind:value={tabSize} class="tab-size-select">
-                <option value={2}>2</option>
-                <option value={4}>4</option>
-                <option value={8}>8</option>
-              </select>
-            </div>
-
-            <div class="settings-row">
-              <label for="render-font-family-select-window">{t('settings.renderFont')}</label>
-              <select id="render-font-family-select-window" bind:value={renderFontFamily} class="tab-size-select" style="width: 195px; text-align-last: center;">
-                <optgroup label={t('settings.fontGroupDefault')}>
-                  <option value="nanum-gothic">나눔고딕</option>
-                  <option value="notepad">{t('settings.defaultFont')}</option>
-                </optgroup>
-                <optgroup label={t('settings.fontGroupMonospace')}>
-                  <option value="jetbrains-mono">JetBrains Mono</option>
-                  <option value="d2coding">D2Coding</option>
-                  <option value="nanum-gothic-coding">나눔고딕 코딩</option>
-                  <option value="fira-code">Fira Code</option>
-                  <option value="roboto-mono">Roboto Mono</option>
-                  <option value="cascadia-mono">Cascadia Mono</option>
-                  <option value="consolas">Consolas</option>
-                </optgroup>
-              </select>
-            </div>
-          </div>
-
-          <div class="settings-section">
-            <div class="settings-row" style="margin-bottom: 0.75rem;">
-              <h4 class="section-title">{t('settings.themeColors')}</h4>
-
-              <div class="theme-edit-toggle">
-                <button
-                  class="theme-toggle-btn"
-                  class:active={editingTheme === 'light'}
-                  onclick={() => editingTheme = 'light'}
-                >
-                  <Sun size={16} class="tab-icon"/> {t('settings.themeLight')}
-                </button>
-                <button
-                  class="theme-toggle-btn"
-                  class:active={editingTheme === 'dark'}
-                  onclick={() => editingTheme = 'dark'}
-                >
-                  <Moon size={16} class="tab-icon"/> {t('settings.themeDark')}
-                </button>
-              </div>
-            </div>
-
-            {#if editingTheme === 'dark'}
-              {@render colorSettingRow('color-render-bg-window-dark', t('settings.color.renderBackground'), darkColors, 'renderBg')}
-              {@render colorSettingRow('color-render-text-window-dark', t('settings.color.renderText'), darkColors, 'renderText')}
-
-              <div class="settings-row color-row">
-                <label for="render-font-weight-window-dark">{t('settings.fontWeight')}</label>
-                <select id="render-font-weight-window-dark" bind:value={darkColors.renderFontWeight} class="tab-size-select" style="width: 140px;">
-                  <option value="300">{t('settings.weightLight')}</option>
-                  <option value="400">{t('settings.weightNormal')}</option>
-                  <option value="500">{t('settings.weightMedium')}</option>
-                  <option value="600">{t('settings.weightSemiBold')}</option>
-                  <option value="700">{t('settings.weightBold')}</option>
-                </select>
-              </div>
-
-              {@render colorSettingRow('color-hl-code-bg-window-dark', t('settings.color.codeBackground'), darkColors, 'codeBg')}
-              {@render colorSettingRow('color-hl-code-text-window-dark', t('settings.color.codeText'), darkColors, 'codeText')}
-              {@render colorSettingRow('color-hl-key-strong-window-dark', t('settings.color.keyStrong'), darkColors, 'keyStrong')}
-              {@render colorSettingRow('color-hl-key-medium-window-dark', t('settings.color.keyMedium'), darkColors, 'keyMedium')}
-              {@render colorSettingRow('color-hl-key-light-window-dark', t('settings.color.keyLight'), darkColors, 'keyLight')}
-              {@render colorSettingRow('color-hl-string-window-dark', t('settings.color.string'), darkColors, 'string')}
-              {@render colorSettingRow('color-hl-number-window-dark', t('settings.color.number'), darkColors, 'number')}
-              {@render colorSettingRow('color-hl-list-marker-window-dark', t('settings.color.listMarker'), darkColors, 'listMarker')}
-              {@render colorSettingRow('color-hl-comment-window-dark', t('settings.color.comment'), darkColors, 'comment')}
-              {@render colorSettingRow('color-hl-paren-window-dark', t('settings.color.parenthesis'), darkColors, 'paren')}
-              {@render colorSettingRow('color-hl-bracket-window-dark', t('settings.color.bracket'), darkColors, 'bracket')}
-              {@render colorSettingRow('color-hl-brace-window-dark', t('settings.color.brace'), darkColors, 'brace')}
-              {@render colorSettingRow('color-indent-guide-window-dark', t('settings.color.indentGuide'), darkColors, 'guide')}
-            {:else}
-              {@render colorSettingRow('color-render-bg-window-light', t('settings.color.renderBackground'), lightColors, 'renderBg')}
-              {@render colorSettingRow('color-render-text-window-light', t('settings.color.renderText'), lightColors, 'renderText')}
-
-              <div class="settings-row color-row">
-                <label for="render-font-weight-window-light">{t('settings.fontWeight')}</label>
-                <select id="render-font-weight-window-light" bind:value={lightColors.renderFontWeight} class="tab-size-select" style="width: 140px;">
-                  <option value="300">{t('settings.weightLight')}</option>
-                  <option value="400">{t('settings.weightNormal')}</option>
-                  <option value="500">{t('settings.weightMedium')}</option>
-                  <option value="600">{t('settings.weightSemiBold')}</option>
-                  <option value="700">{t('settings.weightBold')}</option>
-                </select>
-              </div>
-
-              {@render colorSettingRow('color-hl-code-bg-window-light', t('settings.color.codeBackground'), lightColors, 'codeBg')}
-              {@render colorSettingRow('color-hl-code-text-window-light', t('settings.color.codeText'), lightColors, 'codeText')}
-              {@render colorSettingRow('color-hl-key-strong-window-light', t('settings.color.keyStrong'), lightColors, 'keyStrong')}
-              {@render colorSettingRow('color-hl-key-medium-window-light', t('settings.color.keyMedium'), lightColors, 'keyMedium')}
-              {@render colorSettingRow('color-hl-key-light-window-light', t('settings.color.keyLight'), lightColors, 'keyLight')}
-              {@render colorSettingRow('color-hl-string-window-light', t('settings.color.string'), lightColors, 'string')}
-              {@render colorSettingRow('color-hl-number-window-light', t('settings.color.number'), lightColors, 'number')}
-              {@render colorSettingRow('color-hl-list-marker-window-light', t('settings.color.listMarker'), lightColors, 'listMarker')}
-              {@render colorSettingRow('color-hl-comment-window-light', t('settings.color.comment'), lightColors, 'comment')}
-              {@render colorSettingRow('color-hl-paren-window-light', t('settings.color.parenthesis'), lightColors, 'paren')}
-              {@render colorSettingRow('color-hl-bracket-window-light', t('settings.color.bracket'), lightColors, 'bracket')}
-              {@render colorSettingRow('color-hl-brace-window-light', t('settings.color.brace'), lightColors, 'brace')}
-              {@render colorSettingRow('color-indent-guide-window-light', t('settings.color.indentGuide'), lightColors, 'guide')}
-            {/if}
-
-            <div class="settings-action-row">
-              <button class="reset-colors-btn" onclick={resetColorsToDefault}>
-                {t('settings.resetColors')}
-              </button>
-            </div>
-          </div>
-        {:else if activeSettingsView === 'renderEditing'}
-          <div class="settings-section">
-            <h4 class="section-title">{t('settings.autoInput')}</h4>
-            <label class="settings-check-row" for="render-auto-pair-editing-window">
-              <input
-                id="render-auto-pair-editing-window"
-                class="settings-checkbox"
-                type="checkbox"
-                bind:checked={renderAutoPairEditing}
-              />
-              <span class="settings-check-copy">
-                <span class="settings-check-title">{t('settings.autoPair.title')}</span>
-                <span class="settings-check-description">{t('settings.autoPair.description')}</span>
-              </span>
-            </label>
-            <div
-              class="auto-pair-following-settings"
-              class:disabled={!renderAutoPairEditing}
-              aria-disabled={!renderAutoPairEditing}
-            >
-              <div class="auto-pair-following-heading">
-                <span class="settings-check-title">{t('settings.autoPair.followingTitle')}</span>
-                <span class="settings-check-description">{t('settings.autoPair.followingDescription')}</span>
-              </div>
-              <div class="auto-pair-following-list" role="list">
-                <span class="auto-pair-following-chip fixed" role="listitem">
-                  <span>{t('settings.autoPair.whitespace')}</span>
-                  <span class="auto-pair-following-fixed-label">{t('settings.autoPair.alwaysAllowed')}</span>
-                </span>
-                {#each renderAutoPairAllowedFollowingStrings as value (value)}
-                  <span class="auto-pair-following-chip" role="listitem">
-                    <code>{value}</code>
-                    <button
-                      type="button"
-                      class="auto-pair-following-remove"
-                      aria-label={t('settings.autoPair.removeFollowingString', { value })}
-                      title={t('settings.autoPair.removeFollowingString', { value })}
-                      disabled={!renderAutoPairEditing}
-                      onclick={() => removeRenderAutoPairAllowedFollowingString(value)}
-                    >
-                      <X size={12} aria-hidden="true" />
-                    </button>
-                  </span>
-                {/each}
-              </div>
-              <div class="auto-pair-following-add-row">
-                <input
-                  id="render-auto-pair-allowed-following-string-window"
-                  class="auto-pair-following-input"
-                  type="text"
-                  maxlength={maximumAutoPairAllowedFollowingStringLength}
-                  autocomplete="off"
-                  aria-label={t('settings.autoPair.followingInputLabel')}
-                  placeholder={t('settings.autoPair.followingPlaceholder')}
-                  disabled={!renderAutoPairEditing || renderAutoPairAllowedFollowingStrings.length >= maximumAutoPairAllowedFollowingStringCount}
-                  bind:value={renderAutoPairAllowedFollowingStringDraft}
-                  onkeydown={handleRenderAutoPairAllowedFollowingStringKeydown}
-                />
-                <button
-                  type="button"
-                  class="auto-pair-following-add"
-                  disabled={!renderAutoPairEditing || !canAddRenderAutoPairAllowedFollowingString}
-                  onclick={addRenderAutoPairAllowedFollowingString}
-                >
-                  <Plus size={13} aria-hidden="true" />
-                  {t('settings.autoPair.addFollowingString')}
-                </button>
-              </div>
-            </div>
-            <label class="settings-check-row" for="render-auto-symbol-substitution-window">
-              <input
-                id="render-auto-symbol-substitution-window"
-                class="settings-checkbox"
-                type="checkbox"
-                bind:checked={renderAutoSymbolSubstitution}
-              />
-              <span class="settings-check-copy">
-                <span class="settings-check-title">{t('settings.autoSymbols.title')}</span>
-                <span class="settings-check-description">{t('settings.autoSymbols.description')}</span>
-              </span>
-            </label>
-            <label class="settings-check-row" for="render-preserve-indent-on-enter-window">
-              <input
-                id="render-preserve-indent-on-enter-window"
-                class="settings-checkbox"
-                type="checkbox"
-                bind:checked={renderPreserveIndentOnEnter}
-              />
-              <span class="settings-check-copy">
-                <span class="settings-check-title">{t('settings.preserveIndent.title')}</span>
-                <span class="settings-check-description">{t('settings.preserveIndent.description')}</span>
-              </span>
-            </label>
-          </div>
-        {:else if activeSettingsCategory}
-          <div class="settings-section">
-            <div class="settings-format-module">
-              <div class="settings-format-heading">
-                <h4 class="section-title">{t(activeSettingsCategory.labelKey)}</h4>
-                <span class="settings-check-description">{t(activeSettingsCategory.descriptionKey)}</span>
-              </div>
-              <div class="settings-category-formats" aria-label={t('settings.categoryFormats', { category: t(activeSettingsCategory.labelKey) })}>
-                {#each getDocumentFormatsForCategory(activeSettingsCategory) as format}
-                  <span class="settings-format-chip">{t(format.labelKey)}</span>
-                {/each}
-              </div>
-            </div>
-
-            {#if activeSettingsCategory.id === 'table'}
-              <div class="settings-format-module">
-                <h5 class="settings-subsection-title">{t('settings.table.display')}</h5>
-                <label class="settings-check-row" for="delimited-table-highlight-header-window">
-                  <input
-                    id="delimited-table-highlight-header-window"
-                    class="settings-checkbox"
-                    type="checkbox"
-                    bind:checked={delimitedTableHighlightHeader}
-                  />
-                  <span class="settings-check-copy">
-                    <span class="settings-check-title">{t('settings.table.highlightHeader.title')}</span>
-                    <span class="settings-check-description">{t('settings.table.highlightHeader.description')}</span>
-                  </span>
-                </label>
-                <label class="settings-check-row" for="delimited-table-show-row-indices-window">
-                  <input
-                    id="delimited-table-show-row-indices-window"
-                    class="settings-checkbox"
-                    type="checkbox"
-                    bind:checked={delimitedTableShowRowIndices}
-                  />
-                  <span class="settings-check-copy">
-                    <span class="settings-check-title">{t('settings.table.rowNumbers.title')}</span>
-                    <span class="settings-check-description">{t('settings.table.rowNumbers.description')}</span>
-                  </span>
-                </label>
-              </div>
-
-              <div class="settings-format-module">
-                <h5 class="settings-subsection-title">{t('settings.table.reorderSection')}</h5>
-                <label class="settings-check-row" for="delimited-table-reorder-animation-window">
-                  <input
-                    id="delimited-table-reorder-animation-window"
-                    class="settings-checkbox"
-                    type="checkbox"
-                    bind:checked={delimitedTableAnimateReorder}
-                  />
-                  <span class="settings-check-copy">
-                    <span class="settings-check-title">{t('settings.table.reorder.title')}</span>
-                    <span class="settings-check-description">{t('settings.table.reorder.description')}</span>
-                  </span>
-                </label>
-                <label
-                  class="settings-duration-row"
-                  class:disabled={!delimitedTableAnimateReorder}
-                  for="delimited-table-reorder-duration-window"
-                >
-                  <span>{t('settings.table.reorder.duration')}</span>
-                  <input
-                    id="delimited-table-reorder-duration-window"
-                    class="settings-duration-range"
-                    type="range"
-                    min={delimitedTableReorderDurationMinMs}
-                    max={delimitedTableReorderDurationMaxMs}
-                    step={delimitedTableReorderDurationStepMs}
-                    bind:value={delimitedTableReorderDurationMs}
-                    disabled={!delimitedTableAnimateReorder}
-                    aria-valuetext={formatDelimitedTableReorderDuration(delimitedTableReorderDurationMs)}
-                  />
-                  <output class="settings-duration-value">
-                    {formatDelimitedTableReorderDuration(delimitedTableReorderDurationMs)}
-                  </output>
-                </label>
-              </div>
-            {:else}
-              <p class="settings-category-note">
-                {t('settings.categoryNote')}
-              </p>
-            {/if}
-          </div>
-        {:else if activeSettingsFormat}
-          <div class="settings-section">
-            <div class="settings-format-module">
-              <div class="settings-format-heading">
-                <h4 class="section-title">{t(activeSettingsFormat.labelKey)}</h4>
-                <span class="settings-check-description">
-                  {activeSettingsFormat.extensions.length > 0 ? activeSettingsFormat.extensions.map((extension) => `.${extension}`).join(', ') : t('settings.noExtension')}
-                </span>
-              </div>
-              <label class="settings-check-row" for={`document-format-${activeSettingsFormat.id}-render-window`}>
-                <input
-                  id={`document-format-${activeSettingsFormat.id}-render-window`}
-                  class="settings-checkbox"
-                  type="checkbox"
-                  checked={documentFeatureSettings[activeSettingsFormat.id].render}
-                  onchange={(event) => setDocumentFormatFeature(activeSettingsFormat.id, 'render', (event.currentTarget as HTMLInputElement).checked)}
-                />
-                <span class="settings-check-copy">
-                  <span class="settings-check-title">{t('settings.renderDisplay.title')}</span>
-                  <span class="settings-check-description">{t(activeSettingsFormat.renderDescriptionKey)}</span>
-                </span>
-              </label>
-              <label class="settings-check-row" for={`document-format-${activeSettingsFormat.id}-edit-window`}>
-                <input
-                  id={`document-format-${activeSettingsFormat.id}-edit-window`}
-                  class="settings-checkbox"
-                  type="checkbox"
-                  checked={documentFeatureSettings[activeSettingsFormat.id].edit}
-                  onchange={(event) => setDocumentFormatFeature(activeSettingsFormat.id, 'edit', (event.currentTarget as HTMLInputElement).checked)}
-                />
-                <span class="settings-check-copy">
-                  <span class="settings-check-title">{t('settings.renderEditing.title')}</span>
-                  <span class="settings-check-description">{t(activeSettingsFormat.editDescriptionKey)}</span>
-                </span>
-              </label>
-            </div>
-
-            {#if activeSettingsFormat.id === 'markdown'}
-              <div class="settings-format-module">
-                <h5 class="settings-subsection-title">{t('settings.markdown.headings')}</h5>
-                <label class="settings-check-row" for="markdown-hide-heading-markers-window">
-                  <input
-                    id="markdown-hide-heading-markers-window"
-                    class="settings-checkbox"
-                    type="checkbox"
-                    checked={markdownRenderSettings.hideHeadingMarkers}
-                    onchange={(event) => markdownRenderSettings = { ...markdownRenderSettings, hideHeadingMarkers: (event.currentTarget as HTMLInputElement).checked }}
-                  />
-                  <span class="settings-check-copy">
-                    <span class="settings-check-title">{t('settings.markdown.hideMarkers.title')}</span>
-                    <span class="settings-check-description">{t('settings.markdown.hideMarkers.description')}</span>
-                  </span>
-                </label>
-                <label class="settings-check-row" for="markdown-heading-dividers-window">
-                  <input
-                    id="markdown-heading-dividers-window"
-                    class="settings-checkbox"
-                    type="checkbox"
-                    checked={markdownRenderSettings.showHeadingDividers}
-                    onchange={(event) => markdownRenderSettings = { ...markdownRenderSettings, showHeadingDividers: (event.currentTarget as HTMLInputElement).checked }}
-                  />
-                  <span class="settings-check-copy">
-                    <span class="settings-check-title">{t('settings.markdown.dividers.title')}</span>
-                    <span class="settings-check-description">{t('settings.markdown.dividers.description')}</span>
-                  </span>
-                </label>
-
-                <div class="markdown-heading-settings" aria-label={t('settings.markdown.headings')}>
-                  {#each markdownHeadingLevels as level}
-                    <div class="markdown-heading-setting-row">
-                      <span class="markdown-heading-setting-label">{t('settings.markdown.level', { level })}</span>
-                      <label for={`markdown-heading-${level}-size-window`}>{t('settings.markdown.sizePercent')}</label>
-                      <input
-                        id={`markdown-heading-${level}-size-window`}
-                        class="font-size-num markdown-heading-size-input"
-                        type="number"
-                        min="80"
-                        max="145"
-                        step="1"
-                        value={markdownRenderSettings.headings[level].sizePercent}
-                        onchange={(event) => setMarkdownHeadingStyle(level, 'sizePercent', Number((event.currentTarget as HTMLInputElement).value))}
-                      />
-                      <span class="markdown-heading-unit">%</span>
-                      <label for={`markdown-heading-${level}-weight-window`}>{t('settings.fontWeight')}</label>
-                      <select
-                        id={`markdown-heading-${level}-weight-window`}
-                        class="tab-size-select markdown-heading-weight-select"
-                        value={markdownRenderSettings.headings[level].fontWeight}
-                        onchange={(event) => setMarkdownHeadingStyle(level, 'fontWeight', (event.currentTarget as HTMLSelectElement).value as MarkdownHeadingStyle['fontWeight'])}
-                      >
-                        <option value="400">400</option>
-                        <option value="500">500</option>
-                        <option value="600">600</option>
-                        <option value="700">700</option>
-                        <option value="800">800</option>
-                      </select>
-                    </div>
-                  {/each}
-                </div>
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </div>
-    </div>
-  </div>
+  <SettingsWindow
+    {locale}
+    {systemLocale}
+    {currentTheme}
+    {currentRenderFontFamilyCSS}
+    bind:languagePreference
+    bind:defaultNewDocumentFormat
+    bind:sourceFontSize
+    bind:renderFontSize
+    bind:tabSize
+    bind:renderFontFamily
+    bind:renderAutoPairEditing
+    bind:renderAutoPairAllowedFollowingStrings
+    bind:renderAutoSymbolSubstitution
+    bind:renderPreserveIndentOnEnter
+    bind:delimitedTableHighlightHeader
+    bind:delimitedTableShowRowIndices
+    bind:delimitedTableAnimateReorder
+    bind:delimitedTableReorderDurationMs
+    bind:documentFeatureSettings
+    bind:markdownRenderSettings
+    bind:lightColors
+    bind:darkColors
+    {settingsTransferStatus}
+    {isSettingsTransferBusy}
+    onImportSettings={handleImportSettings}
+    onExportSettings={handleExportSettings}
+  />
 {:else}
   <div class="app-container" style="
     --color-hl-code-bg: {activeColors.codeBg};
@@ -7573,50 +6701,6 @@
   .render-mode-toggle:hover, .render-mode-toggle.active,
   .theme-mode-toggle:hover {
     background-color: var(--bg-menu-hover);
-  }
-
-  .theme-edit-toggle {
-    display: flex;
-    gap: 4px;
-    background-color: var(--bg-window);
-    padding: 2px;
-    border-radius: 6px;
-    border: 1px solid var(--border-color);
-  }
-
-  .theme-toggle-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-color);
-    padding: 4px 12px;
-    font-size: 0.8rem;
-    border-radius: 4px;
-    cursor: pointer;
-    outline: none;
-    transition: background 0.1s;
-  }
-
-  .theme-toggle-btn:hover {
-    background-color: var(--bg-menu-hover);
-  }
-
-  .theme-toggle-btn.active {
-    background-color: var(--bg-editor);
-    font-weight: 600;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-  }
-
-  .tab-size-select {
-    padding: 0.2rem 0.4rem;
-    border: 1px solid var(--border-color);
-    background-color: var(--bg-editor);
-    color: var(--text-color);
-    border-radius: 4px;
-    font-family: var(--font-ui);
-    font-size: 0.85rem;
-    outline: none;
-    width: 100px;
-    text-align: center;
   }
 
   :global(body) {
@@ -8648,497 +7732,6 @@
     background-color: var(--color-render-bg, var(--bg-editor));
   }
 
-  .settings-window-container {
-    display: flex;
-    flex-direction: column;
-    width: 100vw;
-    height: 100vh;
-    box-sizing: border-box;
-    background-color: var(--bg-editor);
-  }
-
-  .settings-body {
-    display: flex;
-    flex: 1;
-    overflow: hidden;
-  }
-
-  .settings-body.window-mode {
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-  }
-
-  .settings-sidebar {
-    width: 180px;
-    background-color: var(--bg-window);
-    border-right: 1px solid var(--border-color);
-    display: flex;
-    flex-direction: column;
-    padding: 0.5rem 0;
-    gap: 2px;
-    user-select: none;
-    flex-shrink: 0;
-    overflow-y: auto;
-  }
-
-  .sidebar-tree-group {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-
-  .sidebar-group,
-  .sidebar-item {
-    background: transparent;
-    border: none;
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.85rem;
-    padding: 0.6rem 1rem;
-    text-align: left;
-    cursor: pointer;
-    transition: background-color 0.1s, color 0.1s;
-    outline: none;
-    border-left: 3px solid transparent;
-  }
-
-  .sidebar-group {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    font-weight: 600;
-  }
-
-  .tree-chevron {
-    flex-shrink: 0;
-    transition: transform 0.1s;
-  }
-
-  .tree-chevron.collapsed {
-    transform: rotate(-90deg);
-  }
-
-  .tree-child {
-    padding-left: 2.35rem;
-  }
-
-  .tree-grandchild {
-    padding-left: 4.25rem;
-    font-size: 0.8rem;
-  }
-
-  .format-category-group {
-    gap: 0;
-  }
-
-  .sidebar-category {
-    font-weight: 500;
-  }
-
-  .sidebar-item {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-
-  .sidebar-group:hover,
-  .sidebar-item:hover {
-    background-color: var(--bg-menu-hover);
-  }
-
-  .sidebar-item.active {
-    background-color: var(--bg-menu-active);
-    font-weight: 600;
-    border-left-color: var(--accent-color);
-  }
-
-  .settings-main {
-    flex: 1;
-    padding: 1rem 1.25rem;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 1.25rem;
-    background-color: var(--bg-editor);
-  }
-
-  .settings-section {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 1rem;
-  }
-
-  .settings-section:last-child {
-    border-bottom: none;
-    padding-bottom: 0;
-  }
-
-  .section-title {
-    margin: 0;
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--accent-color);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-
-  .settings-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 0.85rem;
-    min-height: 28px;
-  }
-
-  .settings-check-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.65rem;
-    font-size: 0.85rem;
-    cursor: pointer;
-  }
-
-  .settings-checkbox {
-    flex-shrink: 0;
-    width: 16px;
-    height: 16px;
-    margin-top: 2px;
-    accent-color: var(--accent-color);
-  }
-
-  .settings-check-copy {
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-    line-height: 1.35;
-  }
-
-  .settings-check-title {
-    color: var(--text-color);
-    font-weight: 500;
-  }
-
-  .settings-check-description {
-    color: var(--text-muted);
-    font-size: 0.78rem;
-  }
-
-  .auto-pair-following-settings {
-    display: flex;
-    flex-direction: column;
-    gap: 0.55rem;
-    margin: -0.1rem 0 0.15rem 26px;
-    padding: 0.65rem 0.75rem;
-    border-left: 2px solid var(--border-color);
-    background: var(--bg-window);
-  }
-
-  .auto-pair-following-settings.disabled {
-    opacity: 0.55;
-  }
-
-  .auto-pair-following-heading {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-
-  .auto-pair-following-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-  }
-
-  .auto-pair-following-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    max-width: 100%;
-    min-height: 24px;
-    padding: 0.1rem 0.2rem 0.1rem 0.5rem;
-    border: 1px solid var(--border-color);
-    border-radius: 999px;
-    background: var(--bg-editor);
-    color: var(--text-color);
-    font-size: 0.76rem;
-  }
-
-  .auto-pair-following-chip.fixed {
-    gap: 0.4rem;
-    padding-right: 0.5rem;
-  }
-
-  .auto-pair-following-chip code {
-    overflow-wrap: anywhere;
-    font-family: "Cascadia Mono", Consolas, monospace;
-    font-size: 0.76rem;
-  }
-
-  .auto-pair-following-fixed-label {
-    color: var(--text-muted);
-    font-size: 0.68rem;
-  }
-
-  .auto-pair-following-remove {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    border: none;
-    border-radius: 50%;
-    background: transparent;
-    color: var(--text-muted);
-    cursor: pointer;
-  }
-
-  .auto-pair-following-remove:hover:not(:disabled) {
-    background: var(--bg-menu-hover);
-    color: var(--text-color);
-  }
-
-  .auto-pair-following-add-row {
-    display: flex;
-    gap: 0.4rem;
-    max-width: 360px;
-  }
-
-  .auto-pair-following-input {
-    flex: 1;
-    min-width: 0;
-    height: 28px;
-    box-sizing: border-box;
-    padding: 0.25rem 0.5rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    outline: none;
-    background: var(--bg-editor);
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.78rem;
-  }
-
-  .auto-pair-following-input:focus {
-    border-color: var(--accent-color);
-    box-shadow: 0 0 0 1px var(--accent-color);
-  }
-
-  .auto-pair-following-add {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.25rem;
-    min-width: 62px;
-    height: 28px;
-    padding: 0 0.55rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    background: var(--bg-editor);
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.76rem;
-    cursor: pointer;
-  }
-
-  .auto-pair-following-add:hover:not(:disabled) {
-    background: var(--bg-menu-hover);
-  }
-
-  .auto-pair-following-add:disabled,
-  .auto-pair-following-remove:disabled,
-  .auto-pair-following-input:disabled {
-    cursor: not-allowed;
-  }
-
-  .settings-duration-row {
-    display: grid;
-    grid-template-columns: 64px minmax(120px, 240px) 52px;
-    align-items: center;
-    gap: 0.6rem;
-    padding-left: 26px;
-    color: var(--text-color);
-    font-size: 0.8rem;
-  }
-
-  .settings-duration-row.disabled {
-    opacity: 0.45;
-  }
-
-  .settings-duration-range {
-    width: 100%;
-    min-width: 0;
-    margin: 0;
-    accent-color: var(--accent-color);
-  }
-
-  .settings-duration-value {
-    color: var(--text-muted);
-    font-size: 0.78rem;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-  }
-
-  .settings-format-module {
-    display: flex;
-    flex-direction: column;
-    gap: 0.65rem;
-    padding-top: 0.25rem;
-  }
-
-  .settings-format-module + .settings-format-module {
-    border-top: 1px solid var(--border-color);
-    padding-top: 0.85rem;
-  }
-
-  .markdown-heading-settings {
-    display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
-  }
-
-  .markdown-heading-setting-row {
-    display: grid;
-    grid-template-columns: 72px 82px 58px 18px 88px minmax(92px, 120px);
-    align-items: center;
-    gap: 0.45rem;
-    color: var(--text-color);
-    font-size: 0.78rem;
-  }
-
-  .markdown-heading-setting-label {
-    font-weight: 600;
-  }
-
-  .markdown-heading-size-input {
-    width: 58px;
-  }
-
-  .markdown-heading-unit {
-    color: var(--text-muted);
-  }
-
-  .markdown-heading-weight-select {
-    width: 100%;
-  }
-
-  .settings-format-heading {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    min-height: 20px;
-  }
-
-  .settings-subsection-title {
-    margin: 0 0 0.1rem;
-    color: var(--text-color);
-    font-size: 0.8rem;
-    font-weight: 600;
-  }
-
-  .settings-category-formats {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-  }
-
-  .settings-format-chip {
-    padding: 0.15rem 0.45rem;
-    border: 1px solid var(--border-color);
-    border-radius: 999px;
-    background: var(--bg-window);
-    color: var(--text-muted);
-    font-size: 0.72rem;
-  }
-
-  .settings-category-note {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: 0.8rem;
-    line-height: 1.45;
-  }
-
-  .settings-transfer-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-
-  .settings-transfer-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.4rem;
-    min-height: 30px;
-    padding: 0.35rem 0.75rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    background: var(--bg-window);
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.8rem;
-    cursor: pointer;
-  }
-
-  .settings-transfer-button:hover:not(:disabled) {
-    background: var(--bg-menu-hover);
-  }
-
-  .settings-transfer-button:focus-visible {
-    outline: 2px solid var(--accent-color);
-    outline-offset: 2px;
-  }
-
-  .settings-transfer-button:disabled {
-    cursor: wait;
-    opacity: 0.55;
-  }
-
-  .settings-transfer-status {
-    margin: 0;
-    color: #16753c;
-    font-size: 0.78rem;
-    line-height: 1.4;
-  }
-
-  .settings-transfer-status.warning {
-    color: #946200;
-  }
-
-  .settings-transfer-status.error {
-    color: var(--error-text, #b91c1c);
-  }
-  :global(.theme-dark) .settings-transfer-status {
-    color: #86efac;
-  }
-
-  :global(.theme-dark) .settings-transfer-status.warning {
-    color: #fde68a;
-  }
-
-  :global(.theme-dark) .settings-transfer-status.error {
-    color: #fca5a5;
-  }
-
-
-  .color-picker-wrapper {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    position: relative;
-  }
-
-  .color-picker-native {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    opacity: 0;
-    pointer-events: none;
-  }
-
   .inline-color-picker-native {
     width: 1px;
     height: 1px;
@@ -9169,104 +7762,6 @@
     padding: 0;
     border: 0;
   }
-
-  .color-text-input {
-    width: 92px;
-    min-height: 28px;
-    padding: 0;
-    border: 1px solid #9ca3af;
-    border-radius: 4px;
-    font-family: Consolas, "Courier New", monospace;
-    font-size: 0.8rem;
-    font-weight: 600;
-    line-height: 26px;
-    text-align: center;
-    outline: none;
-    text-transform: uppercase;
-    cursor: pointer;
-    box-sizing: border-box;
-    transition: box-shadow 0.1s, transform 0.1s;
-  }
-
-  .color-text-input:hover {
-    box-shadow: 0 0 0 1px rgba(156, 163, 175, 0.45);
-  }
-
-  .color-text-input:focus {
-    border-color: #9ca3af;
-    outline: 2px solid var(--accent-color);
-    outline-offset: 2px;
-  }
-
-  .color-text-input:active {
-    transform: translateY(1px);
-  }
-
-  .color-text-input::selection {
-    background: rgba(255, 255, 255, 0.35);
-  }
-
-  .settings-action-row {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: 0.5rem;
-  }
-
-  .reset-colors-btn {
-    background-color: var(--bg-window);
-    border: 1px solid var(--border-color);
-    color: var(--text-color);
-    border-radius: 4px;
-    padding: 0.4rem 0.8rem;
-    font-family: var(--font-ui);
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: background-color 0.1s;
-    outline: none;
-  }
-
-  .reset-colors-btn:hover {
-    background-color: var(--bg-menu-hover);
-  }
-
-  .size-control {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-  }
-
-  .font-size-num {
-    width: 50px;
-    padding: 0.2rem 0.4rem;
-    border: 1px solid var(--border-color);
-    background-color: var(--bg-editor);
-    color: var(--text-color);
-    border-radius: 4px;
-    font-family: var(--font-ui);
-    font-size: 0.85rem;
-    text-align: center;
-    outline: none;
-  }
-
-  .adjust-btn {
-    background-color: var(--bg-menu-hover);
-    border: 1px solid var(--border-color);
-    color: var(--text-color);
-    border-radius: 4px;
-    width: 26px;
-    height: 26px;
-    cursor: pointer;
-    font-weight: bold;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    outline: none;
-  }
-
-  .adjust-btn:hover {
-    background-color: var(--bg-menu-active);
-  }
-
   @keyframes fadeIn {
     from {
       opacity: 0;
