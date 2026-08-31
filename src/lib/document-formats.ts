@@ -839,6 +839,7 @@ export function getDocumentFormatForContent(
 ): DocumentFormat {
   const namedFormat = getDocumentFormatForPath(pathOrName);
   if (namedFormat.id !== 'plain') return namedFormat;
+  if (plainTextFormat.extensions.includes(getFileExtension(pathOrName))) return namedFormat;
   if (looksLikeJsonContent(content)) return jsonFormat;
   if (looksLikeYamlContent(content)) return yamlFormat;
   if (looksLikeXmlContent(content)) return xmlFormat;

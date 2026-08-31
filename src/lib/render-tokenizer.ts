@@ -1,4 +1,5 @@
 import { getListMarkerAtStart } from './list-markers';
+import { getCheckboxMarkerAtStart } from './checkbox-markers';
 import type { MarkdownHeadingLevel } from './markdown-settings';
 
 export interface Token {
@@ -8,6 +9,7 @@ export interface Token {
     | 'code'
     | 'number'
     | 'list-marker'
+    | 'checkbox'
     | 'heading-marker'
     | 'quote-marker'
     | 'strong'
@@ -462,6 +464,15 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
     }
   }
 
+  if (!nextState && options.lineCheckboxes) {
+    const checkbox = getCheckboxMarkerAtStart(line);
+    if (checkbox) {
+      if (checkbox.indent) appendChild(root, { type: 'text', text: checkbox.indent });
+      appendChild(root, { type: 'checkbox', text: checkbox.marker });
+      i = checkbox.indent.length + checkbox.marker.length;
+    }
+  }
+
   if (!nextState && options.markdown) {
     const headingMatch = line.match(/^([ \t]{0,3})(#{1,6})([ \t]+)/u);
     const hashes = headingMatch?.[2];
@@ -663,6 +674,7 @@ export interface TokenizeLineOptions {
   comments?: CommentSyntax | null;
   state?: TokenizeState | null;
   suppressCodeFence?: boolean;
+  lineCheckboxes?: boolean;
   markdown?: MarkdownTokenizeOptions;
 }
 

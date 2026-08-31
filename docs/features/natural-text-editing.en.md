@@ -89,6 +89,17 @@ The behavioral contract is:
 - Pointer placement, arrow movement, and selection on a heading map the actual rendered glyph widths back to source positions. Do not leave a collapsed caret trapped inside a hidden marker range.
 - Links, emphasis, and inline code inside a heading keep their exact source ranges, and saved text never receives display-only size, weight, color, or divider data.
 
+## Rendered line checkboxes
+
+- In plain-text and Markdown documents, start rendering an unchecked or checked checkbox when the first content after optional leading indentation is `[]` or `[V]` and the marker is immediately followed by a literal Space (U+0020). Do not reinterpret the same strings inside a fenced code block.
+- Treat bare `[]` and `[V]`, attached forms such as `[]body` and `[V]body`, and markers followed by a tab instead of a Space as ordinary source text. Only uppercase `V` is a checked marker; unsupported markers such as `[v]`, `[x]`, and `[ ]` also remain ordinary source text.
+- Keep the marker's real source text node, but draw the checkbox inside a fixed visual width. Although `[]` and `[V]` have different source lengths, their final checkbox width, following body start, and gap must be identical, and wrapping and caret geometry use that final visual layout.
+- Clicking a checkbox in render mode changes only that marker between `[]` and `[V]` and preserves the rest of the line exactly, including the required following Space. Do not intercept clicks or default text editing in source mode.
+- Because the marker changes between two and three characters, move carets and selection endpoints after the marker by the length delta and clamp positions inside the marker to the new range.
+- With a collapsed selection and the caret after the marker and required Space, plain `Enter` splits the current line at the caret and starts the next line with the same leading indentation and a new unchecked marker `[] `. Even when the current item is checked as `[V]`, the new item starts as `[] `.
+- At the end of an empty item containing only leading indentation and `[] ` or `[V] `, plain `Enter` ends the checkbox list by removing the current marker and required Space instead of creating another item. Preserve the existing leading indentation. `Shift+Enter` remains an ordinary newline that does not create another checkbox.
+- Automatic continuation and empty-item exit preserve the document's CRLF or LF newline style. Each check, uncheck, automatic continuation, or empty-item exit is one Undo transaction, and Undo and Redo restore both source text and selection.
+
 ## Indentation and outdentation
 
 Treat Tab as a command that makes the current line structurally deeper, not as a character that inserts spaces at the caret.
@@ -96,12 +107,13 @@ Treat Tab as a command that makes the current line structurally deeper, not as a
 - With no selection, indent the entire line containing the caret.
 - With a selection, indent every line touched by the selection in one operation.
 - One indentation level is currently four spaces.
-- An empty line is indented like any other line. Tab adds one indentation level and leaves the caret after it so the next text input starts at the indented position.
+- A completely blank source line with zero length is indented like any other line. Tab adds one indentation level and leaves the caret after it so the next text input starts at the indented position.
 - Shift+Tab removes one leading tab or up to four leading spaces.
 - Shift+Tab on a line with no leading whitespace changes neither source text nor Undo history.
 - Move body-relative caret and selection positions by the prefix-length delta so they still point to the same place in the body.
 - When Backspace is pressed inside leading indentation, remove whitespace back to the previous four-column boundary instead of deleting one space at a time. Remove one tab character at a time.
 - Tab always applies to the entire line even when the caret is in the body and never inserts spaces in the middle of the body. Outside leading indentation, Backspace keeps its default deletion behavior.
+- On a checkbox line, Tab and Shift+Tab add or remove only leading indentation while preserving the `[]` or `[V]` marker and its current checked state.
 - Even when one Tab or Shift+Tab changes multiple lines and list markers, it remains one Undo action.
 
 ## List markers
@@ -292,6 +304,30 @@ Indented lines that are not list items should also retain their context when a n
 - Direct list continuation, continuation-line item creation, and following-item renumbering take precedence over general indentation preservation.
 - Each assisted Enter operation and empty-line join is its own single Undo action.
 
+## Enter between JSON and JSONC delimiters
+
+An empty JSON or JSONC object or array should expand into a structure ready for immediate content entry.
+
+- In render-enabled and render-editable JSON or JSONC, when a collapsed caret is directly between structural braces `{|}` or brackets `[|]`, plain `Enter` expands the pair into three lines. Here `|` represents the caret.
+- Keep the source before the opening delimiter on the current line. Put the caret on the second line after the current line's leading indentation plus one four-space indentation level. Move the closing delimiter and all source after the caret to the third line after the current line's original leading indentation.
+- Preserve the document's CRLF or LF newline style. The one-level JSON interior indentation is a default behavior even when the general preserve-indentation-on-Enter setting is disabled.
+- Do not apply this behavior to delimiters inside JSON strings or JSONC comments, or to mismatched or non-adjacent delimiters. JSON Lines, which must keep one JSON value per line, and source mode use default `textarea` newline behavior.
+- Record delimiter expansion and final caret placement as one Undo action.
+
+Example:
+
+```json
+{|}
+```
+
+Result after Enter:
+
+```json
+{
+    |
+}
+```
+
 ## Context-aware substitutions
 
 A string substitution should run only when the user enters a delimiter that confirms the intent to convert.
@@ -377,20 +413,22 @@ Each editing-assistance command registers a unique identifier and a non-duplicat
 3. Block single-character deletion across a newline adjacent to a fenced-code delimiter
 4. Move to the previous line end with ArrowLeft from the body start of a list continuation line
 5. Create a marker-free list continuation line with Shift+Enter
-6. End the list with Enter on an empty marker item
-7. Continue a list marker and renumber following items on Enter
-8. Create the next item and renumber following items from a list continuation line on Enter
-9. Preserve indentation on Enter for a general line
-10. Remove the marker-tail character with Backspace at a list body start
-11. Join a list continuation line with Backspace at its body start
-12. Join an otherwise empty automatically indented line on Backspace
-13. Indent or outdent lines with Tab or Shift+Tab
-14. Delete leading indentation with Backspace
-15. Delete an empty automatic pair with Backspace
-16. Apply a Markdown heading or replace its existing level when confirmed by Space
-17. Apply a context-aware substitution confirmed by Space
-18. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
-19. Fall back to default `textarea` input when none of the conditions match
+6. Continue a checkbox item or end an empty checkbox item with Enter
+7. End the list with Enter on an empty marker item
+8. Continue a list marker and renumber following items on Enter
+9. Create the next item and renumber following items from a list continuation line on Enter
+10. Expand a structural JSON or JSONC delimiter pair with Enter
+11. Preserve indentation on Enter for a general line
+12. Remove the marker-tail character with Backspace at a list body start
+13. Join a list continuation line with Backspace at its body start
+14. Join an otherwise empty automatically indented line on Backspace
+15. Indent or outdent lines with Tab or Shift+Tab
+16. Delete leading indentation with Backspace
+17. Delete an empty automatic pair with Backspace
+18. Apply a Markdown heading or replace its existing level when confirmed by Space
+19. Apply a context-aware substitution confirmed by Space
+20. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
+21. Fall back to default `textarea` input when none of the conditions match
 
 Do not chain one editing-assistance helper from inside another. The top-level input path selects exactly one feature by priority, and that feature records the final source text and selection only once.
 

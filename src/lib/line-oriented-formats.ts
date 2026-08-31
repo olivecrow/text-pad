@@ -312,6 +312,7 @@ function parseLineOrientedLine(
     const tokenized = tokenizeLineWithState(lineText, {
       comments: options.commentSyntax,
       state,
+      lineCheckboxes: format === 'plain' || format === 'markdown',
       markdown: format === 'markdown'
         ? { hideHeadingMarkers: options.hideMarkdownHeadingMarkers }
         : undefined

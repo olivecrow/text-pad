@@ -21,6 +21,7 @@
   } from "$lib/document-formats";
   import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatCategory, DocumentFormatId } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
+  import { getCheckboxEnterEdit } from "$lib/checkbox-markers";
   import {
     formatListMarker,
     getListContinuationIndent,
@@ -106,6 +107,7 @@
   import { EditorCommandPipeline } from "$lib/editor-command-pipeline";
   import { getEditorDuplicationEdit } from "$lib/editor-duplication";
   import { getArrowSubstitutionSpaceEdit } from "$lib/arrow-substitution";
+  import { getJsonPairEnterEdit } from "$lib/json-pair-enter";
   import {
     canInsertMarkdownHeadingReplacementMarker,
     getMarkdownHeadingSpaceEdit
@@ -3619,6 +3621,10 @@
     transformLine: (line: string, absoluteLineStart: number) => string
   ): string {
     const block = text.slice(lineStart, lineEnd);
+    if (block.length === 0) {
+      return `${text.slice(0, lineStart)}${transformLine('', lineStart)}${text.slice(lineEnd)}`;
+    }
+
     let result = '';
     let cursor = 0;
     const lineRegex = /([^\r\n]*)(\r\n|\n|\r|$)/g;
@@ -4218,6 +4224,62 @@
     return true;
   }
 
+  function handleRenderCheckboxEnter(event: KeyboardEvent): boolean {
+    if (
+      (activeDocumentFormat.id !== 'plain' && activeDocumentFormat.id !== 'markdown')
+      || !isActiveDocumentRenderEnabled
+      || !isActiveDocumentEditEnabled
+    ) return false;
+    if (!textareaEl || event.isComposing || event.key !== 'Enter') return false;
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineStart = getLineStartOffset(fileContent, start);
+    const lineEnd = getLineEndOffset(fileContent, start);
+    if (isLineInsideFencedCodeBlock(lineStart)) return false;
+    const edit = getCheckboxEnterEdit(
+      fileContent.slice(lineStart, lineEnd),
+      start - lineStart,
+      getPreferredNewline(fileContent, start)
+    );
+    if (!edit) return false;
+
+    event.preventDefault();
+    const nextCaret = lineStart + edit.caret;
+    commitRenderEditorEdit(
+      `${fileContent.slice(0, lineStart)}${edit.text}${fileContent.slice(lineEnd)}`,
+      { start: nextCaret, end: nextCaret }
+    );
+    return true;
+  }
+
+  function handleRenderJsonPairEnter(event: KeyboardEvent): boolean {
+    if (
+      (activeDocumentFormat.id !== 'json' && activeDocumentFormat.id !== 'jsonc')
+      || !isActiveDocumentRenderEnabled
+      || !isActiveDocumentEditEnabled
+    ) return false;
+    if (!textareaEl || event.isComposing || event.key !== 'Enter') return false;
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const edit = getJsonPairEnterEdit(
+      fileContent,
+      start,
+      getPreferredNewline(fileContent, start),
+      editorIndentUnit
+    );
+    if (!edit) return false;
+
+    event.preventDefault();
+    commitRenderEditorEdit(edit.content, { start: edit.caret, end: edit.caret });
+    return true;
+  }
+
   function handleRenderPreserveIndentEnter(event: KeyboardEvent): boolean {
     if (!renderPreserveIndentOnEnter) return false;
     if (!textareaEl || event.isComposing) return false;
@@ -4436,9 +4498,11 @@
     { id: 'fenced-code-boundary-deletion-guard', priority: 30, execute: handleRenderFencedCodeBoundaryDeletion },
     { id: 'list-boundary-arrow-left', priority: 40, execute: handleRenderListBoundaryArrowLeft },
     { id: 'list-soft-break-enter', priority: 50, execute: handleRenderListSoftBreakEnter },
+    { id: 'checkbox-enter', priority: 55, execute: handleRenderCheckboxEnter },
     { id: 'empty-list-exit-enter', priority: 60, execute: handleRenderExitEmptyListEnter },
     { id: 'continue-list-enter', priority: 70, execute: handleRenderContinueListEnter },
     { id: 'list-continuation-enter', priority: 80, execute: handleRenderListContinuationEnter },
+    { id: 'json-pair-enter', priority: 85, execute: handleRenderJsonPairEnter },
     { id: 'preserve-indent-enter', priority: 90, execute: handleRenderPreserveIndentEnter },
     { id: 'list-marker-backspace', priority: 100, execute: handleRenderListMarkerBackspace },
     { id: 'list-continuation-backspace', priority: 110, execute: handleRenderListContinuationBackspace },
@@ -4983,6 +5047,9 @@
         classes.push('hl-boolean-false');
       }
     }
+    if (token.type === 'checkbox' && token.text === '[V]') {
+      classes.push('hl-checkbox-checked');
+    }
     if (token.type === 'keyword') {
       const normalized = (token.text || '').trim().toLowerCase();
       if (normalized) classes.push(`hl-keyword-${normalized}`);
@@ -5008,6 +5075,11 @@
     start: number;
     end: number;
     value: DataBooleanValue;
+  }
+  interface RenderCheckboxRange {
+    start: number;
+    end: number;
+    checked: boolean;
   }
 
   function hasWhitespaceWordBoundary(text: string, start: number, end: number): boolean {
@@ -5357,6 +5429,37 @@
     return { start, end, value };
   }
 
+  function findRenderCheckboxAtPoint(clientX: number, clientY: number): RenderCheckboxRange | null {
+    if (!isBrowser || !isRenderMode || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled) return null;
+    const element = findRenderedTokenElementAtPoint(
+      clientX,
+      clientY,
+      '.hl-checkbox[data-token-start][data-token-end]'
+    );
+    if (!element) return null;
+
+    const start = Number(element.dataset.tokenStart);
+    const end = Number(element.dataset.tokenEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+
+    const marker = fileContent.slice(start, end);
+    if (marker !== '[]' && marker !== '[V]') return null;
+    return { start, end, checked: marker === '[V]' };
+  }
+
+  function toggleRenderCheckbox(range: RenderCheckboxRange) {
+    const nextMarker = range.checked ? '[]' : '[V]';
+    const nextContent = `${fileContent.slice(0, range.start)}${nextMarker}${fileContent.slice(range.end)}`;
+    const { start: selectionStart, end: selectionEnd } = getCurrentEditorSelection();
+    const nextSelectionStart = adjustOffsetAfterReplacement(selectionStart, range, nextMarker.length);
+    const nextSelectionEnd = adjustOffsetAfterReplacement(selectionEnd, range, nextMarker.length);
+
+    commitRenderEditorEdit(nextContent, {
+      start: nextSelectionStart,
+      end: nextSelectionEnd
+    });
+  }
+
   function toggleDataBoolean(range: DataBooleanRange) {
     const nextValue = range.value === 'true' ? 'false' : 'true';
     const nextContent = `${fileContent.slice(0, range.start)}${nextValue}${fileContent.slice(range.end)}`;
@@ -5545,6 +5648,17 @@
 
     if (!isActiveDocumentEditEnabled) return;
 
+    const checkboxRange = findRenderCheckboxAtPoint(event.clientX, event.clientY);
+    if (checkboxRange) {
+      pendingRenderCaretPointerDown = null;
+      event.preventDefault();
+      suppressNextEditorClickAfterRenderAction = true;
+      textareaEl.focus({ preventScroll: true });
+      clearInlineColorPickerState();
+      toggleRenderCheckbox(checkboxRange);
+      return;
+    }
+
     const booleanRange = findDataBooleanAtPoint(event.clientX, event.clientY);
     if (booleanRange) {
       pendingRenderCaretPointerDown = null;
@@ -5661,7 +5775,9 @@
       editorCursorStyle = 'text';
       return;
     }
-    editorCursorStyle = findDataBooleanAtPoint(event.clientX, event.clientY) || findColorCodeAtPoint(event.clientX, event.clientY)
+    editorCursorStyle = findRenderCheckboxAtPoint(event.clientX, event.clientY)
+      || findDataBooleanAtPoint(event.clientX, event.clientY)
+      || findColorCodeAtPoint(event.clientX, event.clientY)
       ? 'pointer'
       : 'text';
   }
@@ -6359,6 +6475,42 @@
   :global(.hl-list-marker),
   :global(.hl-heading-marker) {
     color: var(--color-hl-list-marker);
+  }
+  :global(.hl-checkbox) {
+    position: relative;
+    display: inline-block;
+    width: 1em;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    text-shadow: none;
+  }
+  :global(.hl-checkbox)::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0.01em;
+    width: 0.7em;
+    height: 0.7em;
+    box-sizing: border-box;
+    border: 1px solid var(--color-hl-list-marker);
+    border-radius: 0.14em;
+    background-color: color-mix(in srgb, var(--color-render-bg) 92%, var(--color-hl-list-marker));
+    transform: translateY(-50%);
+  }
+  :global(.hl-checkbox-checked)::before {
+    background-color: var(--color-hl-list-marker);
+  }
+  :global(.hl-checkbox-checked)::after {
+    content: '';
+    position: absolute;
+    top: 47%;
+    left: 0.24em;
+    width: 0.18em;
+    height: 0.36em;
+    box-sizing: border-box;
+    border: solid var(--color-render-bg);
+    border-width: 0 0.1em 0.1em 0;
+    transform: translateY(-58%) rotate(45deg);
   }
   :global(.hl-section) {
     color: var(--color-hl-key-strong);

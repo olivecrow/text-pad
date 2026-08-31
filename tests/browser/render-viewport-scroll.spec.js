@@ -105,3 +105,202 @@ test('final fenced-code layout owns the complete scroll range', async ({ page })
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
 });
+
+test('render checkboxes toggle source text and remain one undo step', async ({ page }) => {
+  const response = await page.goto('/');
+  expect(response?.status()).toBe(200);
+  await page.waitForLoadState('networkidle');
+
+  const textarea = page.getByTestId('editor-textarea');
+  const checkboxes = page.locator('.hl-checkbox');
+
+  await textarea.fill('[]');
+  await expect(checkboxes).toHaveCount(0);
+  await textarea.press('End');
+  await textarea.press('Space');
+  await expect(textarea).toHaveValue('[] ');
+  await expect(checkboxes).toHaveCount(1);
+
+  const source = '[] pending\n[V] complete\n[]\n[V]\n[]attached\n[V]attached\n[]\ttabbed\nplain';
+  await textarea.fill(source);
+
+  await expect(checkboxes).toHaveCount(2);
+  await expect(checkboxes.nth(0)).toHaveText('[]');
+  await expect(checkboxes.nth(0)).not.toHaveClass(/hl-checkbox-checked/);
+  await expect(checkboxes.nth(1)).toHaveText('[V]');
+  await expect(checkboxes.nth(1)).toHaveClass(/hl-checkbox-checked/);
+
+  const firstCheckbox = await checkboxes.nth(0).boundingBox();
+  expect(firstCheckbox).not.toBeNull();
+  if (!firstCheckbox) return;
+  await page.mouse.move(firstCheckbox.x + firstCheckbox.width / 2, firstCheckbox.y + firstCheckbox.height / 2);
+  await expect.poll(() => textarea.evaluate((element) => element.style.cursor)).toBe('pointer');
+  await page.mouse.down();
+  await page.mouse.up();
+
+  const checkedSource = '[V] pending\n[V] complete\n[]\n[V]\n[]attached\n[V]attached\n[]\ttabbed\nplain';
+  await expect(textarea).toHaveValue(checkedSource);
+  await expect(checkboxes.nth(0)).toHaveClass(/hl-checkbox-checked/);
+
+  await textarea.press('Control+z');
+  await expect(textarea).toHaveValue(source);
+  await expect(checkboxes.nth(0)).not.toHaveClass(/hl-checkbox-checked/);
+
+  await textarea.press('Control+y');
+  await expect(textarea).toHaveValue(checkedSource);
+  await expect(checkboxes.nth(0)).toHaveClass(/hl-checkbox-checked/);
+
+  await page.locator('.render-mode-toggle').click();
+  await expect(checkboxes).toHaveCount(0);
+  await expect(textarea).toHaveValue(checkedSource);
+});
+
+test('render checkboxes continue on Enter and keep one final visual width', async ({ page }) => {
+  const response = await page.goto('/');
+  expect(response?.status()).toBe(200);
+  await page.waitForLoadState('networkidle');
+
+  const textarea = page.getByTestId('editor-textarea');
+  await textarea.fill('[] item1\n[V] item1');
+  await expect(page.locator('.hl-checkbox')).toHaveCount(2);
+
+  const checkboxMetrics = await page.locator('.backdrop-line').evaluateAll((lines) => lines.slice(0, 2).map((line) => {
+    const checkbox = line.querySelector('.hl-checkbox');
+    if (!(checkbox instanceof HTMLElement)) return null;
+
+    const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+    let itemLeft = Number.NaN;
+    let node = walker.nextNode();
+    while (node) {
+      const itemIndex = node.textContent?.indexOf('item1') ?? -1;
+      if (itemIndex >= 0) {
+        const range = document.createRange();
+        range.setStart(node, itemIndex);
+        range.setEnd(node, itemIndex + 1);
+        itemLeft = range.getBoundingClientRect().left;
+        break;
+      }
+      node = walker.nextNode();
+    }
+
+    const checkboxRect = checkbox.getBoundingClientRect();
+    return {
+      checkboxWidth: checkboxRect.width,
+      itemLeft,
+      gap: itemLeft - checkboxRect.right
+    };
+  }));
+  expect(checkboxMetrics).toHaveLength(2);
+  expect(checkboxMetrics.every((metric) => metric !== null && Number.isFinite(metric.itemLeft))).toBe(true);
+  const uncheckedMetrics = checkboxMetrics[0];
+  const checkedMetrics = checkboxMetrics[1];
+  if (!uncheckedMetrics || !checkedMetrics) return;
+  expect(Math.abs(uncheckedMetrics.checkboxWidth - checkedMetrics.checkboxWidth)).toBeLessThanOrEqual(0.1);
+  expect(Math.abs(uncheckedMetrics.itemLeft - checkedMetrics.itemLeft)).toBeLessThanOrEqual(0.1);
+  expect(Math.abs(uncheckedMetrics.gap - checkedMetrics.gap)).toBeLessThanOrEqual(0.1);
+
+  await textarea.fill('[V] item');
+  await textarea.press('End');
+  await textarea.press('Tab');
+  await expect(textarea).toHaveValue('    [V] item');
+  await expect(page.locator('.hl-checkbox')).toHaveCount(1);
+  await expect(page.locator('.hl-checkbox')).toHaveClass(/hl-checkbox-checked/);
+  await textarea.press('Shift+Tab');
+  await expect(textarea).toHaveValue('[V] item');
+  await expect(page.locator('.hl-checkbox')).toHaveClass(/hl-checkbox-checked/);
+
+  await textarea.fill('[] first');
+  await textarea.press('End');
+  await textarea.press('Enter');
+  await expect(textarea).toHaveValue('[] first\n[] ');
+  await textarea.press('Control+z');
+  await expect(textarea).toHaveValue('[] first');
+  await textarea.press('Control+y');
+  await expect(textarea).toHaveValue('[] first\n[] ');
+
+  await textarea.fill('[V] done');
+  await textarea.press('End');
+  await textarea.press('Enter');
+  await expect(textarea).toHaveValue('[V] done\n[] ');
+
+  await textarea.fill('    [V] done');
+  await textarea.press('End');
+  await textarea.press('Enter');
+  await expect(textarea).toHaveValue('    [V] done\n    [] ');
+
+  await textarea.fill('[] beforeafter');
+  await textarea.evaluate((element) => {
+    if (element instanceof HTMLTextAreaElement) {
+      element.setSelectionRange('[] before'.length, '[] before'.length);
+    }
+  });
+  await textarea.press('Enter');
+  await expect(textarea).toHaveValue('[] before\n[] after');
+
+  await textarea.fill('[] ');
+  await textarea.press('End');
+  await textarea.press('Enter');
+  await expect(textarea).toHaveValue('');
+
+  await textarea.fill('    [] ');
+  await textarea.press('End');
+  await textarea.press('Enter');
+  await expect(textarea).toHaveValue('    ');
+});
+
+test('JSON pair Enter expands the structure and Tab indents a blank line', async ({ page }) => {
+  const response = await page.goto('/');
+  expect(response?.status()).toBe(200);
+  await page.waitForLoadState('networkidle');
+
+  await page.locator('.new-document-format-trigger').click();
+  await page.locator('.new-document-format-button').filter({ hasText: /^JSON$/ }).click();
+
+  const textarea = page.getByTestId('editor-textarea');
+  await textarea.fill('{}');
+  await textarea.evaluate((element) => {
+    const textareaElement = /** @type {HTMLTextAreaElement} */ (element);
+    textareaElement.setSelectionRange(1, 1);
+    textareaElement.dispatchEvent(new Event('select', { bubbles: true }));
+  });
+  await textarea.press('Enter');
+  await expect(textarea).toHaveValue('{\n    \n}');
+  await expect.poll(() => textarea.evaluate((element) => {
+    const textareaElement = /** @type {HTMLTextAreaElement} */ (element);
+    return { start: textareaElement.selectionStart, end: textareaElement.selectionEnd };
+  })).toEqual({ start: 6, end: 6 });
+
+  await textarea.press('Control+z');
+  await expect(textarea).toHaveValue('{}');
+  await expect.poll(() => textarea.evaluate((element) => {
+    const textareaElement = /** @type {HTMLTextAreaElement} */ (element);
+    return { start: textareaElement.selectionStart, end: textareaElement.selectionEnd };
+  })).toEqual({ start: 1, end: 1 });
+  await textarea.press('Control+y');
+  await expect(textarea).toHaveValue('{\n    \n}');
+
+  const nestedSource = '{"value": {}}';
+  await textarea.fill(nestedSource);
+  await textarea.evaluate((element, caret) => {
+    const textareaElement = /** @type {HTMLTextAreaElement} */ (element);
+    textareaElement.setSelectionRange(caret, caret);
+    textareaElement.dispatchEvent(new Event('select', { bubbles: true }));
+  }, nestedSource.indexOf('}'));
+  await textarea.press('Enter');
+  await expect(textarea).toHaveValue('{"value": {\n    \n}}');
+
+  await textarea.fill('{\n\n}');
+  await textarea.evaluate((element) => {
+    const textareaElement = /** @type {HTMLTextAreaElement} */ (element);
+    textareaElement.setSelectionRange(2, 2);
+    textareaElement.dispatchEvent(new Event('select', { bubbles: true }));
+  });
+  await textarea.press('Tab');
+  await expect(textarea).toHaveValue('{\n    \n}');
+  await expect.poll(() => textarea.evaluate((element) => {
+    const textareaElement = /** @type {HTMLTextAreaElement} */ (element);
+    return { start: textareaElement.selectionStart, end: textareaElement.selectionEnd };
+  })).toEqual({ start: 6, end: 6 });
+  await textarea.press('Control+z');
+  await expect(textarea).toHaveValue('{\n\n}');
+});

@@ -97,6 +97,7 @@ try {
   const delimited = await server.ssrLoadModule('/src/lib/delimited-table.ts');
   const budgets = await server.ssrLoadModule('/src/lib/render-budgets.ts');
   const listMarkers = await server.ssrLoadModule('/src/lib/list-markers.ts');
+  const checkboxMarkers = await server.ssrLoadModule('/src/lib/checkbox-markers.ts');
   const textChanges = await server.ssrLoadModule('/src/lib/text-change.ts');
   const editorInput = await server.ssrLoadModule('/src/lib/editor-input.ts');
   const editorCommands = await server.ssrLoadModule('/src/lib/editor-command-pipeline.ts');
@@ -108,6 +109,7 @@ try {
   const editorUndo = await server.ssrLoadModule('/src/lib/editor-undo.ts');
   const diagnosticClient = await server.ssrLoadModule('/src/lib/document-diagnostic-client.ts');
   const autoPair = await server.ssrLoadModule('/src/lib/auto-pair.ts');
+  const jsonPairEnter = await server.ssrLoadModule('/src/lib/json-pair-enter.ts');
   const arrowSubstitution = await server.ssrLoadModule('/src/lib/arrow-substitution.ts');
   const markdownHeadingEdit = await server.ssrLoadModule('/src/lib/markdown-heading-edit.ts');
 
@@ -237,6 +239,35 @@ try {
   assert.equal(autoPair.canInsertAutoPairAt('prefix value', 7, ['value']), true);
   assert.equal(autoPair.canInsertAutoPairAt('prefix value', 7, []), false);
 
+  assert.deepEqual(jsonPairEnter.getJsonPairEnterEdit('{}', 1, '\n', '    '), {
+    content: '{\n    \n}',
+    caret: 6
+  });
+  assert.deepEqual(jsonPairEnter.getJsonPairEnterEdit('[]', 1, '\r\n', '    '), {
+    content: '[\r\n    \r\n]',
+    caret: 7
+  });
+  const indentedPairSource = '  "items": [],';
+  const indentedPairCaret = indentedPairSource.indexOf(']');
+  assert.deepEqual(
+    jsonPairEnter.getJsonPairEnterEdit(indentedPairSource, indentedPairCaret, '\r\n', '    '),
+    {
+      content: '  "items": [\r\n      \r\n  ],',
+      caret: indentedPairCaret + '\r\n      '.length
+    }
+  );
+  const nestedPairSource = '{"value": {}}';
+  const nestedPairCaret = nestedPairSource.indexOf('}');
+  assert.deepEqual(jsonPairEnter.getJsonPairEnterEdit(nestedPairSource, nestedPairCaret, '\n', '    '), {
+    content: '{"value": {\n    \n}}',
+    caret: nestedPairCaret + '\n    '.length
+  });
+  assert.equal(jsonPairEnter.getJsonPairEnterEdit('"{}"', 2, '\n', '    '), null);
+  assert.equal(jsonPairEnter.getJsonPairEnterEdit('// {}', 4, '\n', '    '), null);
+  assert.equal(jsonPairEnter.getJsonPairEnterEdit('/* [] */', 4, '\n', '    '), null);
+  assert.equal(jsonPairEnter.getJsonPairEnterEdit('{]', 1, '\n', '    '), null);
+  assert.equal(jsonPairEnter.getJsonPairEnterEdit('{ }', 1, '\n', '    '), null);
+
   const arrowSubstitutionSamples = [
     ['->', '→ '],
     ['-->', '→ '],
@@ -283,6 +314,72 @@ try {
   assert.deepEqual(unorderedMarkerEdit, { text: 'body', caret: 0 });
   assert.equal(listMarkers.getListMarkerBackspaceEdit('1. body', 4), null);
 
+  assert.deepEqual(checkboxMarkers.getCheckboxMarkerAtStart('[] task'), {
+    indent: '',
+    marker: '[]',
+    checked: false,
+    spacing: ' ',
+    prefix: '[] '
+  });
+  assert.deepEqual(checkboxMarkers.getCheckboxMarkerAtStart('[V] task'), {
+    indent: '',
+    marker: '[V]',
+    checked: true,
+    spacing: ' ',
+    prefix: '[V] '
+  });
+  assert.deepEqual(checkboxMarkers.getCheckboxMarkerAtStart('    [] task'), {
+    indent: '    ',
+    marker: '[]',
+    checked: false,
+    spacing: ' ',
+    prefix: '    [] '
+  });
+  assert.deepEqual(checkboxMarkers.getCheckboxMarkerAtStart('\t[V] task'), {
+    indent: '\t',
+    marker: '[V]',
+    checked: true,
+    spacing: ' ',
+    prefix: '\t[V] '
+  });
+  for (const invalidCheckbox of ['[]', '[V]', '[]task', '[V]task', '[]\ttask', '    []task', '    []\ttask']) {
+    assert.equal(checkboxMarkers.getCheckboxMarkerAtStart(invalidCheckbox), null);
+  }
+
+  const uncheckedCheckboxLine = '[] task';
+  assert.deepEqual(
+    checkboxMarkers.getCheckboxEnterEdit(uncheckedCheckboxLine, uncheckedCheckboxLine.length, '\n'),
+    { text: '[] task\n[] ', caret: uncheckedCheckboxLine.length + 4 }
+  );
+  const checkedCheckboxLine = '[V] done';
+  assert.deepEqual(
+    checkboxMarkers.getCheckboxEnterEdit(checkedCheckboxLine, checkedCheckboxLine.length, '\r\n'),
+    { text: '[V] done\r\n[] ', caret: checkedCheckboxLine.length + 5 }
+  );
+  const indentedCheckedCheckboxLine = '    [V] done';
+  assert.deepEqual(
+    checkboxMarkers.getCheckboxEnterEdit(
+      indentedCheckedCheckboxLine,
+      indentedCheckedCheckboxLine.length,
+      '\r\n'
+    ),
+    {
+      text: '    [V] done\r\n    [] ',
+      caret: indentedCheckedCheckboxLine.length + '\r\n    [] '.length
+    }
+  );
+  assert.deepEqual(
+    checkboxMarkers.getCheckboxEnterEdit('[] beforeafter', '[] before'.length, '\n'),
+    { text: '[] before\n[] after', caret: '[] before\n[] '.length }
+  );
+  assert.deepEqual(checkboxMarkers.getCheckboxEnterEdit('[] ', 3, '\n'), { text: '', caret: 0 });
+  assert.deepEqual(checkboxMarkers.getCheckboxEnterEdit('[V] ', 4, '\n'), { text: '', caret: 0 });
+  assert.deepEqual(
+    checkboxMarkers.getCheckboxEnterEdit('    [] ', 7, '\n'),
+    { text: '    ', caret: 4 }
+  );
+  assert.equal(checkboxMarkers.getCheckboxEnterEdit('[] task', 2, '\n'), null);
+
   assert.deepEqual(markdownHeadingEdit.getMarkdownHeadingSpaceEdit('#', 1), {
     content: '# ',
     selection: { start: 2, end: 2 }
@@ -320,6 +417,69 @@ try {
   });
   assert.equal(selectedMarkdownRender.format.id, 'markdown');
   assert.equal(selectedMarkdownRender.lines[0].headingLevel, 2);
+
+  const checkboxContent = [
+    '[] pending',
+    '[V] complete',
+    '[]',
+    '[V]',
+    '[]attached',
+    '[V]attached',
+    '[]\ttabbed',
+    ' [] indented',
+    ' []attached',
+    '```',
+    '[] code',
+    '```'
+  ].join('\r\n');
+  const checkboxIndex = offsets.createTextOffsetIndex(checkboxContent);
+  const checkboxRender = documentFormats.parseDocumentForRender(checkboxContent, {
+    pathOrName: 'tasks.md',
+    tabSize: 4,
+    lineStartOffsets: checkboxIndex.lineStartOffsets,
+    lineRange: { startLine: 0, endLine: checkboxIndex.lineStartOffsets.length - 1 }
+  });
+  assert.equal(checkboxRender.lines[0].tokens[0].type, 'checkbox');
+  assert.equal(checkboxRender.lines[0].tokens[0].text, '[]');
+  assert.equal(checkboxRender.lines[1].tokens[0].type, 'checkbox');
+  assert.equal(checkboxRender.lines[1].tokens[0].text, '[V]');
+  assert.equal(checkboxRender.lines[7].tokens[0].type, 'text');
+  assert.equal(checkboxRender.lines[7].tokens[0].text, ' ');
+  assert.equal(checkboxRender.lines[7].tokens[1].type, 'checkbox');
+  assert.equal(checkboxRender.lines[7].tokens[1].text, '[]');
+  for (const lineIndex of [2, 3, 4, 5, 6, 8]) {
+    assert.equal(checkboxRender.lines[lineIndex].tokens.some((token) => token.type === 'checkbox'), false);
+  }
+  assert.equal(checkboxRender.lines[10].tokens[0].type, 'code');
+  for (let index = 0; index < checkboxRender.lines.length; index += 1) {
+    const sourceLine = checkboxContent.split(/\r?\n/u)[index];
+    assert.equal(flattenTokens(checkboxRender.lines[index].tokens), sourceLine);
+  }
+
+  const plainCheckboxRender = documentFormats.parseDocumentForRender('[V] plain task', {
+    pathOrName: 'tasks.txt',
+    tabSize: 4,
+    lineStartOffsets: [0]
+  });
+  assert.equal(plainCheckboxRender.format.id, 'plain');
+  assert.equal(plainCheckboxRender.lines[0].tokens[0].type, 'checkbox');
+
+  const attachedPlainCheckboxRender = documentFormats.parseDocumentForRender('[]plain task', {
+    pathOrName: 'tasks.txt',
+    tabSize: 4,
+    lineStartOffsets: [0]
+  });
+  assert.equal(
+    attachedPlainCheckboxRender.lines[0].tokens.some((token) => token.type === 'checkbox'),
+    false
+  );
+
+  const jsonArrayRender = documentFormats.parseDocumentForRender('[]', {
+    pathOrName: 'data.json',
+    tabSize: 4,
+    lineStartOffsets: [0]
+  });
+  assert.notEqual(jsonArrayRender.lines[0].tokens[0].type, 'checkbox');
 
   const tableRow = Array.from({ length: 10 }, (_, index) => `value-${index}`).join(',');
   const interactiveTableContent = Array.from({ length: 200 }, () => tableRow).join('\n');
@@ -925,7 +1085,7 @@ try {
     `Validated render core: CRLF offsets, logarithmic hit testing (${rectCalls} reads), `
       + `XML range cache (${xmlParseDuration.toFixed(1)}ms), 250k-line uniform layout (${uniformDuration.toFixed(1)}ms), `
       + `incremental layout/parser checkpoints, viewport lifecycle, prioritized editor commands, shared input diffs, bounded caches/undo, worker cancellation, `
-      + `auto-pair right-context rules, arrow substitutions, editor duplication, list-marker backspace, Markdown heading application, new-table templates, `
+      + `auto-pair right-context rules, JSON pair Enter, arrow substitutions, editor duplication, list-marker backspace, Markdown heading application, render checkboxes, new-table templates, `
       + `and table copy-on-write.`
   );
 } finally {
