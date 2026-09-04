@@ -76,6 +76,17 @@ The behavioral contract is:
 - In render mode, hidden inline backticks and fenced-code delimiter lines are not collapsed-caret stops. Pointer and arrow-key movement skips to a visible inline-code boundary or to an adjacent editable line inside or outside the fenced block.
 - Pressing Backspace within the leading whitespace of the line immediately after a closing fence keeps the code content and line structure, but reduces each run of opening and closing backticks to two characters so only fenced-block syntax is disabled. Place the caret immediately after the two remaining closing backticks, at the position where the removed backticks were. Selection deletion that includes both fences and the complete block remains allowed. Disabling the fences is one Undo action.
 
+## Highlighting paired brackets and quotation marks
+
+In render mode, the editor shows the other end of the paired character touching the caret so the active editing boundary is immediately visible.
+
+- The supported pairs are parentheses `()`, square brackets `[]`, braces `{}`, double quotation marks `""`, and single quotation marks `''`. Backticks remain part of the separate inline and fenced-code behavior, while `< >` is excluded because it conflicts with comparisons and tags.
+- With a collapsed caret and editor focus, if the supported character immediately before or after the caret belongs to a complete pair, highlight both the opening and closing character. When two adjacent pairs touch the same caret position, prefer the inner boundary immediately after an opener or immediately before a closer.
+- Brackets may match across lines, but their type and nesting order must agree. Do not guess a pair for mismatched or unclosed brackets, and do not treat brackets inside a complete quoted string as structural brackets.
+- Double and single quotation marks require a closing mark on the same line and honor backslash escapes. An apostrophe used inside a word for contraction or possession is not treated as a paired quotation mark.
+- Clear the pair highlight when a selection is created, the editor loses focus, or source mode is activated. Draw only ranges that are currently visible; when a virtualized opposite end enters the viewport, render it again from the same source offset.
+- This feature is presentation-only and does not change source text, the caret, the selection, or undo history.
+
 ## Editing Markdown headings
 
 - In render-enabled `.md` and `.markdown` documents, recognize `# ` through `###### ` after no more than three leading spaces as heading levels 1 through 6.

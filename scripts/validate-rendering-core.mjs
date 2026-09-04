@@ -110,6 +110,7 @@ try {
   const diagnosticClient = await server.ssrLoadModule('/src/lib/document-diagnostic-client.ts');
   const autoPair = await server.ssrLoadModule('/src/lib/auto-pair.ts');
   const jsonPairEnter = await server.ssrLoadModule('/src/lib/json-pair-enter.ts');
+  const pairedDelimiterHighlighting = await server.ssrLoadModule('/src/lib/paired-delimiter-highlighting.ts');
   const arrowSubstitution = await server.ssrLoadModule('/src/lib/arrow-substitution.ts');
   const markdownHeadingEdit = await server.ssrLoadModule('/src/lib/markdown-heading-edit.ts');
 
@@ -238,6 +239,170 @@ try {
   assert.equal(autoPair.canInsertAutoPairAt('=> body', 0, ['=>']), true);
   assert.equal(autoPair.canInsertAutoPairAt('prefix value', 7, ['value']), true);
   assert.equal(autoPair.canInsertAutoPairAt('prefix value', 7, []), false);
+
+  const nestedDelimiterContent = '({["value"]})';
+  const nestedDelimiterIndex = pairedDelimiterHighlighting.createPairedDelimiterIndex(nestedDelimiterContent);
+  assert.deepEqual(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      nestedDelimiterContent,
+      1,
+      nestedDelimiterIndex
+    ),
+    { opening: 0, closing: 12, kind: 'paren' }
+  );
+  assert.deepEqual(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      nestedDelimiterContent,
+      2,
+      nestedDelimiterIndex
+    ),
+    { opening: 1, closing: 11, kind: 'brace' }
+  );
+  assert.deepEqual(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      nestedDelimiterContent,
+      3,
+      nestedDelimiterIndex
+    ),
+    { opening: 2, closing: 10, kind: 'bracket' }
+  );
+  assert.deepEqual(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      nestedDelimiterContent,
+      4,
+      nestedDelimiterIndex
+    ),
+    { opening: 3, closing: 9, kind: 'quote' }
+  );
+  assert.deepEqual(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      nestedDelimiterContent,
+      10,
+      nestedDelimiterIndex
+    ),
+    { opening: 2, closing: 10, kind: 'bracket' },
+    'the pair whose inner edge touches the caret wins between adjacent closers'
+  );
+  assert.deepEqual(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      nestedDelimiterContent,
+      nestedDelimiterContent.length,
+      nestedDelimiterIndex
+    ),
+    { opening: 0, closing: 12, kind: 'paren' }
+  );
+
+  const bracketInsideQuoteContent = '"([{}])"';
+  const bracketInsideQuoteIndex = pairedDelimiterHighlighting.createPairedDelimiterIndex(bracketInsideQuoteContent);
+  assert.equal(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      bracketInsideQuoteContent,
+      2,
+      bracketInsideQuoteIndex
+    ),
+    null
+  );
+  assert.deepEqual(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      bracketInsideQuoteContent,
+      1,
+      bracketInsideQuoteIndex
+    ),
+    { opening: 0, closing: 7, kind: 'quote' }
+  );
+
+  const escapedQuoteContent = '"a\\"b"';
+  const escapedQuoteIndex = pairedDelimiterHighlighting.createPairedDelimiterIndex(escapedQuoteContent);
+  assert.deepEqual(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      escapedQuoteContent,
+      1,
+      escapedQuoteIndex
+    ),
+    { opening: 0, closing: 5, kind: 'quote' }
+  );
+  assert.equal(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      escapedQuoteContent,
+      4,
+      escapedQuoteIndex
+    ),
+    null
+  );
+
+  const singleQuoteContent = "'quoted' and don't";
+  const singleQuoteIndex = pairedDelimiterHighlighting.createPairedDelimiterIndex(singleQuoteContent);
+  assert.deepEqual(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      singleQuoteContent,
+      1,
+      singleQuoteIndex
+    ),
+    { opening: 0, closing: 7, kind: 'quote' }
+  );
+  assert.equal(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      singleQuoteContent,
+      singleQuoteContent.lastIndexOf("'") + 1,
+      singleQuoteIndex
+    ),
+    null,
+    'apostrophes inside words are not quote delimiters'
+  );
+
+  const adjacentSingleQuoteContent = "'first' then 'second'";
+  const adjacentSingleQuoteIndex = pairedDelimiterHighlighting.createPairedDelimiterIndex(adjacentSingleQuoteContent);
+  assert.deepEqual(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      adjacentSingleQuoteContent,
+      1,
+      adjacentSingleQuoteIndex
+    ),
+    { opening: 0, closing: 6, kind: 'quote' },
+    'separate single-quoted values use their nearest valid closing quote'
+  );
+  assert.deepEqual(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      adjacentSingleQuoteContent,
+      adjacentSingleQuoteContent.lastIndexOf("'"),
+      adjacentSingleQuoteIndex
+    ),
+    {
+      opening: adjacentSingleQuoteContent.indexOf("'", 7),
+      closing: adjacentSingleQuoteContent.lastIndexOf("'"),
+      kind: 'quote'
+    }
+  );
+
+  const multilineDelimiterContent = '(\r\n  [value]\r\n)';
+  const multilineDelimiterIndex = pairedDelimiterHighlighting.createPairedDelimiterIndex(multilineDelimiterContent);
+  assert.deepEqual(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      multilineDelimiterContent,
+      multilineDelimiterContent.length,
+      multilineDelimiterIndex
+    ),
+    { opening: 0, closing: multilineDelimiterContent.length - 1, kind: 'paren' }
+  );
+  const mismatchedDelimiterContent = '([)]';
+  const mismatchedDelimiterIndex = pairedDelimiterHighlighting.createPairedDelimiterIndex(mismatchedDelimiterContent);
+  assert.equal(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      mismatchedDelimiterContent,
+      0,
+      mismatchedDelimiterIndex
+    ),
+    null
+  );
+  assert.equal(
+    pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
+      mismatchedDelimiterContent,
+      2,
+      mismatchedDelimiterIndex
+    ),
+    null,
+    'crossed bracket nesting does not leave a guessed inner pair'
+  );
 
   assert.deepEqual(jsonPairEnter.getJsonPairEnterEdit('{}', 1, '\n', '    '), {
     content: '{\n    \n}',
@@ -1085,7 +1250,7 @@ try {
     `Validated render core: CRLF offsets, logarithmic hit testing (${rectCalls} reads), `
       + `XML range cache (${xmlParseDuration.toFixed(1)}ms), 250k-line uniform layout (${uniformDuration.toFixed(1)}ms), `
       + `incremental layout/parser checkpoints, viewport lifecycle, prioritized editor commands, shared input diffs, bounded caches/undo, worker cancellation, `
-      + `auto-pair right-context rules, JSON pair Enter, arrow substitutions, editor duplication, list-marker backspace, Markdown heading application, render checkboxes, new-table templates, `
+      + `auto-pair right-context rules, paired-delimiter highlighting, JSON pair Enter, arrow substitutions, editor duplication, list-marker backspace, Markdown heading application, render checkboxes, new-table templates, `
       + `and table copy-on-write.`
   );
 } finally {

@@ -109,6 +109,10 @@
   import { getArrowSubstitutionSpaceEdit } from "$lib/arrow-substitution";
   import { getJsonPairEnterEdit } from "$lib/json-pair-enter";
   import {
+    createPairedDelimiterIndex,
+    getPairedDelimiterHighlightAtCaret
+  } from "$lib/paired-delimiter-highlighting";
+  import {
     canInsertMarkdownHeadingReplacementMarker,
     getMarkdownHeadingSpaceEdit
   } from "$lib/markdown-heading-edit";
@@ -487,6 +491,14 @@
   let steadyEditorCaretLeft = $state<number>(12);
   let steadyEditorCaretTop = $state<number>(8);
   let steadyEditorCaretHeight = $state<number>(22);
+  interface RenderPairDecoration {
+    offset: number;
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  }
+  let renderedPairDecorations = $state<RenderPairDecoration[]>([]);
   let steadyEditorCaretTimer: ReturnType<typeof setTimeout> | null = null;
   let steadyEditorCaretBlinkKey = $state<number>(0);
   let isEditorFocused = $state<boolean>(false);
@@ -495,11 +507,11 @@
   let editorTextMeasureFont = '';
   let editorTextWidthCache = new BoundedLruCache<string, number>(12000);
   const renderedSelectionHighlightName = 'render-selection';
-  const supportsRenderedSelectionHighlight = isBrowser
+  const supportsRenderedHighlights = isBrowser
     && typeof Highlight === 'function'
     && typeof CSS !== 'undefined'
     && !!CSS.highlights;
-  let renderedSelectionHighlightFrame: number | null = null;
+  let renderedHighlightFrame: number | null = null;
 
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | 'help' | null>(null);
@@ -2229,7 +2241,7 @@
     };
     void tick().then(() => {
       renderViewportController?.syncCaretAfterLayout();
-      scheduleRenderedSelectionHighlight();
+      scheduleRenderedHighlights();
     });
   }
 
@@ -2271,6 +2283,16 @@
     && isDocumentFormatRenderEnabled(activeDocumentFormat, documentFeatureSettings)
   );
   let isActiveDocumentEditEnabled = $derived(isDocumentFormatEditEnabled(activeDocumentFormat, documentFeatureSettings));
+  let pairedDelimiterIndex = $derived(
+    isRenderMode && isActiveDocumentRenderEnabled
+      ? createPairedDelimiterIndex(fileContent)
+      : null
+  );
+  let pairedDelimiterHighlight = $derived(
+    isEditorFocused && !hasEditorSelection && pairedDelimiterIndex
+      ? getPairedDelimiterHighlightAtCaret(fileContent, caretOffset, pairedDelimiterIndex)
+      : null
+  );
   let activeDelimitedTableSeparator = $derived<DelimitedTableSeparator | null>(
     activeDocumentFormat.id === 'csv' ? ',' : activeDocumentFormat.id === 'tsv' ? '\t' : null
   );
@@ -3048,8 +3070,12 @@
 
   function clearRenderedSelectionHighlight() {
     hasRenderedSelectionHighlight = false;
-    if (!supportsRenderedSelectionHighlight) return;
+    if (!supportsRenderedHighlights) return;
     CSS.highlights.delete(renderedSelectionHighlightName);
+  }
+
+  function clearRenderedPairHighlight() {
+    if (renderedPairDecorations.length > 0) renderedPairDecorations = [];
   }
 
   function getTextNodeBoundary(
@@ -3082,6 +3108,32 @@
       : null;
   }
 
+  function getVisibleRenderedRange(rangeStart: number, rangeEnd: number): Range | null {
+    if (!editorViewportEl || rangeEnd <= rangeStart) return null;
+
+    const lineIndex = findLineIndexForOffset(rangeStart);
+    if (lineIndex < startLine || lineIndex > endLine) return null;
+
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
+    const lineEnd = lineStart + lineText.length;
+    if (rangeStart < lineStart || rangeEnd > lineEnd) return null;
+
+    const lineContent = editorViewportEl.querySelector(
+      `.backdrop-line[data-line-index="${lineIndex}"] .line-content`
+    ) as HTMLElement | null;
+    if (!lineContent) return null;
+
+    const startBoundary = getTextNodeBoundary(lineContent, rangeStart - lineStart);
+    const endBoundary = getTextNodeBoundary(lineContent, rangeEnd - lineStart);
+    if (!startBoundary || !endBoundary) return null;
+
+    const range = document.createRange();
+    range.setStart(startBoundary.node, startBoundary.offset);
+    range.setEnd(endBoundary.node, endBoundary.offset);
+    return range;
+  }
+
   function getVisibleRenderedSelectionRanges(selection: EditorSelection): Range[] {
     if (!editorViewportEl || selection.start === selection.end) return [];
 
@@ -3094,19 +3146,8 @@
       const selectedEnd = Math.min(selection.end, lineEnd);
       if (selectedEnd <= selectedStart) continue;
 
-      const lineContent = editorViewportEl.querySelector(
-        `.backdrop-line[data-line-index="${lineIndex}"] .line-content`
-      ) as HTMLElement | null;
-      if (!lineContent) continue;
-
-      const startBoundary = getTextNodeBoundary(lineContent, selectedStart - lineStart);
-      const endBoundary = getTextNodeBoundary(lineContent, selectedEnd - lineStart);
-      if (!startBoundary || !endBoundary) continue;
-
-      const range = document.createRange();
-      range.setStart(startBoundary.node, startBoundary.offset);
-      range.setEnd(endBoundary.node, endBoundary.offset);
-      ranges.push(range);
+      const range = getVisibleRenderedRange(selectedStart, selectedEnd);
+      if (range) ranges.push(range);
     }
 
     return ranges;
@@ -3114,7 +3155,7 @@
 
   function syncRenderedSelectionHighlight() {
     if (
-      !supportsRenderedSelectionHighlight
+      !supportsRenderedHighlights
       || !isRenderMode
       || !shouldRenderHighlightLayer
       || !hasEditorSelection
@@ -3134,15 +3175,53 @@
     hasRenderedSelectionHighlight = true;
   }
 
-  function scheduleRenderedSelectionHighlight() {
-    if (!supportsRenderedSelectionHighlight) return;
-    if (renderedSelectionHighlightFrame !== null) {
-      cancelAnimationFrame(renderedSelectionHighlightFrame);
+  function syncRenderedPairHighlight() {
+    if (
+      !isRenderMode
+      || !shouldRenderHighlightLayer
+      || !pairedDelimiterHighlight
+      || !editorViewportEl
+    ) {
+      clearRenderedPairHighlight();
+      return;
     }
 
-    renderedSelectionHighlightFrame = requestAnimationFrame(() => {
-      renderedSelectionHighlightFrame = null;
+    const viewportRect = editorViewportEl.getBoundingClientRect();
+    const decorations: RenderPairDecoration[] = [];
+    for (const offset of [pairedDelimiterHighlight.opening, pairedDelimiterHighlight.closing]) {
+      const range = getVisibleRenderedRange(offset, offset + 1);
+      if (!range) continue;
+
+      for (const rect of Array.from(range.getClientRects())) {
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        decorations.push({
+          offset,
+          left: rect.left - viewportRect.left,
+          top: rect.top - viewportRect.top + editorViewportEl.scrollTop,
+          width: rect.width,
+          height: rect.height
+        });
+      }
+    }
+
+    if (decorations.length === 0) {
+      clearRenderedPairHighlight();
+      return;
+    }
+
+    renderedPairDecorations = decorations;
+  }
+
+  function scheduleRenderedHighlights() {
+    if (!isBrowser) return;
+    if (renderedHighlightFrame !== null) {
+      cancelAnimationFrame(renderedHighlightFrame);
+    }
+
+    renderedHighlightFrame = requestAnimationFrame(() => {
+      renderedHighlightFrame = null;
       syncRenderedSelectionHighlight();
+      syncRenderedPairHighlight();
     });
   }
 
@@ -3292,7 +3371,7 @@
       restartSteadyEditorCaretBlink();
     }
     setLastEditorSnapshot(getCurrentEditorSnapshot());
-    scheduleRenderedSelectionHighlight();
+    scheduleRenderedHighlights();
   }
 
   function updateCursorPosition() {
@@ -3543,6 +3622,7 @@
     closeActiveUndoGroup();
     updateEditorSelectionState();
     hideSteadyEditorCaret();
+    scheduleRenderedHighlights();
   }
 
   $effect(() => {
@@ -3564,6 +3644,8 @@
       isRenderMode,
       shouldRenderHighlightLayer,
       hasEditorSelection,
+      isEditorFocused,
+      pairedDelimiterHighlight,
       fileContent,
       startLine,
       endLine,
@@ -3576,7 +3658,7 @@
       activeColors.renderFontWeight,
       tabSize
     ];
-    scheduleRenderedSelectionHighlight();
+    scheduleRenderedHighlights();
   });
 
   onDestroy(() => {
@@ -3584,8 +3666,8 @@
     documentDiagnosticWorkerClient?.dispose();
     renderedLineResizeObserver?.disconnect();
     renderedLineResizeObserver = null;
-    if (renderedSelectionHighlightFrame !== null) {
-      cancelAnimationFrame(renderedSelectionHighlightFrame);
+    if (renderedHighlightFrame !== null) {
+      cancelAnimationFrame(renderedHighlightFrame);
     }
     if (startupUpdateTimer) {
       clearTimeout(startupUpdateTimer);
@@ -3600,6 +3682,7 @@
       availableAppUpdate = null;
     }
     clearRenderedSelectionHighlight();
+    clearRenderedPairHighlight();
   });
 
   function getSelectedLineBounds(text: string, start: number, end: number): { start: number; end: number } {
@@ -6121,7 +6204,7 @@
       class="editor-area"
       class:render-mode={isRenderMode && isEnhancedDocumentWithinBudget}
       class:render-selection-active={isRenderMode && isEnhancedDocumentWithinBudget && hasEditorSelection}
-      class:render-custom-selection={isRenderMode && supportsRenderedSelectionHighlight && shouldRenderHighlightLayer && hasRenderedSelectionHighlight}
+      class:render-custom-selection={isRenderMode && supportsRenderedHighlights && shouldRenderHighlightLayer && hasRenderedSelectionHighlight}
       class:render-wrap-settling={isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling}
       class:render-native-text-visible={shouldShowNativeRenderText}
     >
@@ -6284,6 +6367,17 @@
                 {/each}
               </div>
             </div>
+          {/if}
+
+          {#if shouldRenderHighlightLayer}
+            {#each renderedPairDecorations as decoration, index (`${decoration.offset}:${index}`)}
+              <span
+                class="render-pair-decoration"
+                data-pair-offset={decoration.offset}
+                style="left: {decoration.left}px; top: {decoration.top}px; width: {decoration.width}px; height: {decoration.height}px;"
+                aria-hidden="true"
+              ></span>
+            {/each}
           {/if}
 
           <textarea
@@ -7456,6 +7550,16 @@
 
   :global(::highlight(render-selection)) {
     background-color: rgba(96, 165, 250, 0.28);
+  }
+
+  .render-pair-decoration {
+    position: absolute;
+    z-index: 1;
+    box-sizing: border-box;
+    pointer-events: none;
+    background-color: color-mix(in srgb, var(--color-hl-list-marker) 30%, transparent);
+    border-bottom: 1px solid var(--color-hl-list-marker);
+    border-radius: 2px;
   }
 
   .render-mode.render-custom-selection .editor-textarea::selection {

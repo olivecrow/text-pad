@@ -304,3 +304,75 @@ test('JSON pair Enter expands the structure and Tab indents a blank line', async
   await textarea.press('Control+z');
   await expect(textarea).toHaveValue('{\n\n}');
 });
+
+test('a collapsed render caret highlights both ends of its bracket or quote pair', async ({ page }) => {
+  const response = await page.goto('/');
+  expect(response?.status()).toBe(200);
+  await page.waitForLoadState('networkidle');
+
+  const textarea = page.getByTestId('editor-textarea');
+  const pairDecorations = page.locator('.render-pair-decoration');
+  const getPairHighlightOffsets = () => pairDecorations.evaluateAll((elements) => elements
+    .map((element) => Number(element.getAttribute('data-pair-offset')))
+    .sort((left, right) => left - right));
+  /** @param {number} offset */
+  const setCaret = (offset) => textarea.evaluate((element, nextOffset) => {
+    const textareaElement = /** @type {HTMLTextAreaElement} */ (element);
+    textareaElement.setSelectionRange(nextOffset, nextOffset);
+    textareaElement.dispatchEvent(new Event('select', { bubbles: true }));
+  }, offset);
+
+  const content = 'outer ({["value"]}) end';
+  await textarea.fill(content);
+
+  await setCaret(content.indexOf('(') + 1);
+  await expect.poll(getPairHighlightOffsets).toEqual([content.indexOf('('), content.lastIndexOf(')')]);
+  const decorationMetrics = await pairDecorations.evaluateAll((elements) => elements.map((element) => {
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return {
+      backgroundColor: style.backgroundColor,
+      borderBottomWidth: style.borderBottomWidth,
+      height: rect.height,
+      width: rect.width
+    };
+  }));
+  expect(decorationMetrics).toHaveLength(2);
+  expect(decorationMetrics.every((metric) => (
+    metric.backgroundColor !== 'rgba(0, 0, 0, 0)'
+    && metric.borderBottomWidth === '1px'
+    && metric.height > 0
+    && metric.width > 0
+  ))).toBe(true);
+
+  await setCaret(content.indexOf(']'));
+  await expect.poll(getPairHighlightOffsets).toEqual([content.indexOf('['), content.indexOf(']')]);
+
+  await setCaret(content.lastIndexOf('"'));
+  await expect.poll(getPairHighlightOffsets).toEqual([content.indexOf('"'), content.lastIndexOf('"')]);
+
+  const quotedBrackets = '"([{}])"';
+  await textarea.fill(quotedBrackets);
+  await setCaret(2);
+  await expect.poll(getPairHighlightOffsets).toEqual([]);
+
+  await setCaret(1);
+  await expect.poll(getPairHighlightOffsets).toEqual([0, quotedBrackets.length - 1]);
+
+  await textarea.evaluate((element) => {
+    const textareaElement = /** @type {HTMLTextAreaElement} */ (element);
+    textareaElement.setSelectionRange(0, textareaElement.value.length);
+    textareaElement.dispatchEvent(new Event('select', { bubbles: true }));
+  });
+  await expect.poll(getPairHighlightOffsets).toEqual([]);
+
+  await textarea.evaluate((element) => {
+    const textareaElement = /** @type {HTMLTextAreaElement} */ (element);
+    textareaElement.setSelectionRange(1, 1);
+    textareaElement.dispatchEvent(new Event('select', { bubbles: true }));
+  });
+  await expect.poll(getPairHighlightOffsets).toEqual([0, quotedBrackets.length - 1]);
+  await page.locator('.render-mode-toggle').click();
+  await expect.poll(getPairHighlightOffsets).toEqual([]);
+  await expect(textarea).toHaveValue(quotedBrackets);
+});
