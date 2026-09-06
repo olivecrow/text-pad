@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getAdditionalRenderThemeStyle } from '$lib/render-theme-fields';
   import { ask, message } from "@tauri-apps/plugin-dialog";
   import { ChevronDown, Copy, Minus, Square, Plus, X } from "@lucide/svelte";
   import {
@@ -482,7 +483,7 @@
   let cursorLine = $derived(activeTab?.cursorLine ?? 1);
   let cursorCol = $derived(activeTab?.cursorCol ?? 1);
   let caretOffset = $derived(activeTab?.caretOffset ?? 0);
-  let editorCaretColor = $state<string>('var(--color-render-text, var(--text-color))');
+  let editorCaretColor = $state<string>('var(--color-caret, var(--color-render-text))');
   let editorCursorStyle = $state<string>('text');
   let hasEditorSelection = $state<boolean>(false);
   let hasRenderedSelectionHighlight = $state<boolean>(false);
@@ -512,6 +513,7 @@
     && typeof CSS !== 'undefined'
     && !!CSS.highlights;
   let renderedHighlightFrame: number | null = null;
+  let renderedSelectionDecorations = $state<Array<{left: number; top: number; width: number; height: number}>>([]);
 
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | 'help' | null>(null);
@@ -2207,19 +2209,20 @@
   let shouldShowNativeRenderText = $derived(isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling);
   let shouldRenderHighlightLayer = $derived(isRenderMode && isEnhancedDocumentWithinBudget && !shouldShowNativeRenderText);
 
-  function syncRenderedLineHeightMeasurements(entries: ResizeObserverEntry[]) {
+  function syncRenderedLineHeightMeasurements() {
+    if (!shouldRenderHighlightLayer || !editorViewportEl) return;
     const hasCurrentMeasurements = renderedLineHeightMeasurements.content === fileContent
       && renderedLineHeightMeasurements.context === renderedLineMeasurementContext;
     let nextHeights = hasCurrentMeasurements ? renderedLineHeightMeasurements.heights : {};
     let hasChanged = false;
 
-    for (const entry of entries) {
-      const lineElement = entry.target as HTMLElement;
+    // 크기가 그대로인 줄도 원문 세대가 바뀌면 다시 기록한다.
+    // 변경 통지만 쓰면 나머지 줄은 추정 높이로 돌아간다.
+    for (const lineElement of editorViewportEl.querySelectorAll<HTMLElement>('.backdrop-line')) {
       const lineIndex = Number(lineElement.dataset.lineIndex);
       if (!Number.isFinite(lineIndex)) continue;
 
-      const observedHeight = entry.borderBoxSize[0]?.blockSize
-        ?? lineElement.getBoundingClientRect().height;
+      const observedHeight = lineElement.getBoundingClientRect().height;
       const height = Math.max(measuredLineHeight, observedHeight);
       const previousHeight = nextHeights[lineIndex];
       if (previousHeight !== undefined && Math.abs(previousHeight - height) <= 0.25) {
@@ -2244,6 +2247,15 @@
       scheduleRenderedHighlights();
     });
   }
+
+  $effect(() => {
+    void [fileContent, renderedLineMeasurementContext, shouldRenderHighlightLayer];
+    let cancelled = false;
+    void tick().then(() => {
+      if (!cancelled) syncRenderedLineHeightMeasurements();
+    });
+    return () => { cancelled = true; };
+  });
 
   function observeRenderedLine(node: HTMLElement) {
     if (!isBrowser) return;
@@ -3070,6 +3082,7 @@
 
   function clearRenderedSelectionHighlight() {
     hasRenderedSelectionHighlight = false;
+    if (renderedSelectionDecorations.length) renderedSelectionDecorations = [];
     if (!supportsRenderedHighlights) return;
     CSS.highlights.delete(renderedSelectionHighlightName);
   }
@@ -3155,7 +3168,7 @@
 
   function syncRenderedSelectionHighlight() {
     if (
-      !supportsRenderedHighlights
+      !editorViewportEl
       || !isRenderMode
       || !shouldRenderHighlightLayer
       || !hasEditorSelection
@@ -3171,7 +3184,27 @@
       return;
     }
 
-    CSS.highlights.set(renderedSelectionHighlightName, new Highlight(...ranges));
+    if (supportsRenderedHighlights) {
+      CSS.highlights.set(renderedSelectionHighlightName, new Highlight(...ranges));
+    } else {
+      const viewport = editorViewportEl.getBoundingClientRect();
+      const selectionScrollTop = editorViewportEl.scrollTop;
+      const seenRects = new Set<string>();
+      renderedSelectionDecorations = ranges.flatMap(range => Array.from(range.getClientRects())
+        .filter(rect => {
+          if (rect.width <= 0 || rect.height <= 0) return false;
+          const key = `${rect.left}:${rect.top}:${rect.width}:${rect.height}`;
+          if (seenRects.has(key)) return false;
+          seenRects.add(key);
+          return true;
+        })
+        .map(rect => ({
+          left: rect.left - viewport.left,
+          top: rect.top - viewport.top + selectionScrollTop,
+          width: rect.width,
+          height: rect.height
+        })));
+    }
     hasRenderedSelectionHighlight = true;
   }
 
@@ -3214,9 +3247,7 @@
 
   function scheduleRenderedHighlights() {
     if (!isBrowser) return;
-    if (renderedHighlightFrame !== null) {
-      cancelAnimationFrame(renderedHighlightFrame);
-    }
+    if (renderedHighlightFrame !== null) return;
 
     renderedHighlightFrame = requestAnimationFrame(() => {
       renderedHighlightFrame = null;
@@ -3662,6 +3693,7 @@
   });
 
   onDestroy(() => {
+    stopRenderDragScroll();
     renderViewportController?.dispose();
     documentDiagnosticWorkerClient?.dispose();
     renderedLineResizeObserver?.disconnect();
@@ -5150,7 +5182,7 @@
   let pendingInlineColorReplacement = $state<{ start: number; end: number } | null>(null);
   let pendingInlineColorEditBefore = $state<EditorSnapshot | null>(null);
   let suppressNextEditorClickAfterRenderAction = false;
-  let pendingRenderCaretPointerDown: { pointerId: number; x: number; y: number; moved: boolean } | null = null;
+  let pendingRenderCaretPointerDown: { pointerId: number; x: number; y: number; moved: boolean; anchor?: number } | null = null;
   const parkedInlineColorPickerPosition = { left: -10000, top: -10000 };
   let inlineColorPickerPosition = $state<{ left: number; top: number }>({ ...parkedInlineColorPickerPosition });
   type DataBooleanValue = 'true' | 'false';
@@ -5236,7 +5268,7 @@
     const activeColor = isRenderMode && isActiveDocumentRenderEnabled ? findColorCodeAtCaretOffset(fileContent, offset) : null;
     editorCaretColor = activeColor
       ? getReadableTextColor(activeColor.value)
-      : 'var(--color-render-text, var(--text-color))';
+      : 'var(--color-caret, var(--color-render-text))';
   }
 
   function getColorTokenElement(range: { start: number; end: number }) {
@@ -5371,7 +5403,8 @@
       pointRoot,
       pointMaximum,
       clientX,
-      clientY
+      clientY,
+      textareaEl
     );
     if (nativeOffset !== null) return pointOffsetBase + nativeOffset;
 
@@ -5754,7 +5787,20 @@
     }
 
     const range = findColorCodeAtPoint(event.clientX, event.clientY);
-    if (!range) return;
+    if (!range) {
+      const offset = getRenderedCaretOffsetAtPoint(event.clientX, event.clientY);
+      if (offset === null) return;
+      event.preventDefault();
+      const selection = getCurrentEditorSelection();
+      const anchor = event.shiftKey
+        ? (textareaEl.selectionDirection === 'backward' ? selection.end : selection.start)
+        : offset;
+      pendingRenderCaretPointerDown.anchor = anchor;
+      textareaEl.focus({ preventScroll: true });
+      textareaEl.setPointerCapture(event.pointerId);
+      setRenderPointerSelection(anchor, offset);
+      return;
+    }
 
     pendingRenderCaretPointerDown = null;
     event.preventDefault();
@@ -5779,7 +5825,61 @@
     return true;
   }
 
+  function setRenderPointerSelection(anchor: number, offset: number) {
+    if (!textareaEl) return;
+    setTextareaSelectionFromContent(Math.min(anchor, offset), Math.max(anchor, offset));
+    textareaEl.setSelectionRange(textareaEl.selectionStart, textareaEl.selectionEnd,
+      offset < anchor ? 'backward' : 'forward');
+    updateCursorPosition();
+    scheduleRenderedHighlights();
+  }
+
+  let renderDragScrollFrame: number | null = null;
+
+  function stopRenderDragScroll() {
+    if (renderDragScrollFrame !== null) cancelAnimationFrame(renderDragScrollFrame);
+    renderDragScrollFrame = null;
+  }
+
+  function handleEditorPointerCancel() {
+    stopRenderDragScroll();
+    pendingRenderCaretPointerDown = null;
+  }
+
+  function continueRenderPointerSelection() {
+    renderDragScrollFrame = null;
+    const drag = pendingRenderCaretPointerDown;
+    if (drag?.anchor === undefined || !editorViewportEl) return;
+    const viewport = editorViewportEl.getBoundingClientRect();
+    const delta = drag.y < viewport.top ? drag.y - viewport.top
+      : drag.y > viewport.bottom ? drag.y - viewport.bottom : 0;
+    if (delta !== 0) editorViewportEl.scrollTop += Math.sign(delta) * Math.min(30, Math.abs(delta));
+    const offset = getRenderedCaretOffsetAtPoint(drag.x, clamp(drag.y, viewport.top + 1, viewport.bottom - 1));
+    if (offset !== null) setRenderPointerSelection(drag.anchor, offset);
+    if (delta !== 0) renderDragScrollFrame = requestAnimationFrame(continueRenderPointerSelection);
+  }
+
+  function handleEditorDoubleClick(event: MouseEvent) {
+    if (!shouldRenderHighlightLayer || !textareaEl) return;
+    const offset = getRenderedCaretOffsetAtPoint(event.clientX, event.clientY);
+    if (offset === null) return;
+    event.preventDefault();
+    // 단어 선택도 투명 입력창이 아닌 보이는 글자에서 시작한다.
+    const lineIndex = findLineIndexForOffset(offset);
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
+    for (const segment of segmenter.segment(lineText)) {
+      const start = lineStart + segment.index;
+      if (offset >= start && offset < start + segment.segment.length) {
+        setRenderPointerSelection(start, start + segment.segment.length);
+        break;
+      }
+    }
+  }
+
   function handleEditorPointerUp(event: PointerEvent) {
+    stopRenderDragScroll();
     if (!isRenderMode || !isActiveDocumentRenderEnabled || !textareaEl || event.button !== 0) return;
     if (suppressNextEditorClickAfterRenderAction) {
       pendingRenderCaretPointerDown = null;
@@ -5789,6 +5889,15 @@
     const pointerDown = pendingRenderCaretPointerDown;
     if (!pointerDown || pointerDown.pointerId !== event.pointerId) return;
 
+    if (pointerDown.anchor !== undefined) {
+      const offset = getRenderedCaretOffsetAtPoint(event.clientX, event.clientY);
+      if (offset !== null) setRenderPointerSelection(pointerDown.anchor, offset);
+      pendingRenderCaretPointerDown = null;
+      suppressNextEditorClickAfterRenderAction = true;
+      if (textareaEl.hasPointerCapture(event.pointerId)) textareaEl.releasePointerCapture(event.pointerId);
+      return;
+    }
+
     const movedDistance = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
     pointerDown.moved = movedDistance > 4;
     if (pointerDown.moved) {
@@ -5797,9 +5906,19 @@
     }
   }
 
-  function trackRenderCaretPointerMove(event: MouseEvent) {
+  function trackRenderCaretPointerMove(event: PointerEvent) {
     const pointerDown = pendingRenderCaretPointerDown;
-    if (!pointerDown || pointerDown.moved || event.buttons !== 1) return;
+    if (!pointerDown || event.buttons !== 1) return;
+    if (pointerDown.anchor !== undefined) {
+      pointerDown.moved ||= Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 4;
+      if (!pointerDown.moved) return;
+      pointerDown.x = event.clientX;
+      pointerDown.y = event.clientY;
+      stopRenderDragScroll();
+      continueRenderPointerSelection();
+      return;
+    }
+    if (pointerDown.moved) return;
 
     const movedDistance = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
     if (movedDistance <= 4) return;
@@ -5852,8 +5971,6 @@
   }
 
   function handleEditorMouseMove(event: MouseEvent) {
-    trackRenderCaretPointerMove(event);
-
     if (!isRenderMode || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled) {
       editorCursorStyle = 'text';
       return;
@@ -5974,6 +6091,7 @@
   />
 {:else}
   <div class="app-container" style="
+    {getAdditionalRenderThemeStyle(activeColors)}
     --color-hl-code-bg: {activeColors.codeBg};
     --color-hl-code-text: {activeColors.codeText};
     --color-hl-key-strong: {activeColors.keyStrong};
@@ -6204,7 +6322,7 @@
       class="editor-area"
       class:render-mode={isRenderMode && isEnhancedDocumentWithinBudget}
       class:render-selection-active={isRenderMode && isEnhancedDocumentWithinBudget && hasEditorSelection}
-      class:render-custom-selection={isRenderMode && supportsRenderedHighlights && shouldRenderHighlightLayer && hasRenderedSelectionHighlight}
+      class:render-custom-selection={isRenderMode && shouldRenderHighlightLayer && hasRenderedSelectionHighlight}
       class:render-wrap-settling={isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling}
       class:render-native-text-visible={shouldShowNativeRenderText}
     >
@@ -6274,7 +6392,7 @@
         {:else}
         <!-- 라인 번호 Gutter -->
         {#if isRenderMode && isEnhancedDocumentWithinBudget}
-          <div class="editor-gutter" style="background-color: var(--color-render-bg); border-right: 1px solid var(--border-color);">
+          <div class="editor-gutter" style="background-color: var(--color-render-bg); border-right: 1px solid var(--color-gutter-border);">
             {#if !isRenderWrapSettling}
               <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
                 {#each Array(endLine - startLine + 1) as _, idx}
@@ -6380,6 +6498,11 @@
             {/each}
           {/if}
 
+          {#each renderedSelectionDecorations as decoration}
+            <span class="render-selection-decoration"
+              style="left: {decoration.left}px; top: {decoration.top}px; width: {decoration.width}px; height: {decoration.height}px;"
+              aria-hidden="true"></span>
+          {/each}
           <textarea
             bind:this={textareaEl}
             class="editor-textarea"
@@ -6395,9 +6518,12 @@
             onscroll={handleScroll}
             onpointerdown={handleEditorPointerDown}
             onpointerup={handleEditorPointerUp}
+            onpointermove={trackRenderCaretPointerMove}
+            onpointercancel={handleEditorPointerCancel}
             onkeyup={updateCursorPosition}
             onselect={updateCursorPosition}
             onclick={handleEditorClick}
+            ondblclick={handleEditorDoubleClick}
             onmousemove={handleEditorMouseMove}
             onmouseleave={handleEditorMouseLeave}
             onfocus={handleEditorFocus}
@@ -6611,7 +6737,7 @@
     font-weight: 700;
   }
   :global(.hl-operator) {
-    color: var(--text-muted);
+    color: var(--color-muted-syntax);
   }
   :global(.hl-timestamp) {
     color: var(--color-hl-key-medium);
@@ -6623,11 +6749,11 @@
   }
   :global(.hl-keyword-error),
   :global(.hl-keyword-fatal) {
-    color: #dc2626;
+    color: var(--color-error);
   }
   :global(.hl-keyword-warn),
   :global(.hl-keyword-warning) {
-    color: #d97706;
+    color: var(--color-warning);
   }
   :global(.hl-link) {
     color: var(--color-hl-key-medium);
@@ -6692,39 +6818,29 @@
     border-radius: 3px;
     margin-inline: -0.16em;
     padding-inline: 0.16em;
-    box-shadow: inset 0 0 0 1px rgba(107, 114, 128, 0.35);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-boolean-border) 45%, transparent);
     box-decoration-break: clone;
     -webkit-box-decoration-break: clone;
   }
   :global(.hl-boolean-true) {
-    color: #166534;
-    background-color: #dcfce7;
+    color: var(--color-boolean-true-text);
+    background-color: var(--color-boolean-true-bg);
   }
   :global(.hl-boolean-false) {
-    color: #991b1b;
-    background-color: #fee2e2;
-  }
-  :global(.theme-dark .hl-boolean-true) {
-    color: #bbf7d0;
-    background-color: rgba(34, 197, 94, 0.22);
-    box-shadow: inset 0 0 0 1px rgba(134, 239, 172, 0.45);
-  }
-  :global(.theme-dark .hl-boolean-false) {
-    color: #fecaca;
-    background-color: rgba(239, 68, 68, 0.22);
-    box-shadow: inset 0 0 0 1px rgba(252, 165, 165, 0.45);
+    color: var(--color-boolean-false-text);
+    background-color: var(--color-boolean-false-bg);
   }
   :global(.hl-punctuation) {
-    color: var(--text-muted);
+    color: var(--color-muted-syntax);
   }
   :global(.hl-invalid) {
-    color: #dc2626;
-    background-color: rgba(220, 38, 38, 0.12);
-    box-shadow: inset 0 -1px 0 #dc2626;
+    color: var(--color-error);
+    background-color: color-mix(in srgb, var(--color-error) 12%, transparent);
+    box-shadow: inset 0 -1px 0 var(--color-error);
   }
   :global(.hl-color) {
     border-radius: 2px;
-    box-shadow: inset 0 0 0 1px #9ca3af;
+    box-shadow: inset 0 0 0 1px var(--color-color-border);
     box-decoration-break: clone;
     -webkit-box-decoration-break: clone;
     cursor: pointer;
@@ -7314,7 +7430,7 @@
   }
 
   .gutter-line-number.diagnostic-line {
-    color: #dc2626;
+    color: var(--color-error);
     font-weight: 700;
   }
 
@@ -7357,9 +7473,9 @@
   .backdrop-line {
     width: 100%;
     min-width: 0;
-    white-space: pre-wrap;
+    white-space: normal;
     overflow-wrap: break-word;
-    word-break: keep-all;
+    word-break: break-all;
     font-family: var(--font-render-family, var(--font-notepad));
     padding: 0 12px;
     box-sizing: border-box;
@@ -7388,8 +7504,8 @@
   }
 
   .backdrop-line.configuration-negated-rule-line {
-    background-color: color-mix(in srgb, #d97706 5%, transparent);
-    box-shadow: inset 3px 0 color-mix(in srgb, #d97706 48%, transparent);
+    background-color: color-mix(in srgb, var(--color-warning) 5%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--color-warning) 48%, transparent);
   }
 
   .backdrop-line.translation-source-line {
@@ -7397,13 +7513,13 @@
   }
 
   .backdrop-line.translation-target-line {
-    background-color: color-mix(in srgb, #16a34a 4%, transparent);
-    box-shadow: inset 3px 0 color-mix(in srgb, #16a34a 42%, transparent);
+    background-color: color-mix(in srgb, var(--color-success) 4%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--color-success) 42%, transparent);
   }
 
   .backdrop-line.translation-empty-line {
-    background-color: color-mix(in srgb, #d97706 7%, transparent);
-    box-shadow: inset 3px 0 color-mix(in srgb, #d97706 55%, transparent);
+    background-color: color-mix(in srgb, var(--color-warning) 7%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--color-warning) 55%, transparent);
   }
 
   .backdrop-line.subject-line {
@@ -7460,7 +7576,7 @@
   }
 
   .backdrop-line.diagnostic-line {
-    background-color: rgba(220, 38, 38, 0.07);
+    background-color: color-mix(in srgb, var(--color-error) 7%, transparent);
   }
 
   .guide-line {
@@ -7472,7 +7588,8 @@
   }
 
   .line-content {
-    display: inline;
+    display: block;
+    white-space: pre-wrap;
     color: var(--color-render-text, var(--text-color));
   }
 
@@ -7482,6 +7599,7 @@
 
   .list-item-content {
     display: grid;
+    white-space: normal;
     grid-template-columns: var(--list-prefix-width) minmax(0, 1fr);
     align-items: start;
     width: 100%;
@@ -7499,7 +7617,7 @@
     min-height: 1lh;
     white-space: pre-wrap;
     overflow-wrap: break-word;
-    word-break: keep-all;
+    word-break: break-all;
   }
 
   .editor-textarea {
@@ -7539,17 +7657,24 @@
     font-weight: var(--font-render-weight, normal);
     white-space: pre-wrap;
     overflow-wrap: break-word;
-    word-break: keep-all;
+    word-break: break-all;
     overflow: hidden;
   }
 
   .render-mode .editor-textarea::selection {
-    background: rgba(96, 165, 250, 0.28);
+    background: color-mix(in srgb, var(--color-selection) 28%, transparent);
     color: transparent;
   }
 
   :global(::highlight(render-selection)) {
-    background-color: rgba(96, 165, 250, 0.28);
+    background-color: color-mix(in srgb, var(--color-selection) 28%, transparent);
+  }
+
+  .render-selection-decoration {
+    position: absolute;
+    z-index: 1;
+    pointer-events: none;
+    background-color: color-mix(in srgb, var(--color-selection) 28%, transparent);
   }
 
   .render-pair-decoration {
@@ -7557,8 +7682,8 @@
     z-index: 1;
     box-sizing: border-box;
     pointer-events: none;
-    background-color: color-mix(in srgb, var(--color-hl-list-marker) 30%, transparent);
-    border-bottom: 1px solid var(--color-hl-list-marker);
+    background-color: color-mix(in srgb, var(--color-pair-highlight) 30%, transparent);
+    border-bottom: 1px solid var(--color-pair-highlight);
     border-radius: 2px;
   }
 
@@ -7698,7 +7823,7 @@
   }
 
   .status-item.status-error {
-    color: #dc2626;
+    color: var(--color-error);
     font-weight: 600;
   }
 

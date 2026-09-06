@@ -1,9 +1,11 @@
+import { getAdditionalRenderThemeDefaults } from './render-theme-fields';
 import type { SettingsThemePalette } from './settings-transfer';
 
 const hexColorPattern = /^#[0-9a-fA-F]{6}$/;
 
 export function getSystemDefaultColors(isDark: boolean): SettingsThemePalette {
   return isDark ? {
+    ...getAdditionalRenderThemeDefaults(true),
     renderBg: '#0a0a0b',
     renderText: '#d6eaf0',
     renderFontWeight: '400',
@@ -21,6 +23,7 @@ export function getSystemDefaultColors(isDark: boolean): SettingsThemePalette {
     bracket: '#C87EBA',
     brace: '#CD81E9'
   } : {
+    ...getAdditionalRenderThemeDefaults(false),
     renderBg: '#f8fafc',
     renderText: '#0f172a',
     renderFontWeight: '500',

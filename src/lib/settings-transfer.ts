@@ -1,3 +1,4 @@
+import { additionalRenderThemeFields, type AdditionalRenderThemeField } from './render-theme-fields';
 import {
   configurableDocumentFormats,
   isConfigurableDocumentFormatId,
@@ -19,7 +20,7 @@ export const maximumSettingsFileBytes = 1024 * 1024;
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 
-export interface SettingsThemePalette {
+export interface SettingsThemePalette extends Record<AdditionalRenderThemeField, string> {
   codeBg: string;
   codeText: string;
   keyStrong: string;
@@ -102,6 +103,7 @@ interface ImportStatistics {
 type UnknownRecord = Record<string, unknown>;
 
 export const settingsThemeColorFields = [
+  ...additionalRenderThemeFields.map(item => item.field),
   'codeBg',
   'codeText',
   'keyStrong',

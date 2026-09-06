@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { additionalRenderThemeFields, getAdditionalRenderThemeStyle } from '$lib/render-theme-fields';
   import {
     Braces,
     ChevronDown,
@@ -338,6 +339,7 @@
 {/snippet}
 
 <div class="settings-window-container" style="
+  {getAdditionalRenderThemeStyle(activeColors)}
   --color-hl-code-bg: {activeColors.codeBg};
   --color-hl-code-text: {activeColors.codeText};
   --color-hl-key-strong: {activeColors.keyStrong};
@@ -653,6 +655,10 @@
           {@render colorSettingRow(`color-hl-bracket-window-${editingTheme}`, t('settings.color.bracket'), editingTheme, 'bracket')}
           {@render colorSettingRow(`color-hl-brace-window-${editingTheme}`, t('settings.color.brace'), editingTheme, 'brace')}
           {@render colorSettingRow(`color-indent-guide-window-${editingTheme}`, t('settings.color.indentGuide'), editingTheme, 'guide')}
+
+          {#each additionalRenderThemeFields as item}
+            {@render colorSettingRow(`color-${item.field}-window-${editingTheme}`, t(item.label), editingTheme, item.field)}
+          {/each}
 
           <div class="settings-action-row">
             <button type="button" class="reset-colors-btn" onclick={resetColorsToDefault}>

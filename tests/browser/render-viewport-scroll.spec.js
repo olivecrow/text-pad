@@ -1,3 +1,5 @@
+// @ts-expect-error 브라우저 테스트는 Node에서 실행되지만 앱의 타입 환경에는 Node 선언을 포함하지 않는다.
+import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 
 function createWrappedFencedCodeDocument() {
@@ -375,4 +377,127 @@ test('a collapsed render caret highlights both ends of its bracket or quote pair
   await page.locator('.render-mode-toggle').click();
   await expect.poll(getPairHighlightOffsets).toEqual([]);
   await expect(textarea).toHaveValue(quotedBrackets);
+});
+
+// 표시 줄 높이와 포인터 원문 위치가 편집 후에도 같은 배치를 사용하는지 확인한다.
+test('wrapped comments retain measured heights after edits and pointer selection follows rendered text', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+  await page.locator('.new-document-format-trigger').click();
+  await page.locator('.new-document-format-button').filter({ hasText: /^JSONC$/ }).click();
+  const textarea = page.getByTestId('editor-textarea');
+  const first = '// ' + 'alpha-beta-한글 '.repeat(35);
+  const second = '// ' + 'comment-value '.repeat(30);
+  const source = first + '\n' + second + '\n{}';
+  await textarea.fill(source);
+  await textarea.press('Control+Home');
+  await expect(page.locator('.hl-comment').first()).toBeVisible();
+  const assertNoOverlap = async () => {
+    await expect.poll(() => page.locator('.backdrop-line').evaluateAll(lines => {
+      const rects = lines.map(line => line.getBoundingClientRect());
+      return rects.slice(1).every((rect, i) => Math.abs(rect.top - rects[i].bottom) <= 0.5);
+    })).toBe(true);
+  };
+  await assertNoOverlap();
+  await textarea.press('x');
+  await assertNoOverlap();
+  await textarea.press('Control+z');
+  await expect(textarea).toHaveValue(source);
+  await assertNoOverlap();
+
+  // 브라우저가 실제로 배치한 글자의 중심을 클릭한다.
+  /** @param {number} lineIndex @param {number} offset */
+  const pointAt = async (lineIndex, offset) => page.locator(`.backdrop-line[data-line-index="${lineIndex}"] .line-content`).evaluate((root, offset) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node && offset >= (node.textContent ?? "").length) {
+      offset -= (node.textContent ?? "").length;
+      node = walker.nextNode();
+    }
+    if (!node) throw new Error('검증할 렌더 글자가 없음');
+    const range = document.createRange();
+    range.setStart(node, offset);
+    range.setEnd(node, offset + 1);
+    const rect = range.getBoundingClientRect();
+    return { x: rect.left + 0.5, y: rect.top + rect.height / 2 };
+  }, offset);
+  const start = await pointAt(0, 130);
+  const end = await pointAt(1, 40);
+  await page.mouse.click(start.x, start.y);
+  await expect.poll(() => textarea.evaluate(e => /** @type {HTMLTextAreaElement} */ (e).selectionStart)).toBe(130);
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 12 });
+  // 마우스 버튼을 놓기 전부터 원문 선택과 실제 강조가 보여야 한다.
+  await expect.poll(() => textarea.evaluate(e => { const input = /** @type {HTMLTextAreaElement} */ (e); return [input.selectionStart, input.selectionEnd]; }))
+    .toEqual([130, first.length + 1 + 40]);
+  await expect(page.locator('.editor-area')).toHaveClass(/render-custom-selection/);
+  await expect.poll(() => page.evaluate(() => CSS.highlights.get('render-selection')?.size ?? 0)).toBeGreaterThan(0);
+  await page.screenshot({ path: 'output/playwright/drag-selection-held.png' });
+  await page.mouse.up();
+  await expect.poll(() => textarea.evaluate(e => { const input = /** @type {HTMLTextAreaElement} */ (e); return [input.selectionStart, input.selectionEnd]; }))
+    .toEqual([130, first.length + 1 + 40]);
+  await page.mouse.move(end.x, end.y);
+  await page.mouse.down();
+  await page.mouse.move(start.x, start.y, { steps: 12 });
+  await page.mouse.up();
+  await expect.poll(() => textarea.evaluate(e => { const input = /** @type {HTMLTextAreaElement} */ (e); return [input.selectionStart, input.selectionEnd, input.selectionDirection]; }))
+    .toEqual([130, first.length + 1 + 40, 'backward']);
+  await expect(textarea).toHaveValue(source);
+  await page.setViewportSize({ width: 650, height: 650 });
+  await assertNoOverlap();
+});
+
+
+test('render theme settings expose comments and added colors for both themes', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+  await page.setContent(await readFile(new URL('./fixtures/settings-preview.html', import.meta.url), 'utf8'));
+  await page.getByRole('button', { name: '모양', exact: true }).nth(1).click();
+  await expect(page.locator('input[type="color"]')).toHaveCount(32);
+  await expect(page.locator('#color-hl-comment-window-light')).toHaveValue('#475569');
+  const selection = page.locator('#color-selection-window-light');
+  await expect(selection).toHaveValue('#60A5FA');
+  await page.locator('#color-selection-window-light-picker').evaluate(element => {
+    const input = /** @type {HTMLInputElement} */ (element);
+    input.value = '#ff0000';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect(selection).toHaveValue('#FF0000');
+  await page.getByRole('button', { name: '다크', exact: true }).click();
+  await expect(page.locator('#color-selection-window-dark')).toHaveValue('#60A5FA');
+  await expect(page.locator('#color-hl-comment-window-dark')).toHaveValue('#64748B');
+  await page.getByRole('button', { name: '라이트', exact: true }).click();
+  await expect(selection).toHaveValue('#FF0000');
+  await page.getByRole('button', { name: '기본 색상 복원', exact: true }).click();
+  await expect(selection).toHaveValue('#60A5FA');
+});
+
+test('stored render colors reach comments, booleans, punctuation and selection', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('text-pad.settings', JSON.stringify({
+    format: 'text-pad-settings', schemaVersion: 1,
+    settings: {
+      general: { theme: 'light' },
+      render: { colors: { light: {
+        comment: '#123456', booleanTrueText: '#654321', booleanTrueBg: '#abcdef',
+        mutedSyntax: '#112233', selection: '#ff0000', gutterText: '#445566'
+      } } }
+    }
+  })));
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+  await page.locator('.new-document-format-trigger').click();
+  await page.locator('.new-document-format-button').filter({ hasText: /^JSONC$/ }).click();
+  const textarea = page.getByTestId('editor-textarea');
+  await textarea.fill('// comment\n{"enabled":true}');
+  await expect(page.locator('.hl-comment')).toHaveCSS('color', 'rgb(18, 52, 86)');
+  await expect(page.locator('.hl-boolean-true')).toHaveCSS('color', 'rgb(101, 67, 33)');
+  await expect(page.locator('.hl-boolean-true')).toHaveCSS('background-color', 'rgb(171, 205, 239)');
+  await expect(page.locator('.hl-punctuation').first()).toHaveCSS('color', 'rgb(17, 34, 51)');
+  await expect(page.locator('.gutter-line-number').first()).toHaveCSS('color', 'rgb(68, 85, 102)');
+  await textarea.press('Control+a');
+  await expect(page.locator('.editor-area')).toHaveClass(/render-custom-selection/);
+  await expect(page.locator('.app-container')).toHaveCSS('--color-selection', '#FF0000');
+  await page.reload();
+  await expect(page.locator('.app-container')).toHaveCSS('--color-selection', '#FF0000');
 });

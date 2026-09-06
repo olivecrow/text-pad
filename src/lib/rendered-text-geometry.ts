@@ -29,15 +29,28 @@ export function getNativeCaretTextOffsetAtPoint(
   root: HTMLElement,
   maximum: number,
   clientX: number,
-  clientY: number
+  clientY: number,
+  inputOverlay?: HTMLElement | null
 ): number | null {
   const documentWithCaret = document as Document & {
     caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
     caretRangeFromPoint?: (x: number, y: number) => Range | null;
   };
 
-  const caretPosition = documentWithCaret.caretPositionFromPoint?.(clientX, clientY);
-  const caretRange = caretPosition ? null : documentWithCaret.caretRangeFromPoint?.(clientX, clientY);
+  // 입력창이 렌더 텍스트를 가려도 브라우저의 실제 글리프 배치를 조회한다.
+  const previousRootPointerEvents = root.style.pointerEvents;
+  const previousOverlayPointerEvents = inputOverlay?.style.pointerEvents;
+  let caretPosition: { offsetNode: Node; offset: number } | null | undefined;
+  let caretRange: Range | null | undefined;
+  try {
+    root.style.pointerEvents = 'auto';
+    if (inputOverlay) inputOverlay.style.pointerEvents = 'none';
+    caretPosition = documentWithCaret.caretPositionFromPoint?.(clientX, clientY);
+    caretRange = caretPosition ? null : documentWithCaret.caretRangeFromPoint?.(clientX, clientY);
+  } finally {
+    root.style.pointerEvents = previousRootPointerEvents;
+    if (inputOverlay) inputOverlay.style.pointerEvents = previousOverlayPointerEvents ?? '';
+  }
   const node = caretPosition?.offsetNode ?? caretRange?.startContainer;
   const offset = caretPosition?.offset ?? caretRange?.startOffset;
   if (!node || offset === undefined || (node !== root && !root.contains(node))) return null;

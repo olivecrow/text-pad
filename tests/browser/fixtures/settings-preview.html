@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>설정 화면 검증</title>
+<style>html,body{margin:0;height:100%;font-family:Arial,sans-serif}body{--bg-editor:#fff;--bg-window:#f8fafc;--text-color:#111;--text-muted:#666;--border-color:#ddd;--accent-color:#0078d4;--font-ui:Arial;--bg-menu-hover:#eee;--bg-menu-active:#e0efff}</style></head>
+<body><script type="module">
+import { mount } from '/node_modules/.vite/deps/svelte.js';
+import SettingsWindow from '/src/lib/SettingsWindow.svelte';
+import { getSystemDefaultColors } from '/src/lib/theme-colors.ts';
+import { normalizeDocumentFeatureSettings } from '/src/lib/document-formats.ts';
+import { createDefaultMarkdownRenderSettings } from '/src/lib/markdown-settings.ts';
+mount(SettingsWindow, {target: document.body, props: {
+  locale: 'ko', systemLocale: 'ko', currentTheme: 'light', currentRenderFontFamilyCSS: 'Arial',
+  languagePreference: 'ko', defaultNewDocumentFormat: 'markdown', sourceFontSize: 11, renderFontSize: 11,
+  tabSize: 4, renderFontFamily: 'notepad', renderAutoPairEditing: true, renderAutoPairAllowedFollowingStrings: ['=', ':'],
+  renderAutoSymbolSubstitution: true, renderPreserveIndentOnEnter: true,
+  delimitedTableHighlightHeader: true, delimitedTableShowRowIndices: true, delimitedTableAnimateReorder: true, delimitedTableReorderDurationMs: 200,
+  documentFeatureSettings: normalizeDocumentFeatureSettings(null), markdownRenderSettings: createDefaultMarkdownRenderSettings(),
+  lightColors: getSystemDefaultColors(false), darkColors: getSystemDefaultColors(true),
+  settingsTransferStatus: null, isSettingsTransferBusy: false, onImportSettings: () => {}, onExportSettings: () => {}
+}});
+</script></body></html>

@@ -42,6 +42,7 @@ try {
   const markdown = await server.ssrLoadModule('/src/lib/markdown-settings.ts');
 
   const lightColors = {
+    ...themeColors.getSystemDefaultColors(false),
     codeBg: '#E2E8F0', codeText: '#0284C7', keyStrong: '#0369A1', keyMedium: '#0284C7',
     keyLight: '#38BDF8', string: '#B91C1C', number: '#D97706', listMarker: '#4F46E5',
     comment: '#475569', guide: '#CBD5E1', renderBg: '#F8FAFC', renderText: '#0F172A',
@@ -49,6 +50,7 @@ try {
   };
   const darkColors = {
     ...lightColors,
+    ...Object.fromEntries(Object.entries(themeColors.getSystemDefaultColors(true)).map(([key, value]) => [key, value.toUpperCase()])),
     codeBg: '#1E293B',
     renderBg: '#0A0A0B',
     renderText: '#D6EAF0',
@@ -92,6 +94,22 @@ try {
       }
     }
   };
+
+  const extraTheme = await server.ssrLoadModule('/src/lib/render-theme-fields.ts');
+  const customized = structuredClone(current);
+  for (const item of extraTheme.additionalRenderThemeFields) {
+    customized.render.colors.light[item.field] = '#123456';
+    customized.render.colors.dark[item.field] = '#ABCDEF';
+  }
+  const customizedRoundTrip = transfer.parseSettingsFile(transfer.serializeSettingsFile(customized, '0.5.1'), current);
+  assert.equal(customizedRoundTrip.ok, true);
+  assert.deepEqual(customizedRoundTrip.settings.render.colors, customized.render.colors);
+  const oldPaletteFile = transfer.parseSettingsFile(JSON.stringify({format: 'text-pad-settings', schemaVersion: 1,
+    settings: {render: {colors: {light: {comment: '#102030', selection: 'invalid'}}}}}), customized);
+  assert.equal(oldPaletteFile.ok, true);
+  assert.equal(oldPaletteFile.settings.render.colors.light.comment, '#102030');
+  assert.equal(oldPaletteFile.settings.render.colors.light.selection, '#123456');
+  assert.equal(oldPaletteFile.settings.render.colors.dark.caret, '#ABCDEF');
 
   const serialized = transfer.serializeSettingsFile(
     current,
