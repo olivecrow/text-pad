@@ -163,6 +163,8 @@ interface EditorLineLayoutOptions {
   measureTextWidth: (text: string) => number;
   getListContinuationIndent: (marker: ListMarker) => string;
   change?: TextChange | null;
+  /** 복합 표시 블록의 첫 줄 높이와 그 블록에 흡수된 줄의 0 높이. */
+  lineHeightOverrides?: ReadonlyMap<number, number>;
 }
 
 export function createEditorLineLayoutCache(): EditorLineLayoutCache {
@@ -269,6 +271,18 @@ function getLayoutLine(
 ): CachedLayoutLine {
   const lineStart = options.lineStartOffsets[lineIndex] ?? 0;
   const lineText = getLineText(options.content, options.lineStartOffsets, lineIndex);
+  const blockHeight = options.lineHeightOverrides?.get(lineIndex);
+  if (blockHeight !== undefined) {
+    const measured = options.measurements.content === options.content
+      && options.measurements.context === options.measurementContext
+      ? options.measurements.heights[lineIndex] : undefined;
+    return {
+      text: lineText, isFencedCode: false, incomingOwnerKey: getOwnerKey(activeOwner),
+      outgoingOwner: null, outgoingOwnerKey: '', outgoingGuideCount: 0, listLayout: null,
+      estimatedHeight: blockHeight,
+      height: blockHeight === 0 ? 0 : measured ?? blockHeight
+    };
+  }
   const incomingOwnerKey = getOwnerKey(activeOwner);
   const currentListMarker = isFencedCode ? null : getListMarkerAtStart(lineText);
   let nextOwner = isFencedCode ? null : activeOwner;
@@ -415,7 +429,8 @@ export function getEditorLineLayout(
         const lineIndex = Number(rawLineIndex);
         const line = cache.lines[lineIndex];
         if (!line || !Number.isFinite(rawHeight)) continue;
-        const height = Math.max(options.measuredLineHeight, rawHeight);
+        const height = options.lineHeightOverrides?.get(lineIndex) === 0
+          ? 0 : Math.max(options.measuredLineHeight, rawHeight);
         line.height = height;
         cache.heights.update(lineIndex, height);
       }

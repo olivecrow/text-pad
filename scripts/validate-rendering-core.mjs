@@ -95,6 +95,50 @@ try {
   const geometry = await server.ssrLoadModule('/src/lib/rendered-text-geometry.ts');
   const documentFormats = await server.ssrLoadModule('/src/lib/document-formats.ts');
   const delimited = await server.ssrLoadModule('/src/lib/delimited-table.ts');
+  const markdownTables = await server.ssrLoadModule('/src/lib/markdown-table.ts');
+  const tables = await server.ssrLoadModule('/src/lib/table-document.ts');
+  const parseTables = (content, limit = 2000) => markdownTables.parseMarkdownTables(
+    content, offsets.createTextOffsetIndex(content).lineStartOffsets, limit
+  );
+  for (const newline of ['\n', '\r\n']) {
+    const source = ['before', '', '| Name | Count |', '| :--- | ---: |', '| A\\|B | 2 |', '', 'after'].join(newline);
+    const [block] = parseTables(source);
+    assert.ok(block);
+    assert.deepEqual(block.document.rows, [['Name', 'Count'], ['A|B', '2']]);
+    assert.deepEqual(block.document.columnAlignments, ['left', 'right']);
+    assert.equal(block.lineEnding, newline);
+    for (const value of ['new | value', ' trailing ', '  ', '\tvalue\t', 'line\nnext', '\\|', '<br>', '<img src=x onerror=alert(1)>', '&amp;']) {
+      const next = markdownTables.replaceMarkdownTable(source, block,
+        tables.updateTableCell(block.document, 1, 0, value), { row: 1, column: 0 });
+      assert.equal(parseTables(next)[0].document.rows[1][0], value);
+      assert.equal(next, source.slice(0, block.cells[1][0].start)
+        + markdownTables.encodeMarkdownTableCell(value) + source.slice(block.cells[1][0].end));
+    }
+    const moved = tables.moveTableColumn(block.document, 0, 1);
+    assert.deepEqual(moved.columnAlignments, ['right', 'left']);
+    const movedSource = markdownTables.replaceMarkdownTable(source, block, moved);
+    assert.deepEqual(parseTables(movedSource)[0].document, moved);
+    assert.ok(movedSource.startsWith(`before${newline}${newline}`));
+    assert.ok(movedSource.endsWith(`${newline}${newline}after`));
+    assert.equal(markdownTables.replaceMarkdownTable('changed', block, moved), 'changed');
+    const pipeOffset = block.cells[1][0].offsets[2];
+    assert.equal(source.slice(block.cells[1][0].start, pipeOffset), 'A\\|');
+  }
+  assert.equal(parseTables('a | b\n--- | ---\nx | y').length, 1);
+  assert.equal(parseTables('| a |\n| :---: |').length, 1);
+  assert.deepEqual(parseTables('| a | b |\n| - | - |\n| x |')[0].document.rows[1], ['x', '']);
+  for (const source of [
+    '| --- | --- |', '| a | b |\n| --- |', '| a | b |\n| -- x | --- |',
+    '    | a |\n    | --- |', '> | a |\n> | --- |',
+    '```md\n| a |\n| --- |\n```', '~~~\n| a |\n| --- |\n~~~',
+    '<!--\n| a |\n| --- |\n-->', '| a |\n| --- |\n| x | y |',
+    '- item\n\n  | a | b |\n  | --- | --- |\n  | x | y |'
+  ]) assert.equal(parseTables(source).length, 0, source);
+  assert.equal(parseTables('| a | b |\n| --- | --- |\n| x | y |', 3).length, 0);
+  const repeatedTable = '| a | b |\n| --- | --- |\n| x | y |\n\n';
+  assert.equal(parseTables(repeatedTable.repeat(2), 4).length, 1);
+  assert.equal(parseTables('| a |\n| --- |\n\n```\n| b |\n| --- |\n```').length, 1);
+  assert.equal(parseTables('- item\n\n  indented\n\n| a |\n| --- |').length, 1);
   const budgets = await server.ssrLoadModule('/src/lib/render-budgets.ts');
   const listMarkers = await server.ssrLoadModule('/src/lib/list-markers.ts');
   const checkboxMarkers = await server.ssrLoadModule('/src/lib/checkbox-markers.ts');

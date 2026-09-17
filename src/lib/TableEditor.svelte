@@ -1,22 +1,20 @@
-<script lang="ts">
+<script lang="ts" generics="T extends TableDocument">
   import { GripHorizontal, GripVertical, Minus, Plus } from '@lucide/svelte';
-  import { flushSync } from 'svelte';
+  import { flushSync, onDestroy } from 'svelte';
   import {
-    getDelimitedTableColumnCount,
-    insertDelimitedTableColumn,
-    insertDelimitedTableRow,
-    moveDelimitedTableColumn,
-    moveDelimitedTableRow,
-    removeDelimitedTableColumn,
-    removeDelimitedTableRow,
-    updateDelimitedTableCell,
-    type DelimitedTableDocument
-  } from './delimited-table';
+    getTableColumnCount,
+    insertTableColumn,
+    insertTableRow,
+    moveTableColumn,
+    moveTableRow,
+    removeTableColumn,
+    removeTableRow,
+    updateTableCell,
+    type TableDocument,
+    type TableCellSelection,
+    type TableDocumentChangeOptions
+  } from './table-document';
   import { translate, type AppLocale, type TranslationKey, type TranslationValues } from './i18n';
-
-  interface DocumentChangeOptions {
-    mergeKey?: string | null;
-  }
 
   interface DragPreviewController {
     update: (clientX: number, clientY: number) => void;
@@ -32,11 +30,10 @@
 
   const DEFAULT_COLUMN_WIDTH = 160;
   const MIN_COLUMN_WIDTH = 72;
-  const MAX_COLUMN_WIDTH = 640;
   const ROW_CONTROL_WIDTH = 43;
 
   interface Props {
-    document: DelimitedTableDocument;
+    document: T;
     formatLabel: string;
     locale: AppLocale;
     editable: boolean;
@@ -44,7 +41,11 @@
     showRowIndices: boolean;
     animateReorder: boolean;
     reorderDurationMs: number;
-    ondocumentchange: (document: DelimitedTableDocument, options?: DocumentChangeOptions) => void;
+    embedded?: boolean;
+    ondocumentchange: (document: T, options?: TableDocumentChangeOptions) => void;
+    oncellselection?: (selection: TableCellSelection) => void;
+    onleave?: (direction: -1 | 1) => void;
+    onhistoryinput?: (direction: 'undo' | 'redo') => void;
     onhighlightheaderchange: (enabled: boolean) => void;
     onshowrowindiceschange: (enabled: boolean) => void;
   }
@@ -58,7 +59,11 @@
     showRowIndices,
     animateReorder,
     reorderDurationMs,
+    embedded = false,
     ondocumentchange,
+    oncellselection,
+    onleave,
+    onhistoryinput,
     onhighlightheaderchange,
     onshowrowindiceschange
   }: Props = $props();
@@ -66,6 +71,13 @@
   function t(key: TranslationKey, values: TranslationValues = {}) {
     return translate(locale, key, values);
   }
+
+  let disposed = false;
+  let cancelPointerInteraction: (() => void) | null = null;
+  onDestroy(() => {
+    disposed = true;
+    cancelPointerInteraction?.();
+  });
 
   let tableEditorEl = $state<HTMLDivElement | null>(null);
   let dragPreviewHostEl = $state<HTMLDivElement | null>(null);
@@ -79,18 +91,19 @@
   let columnDropIndicatorElement: HTMLElement | null = null;
   let columnWidths = $state<number[]>([]);
   let resizingColumn = $state<number | null>(null);
-  let columnCount = $derived(getDelimitedTableColumnCount(document));
+  let columnCount = $derived(getTableColumnCount(document));
   let safeReorderDurationMs = $derived.by(() => {
     const numericDuration = Number(reorderDurationMs);
     if (!Number.isFinite(numericDuration)) return 150;
     return Math.max(50, Math.min(2000, Math.round(numericDuration / 50) * 50));
   });
-  let tablePixelWidth = $derived(
-    ROW_CONTROL_WIDTH
-      + Array.from(
-        { length: columnCount },
-        (_, columnIndex) => columnWidths[columnIndex] ?? DEFAULT_COLUMN_WIDTH
-      ).reduce((total, width) => total + width, 0)
+  let scrollRegionRect = $state<DOMRectReadOnly>();
+  let tablePixelWidth = $derived(Math.max(500, scrollRegionRect?.width ?? 500));
+  let columnWeightTotal = $derived(
+    Array.from(
+      { length: columnCount },
+      (_, columnIndex) => columnWidths[columnIndex] ?? DEFAULT_COLUMN_WIDTH
+    ).reduce((total, width) => total + width, 0)
   );
 
   $effect(() => {
@@ -102,16 +115,16 @@
     if (columnWidths.length === columnCount) return;
     columnWidths = Array.from(
       { length: columnCount },
-      (_, columnIndex) => clampColumnWidth(columnWidths[columnIndex] ?? DEFAULT_COLUMN_WIDTH)
+      (_, columnIndex) => columnWidths[columnIndex] ?? DEFAULT_COLUMN_WIDTH
     );
   });
 
-  function clampColumnWidth(width: number): number {
-    return Math.max(MIN_COLUMN_WIDTH, Math.min(MAX_COLUMN_WIDTH, Math.round(width)));
+  function getColumnWeight(columnIndex: number): number {
+    return (columnWidths[columnIndex] ?? DEFAULT_COLUMN_WIDTH) / columnWeightTotal;
   }
 
   function getColumnWidth(columnIndex: number): number {
-    return clampColumnWidth(columnWidths[columnIndex] ?? DEFAULT_COLUMN_WIDTH);
+    return (tablePixelWidth - ROW_CONTROL_WIDTH) * getColumnWeight(columnIndex);
   }
 
   function getNormalizedColumnWidths(): number[] {
@@ -119,14 +132,19 @@
   }
 
   function setColumnWidth(columnIndex: number, width: number) {
+    if (columnCount < 2) return;
     const nextWidths = getNormalizedColumnWidths();
-    nextWidths[columnIndex] = clampColumnWidth(width);
+    const neighborIndex = columnIndex === columnCount - 1 ? columnIndex - 1 : columnIndex + 1;
+    const combinedWidth = nextWidths[columnIndex] + nextWidths[neighborIndex];
+    const minimumWidth = Math.min(MIN_COLUMN_WIDTH, (tablePixelWidth - ROW_CONTROL_WIDTH) / columnCount);
+    nextWidths[columnIndex] = Math.max(minimumWidth, Math.min(combinedWidth - minimumWidth, width));
+    nextWidths[neighborIndex] = combinedWidth - nextWidths[columnIndex];
     columnWidths = nextWidths;
   }
 
   function insertColumnWidth(columnIndex: number) {
     const nextWidths = getNormalizedColumnWidths();
-    nextWidths.splice(columnIndex, 0, DEFAULT_COLUMN_WIDTH);
+    nextWidths.splice(columnIndex, 0, (tablePixelWidth - ROW_CONTROL_WIDTH) / columnCount);
     columnWidths = nextWidths;
   }
 
@@ -173,13 +191,13 @@
   function addRowAt(insertAt: number) {
     if (!editable) return;
     const safeInsertAt = Math.max(0, Math.min(insertAt, document.rows.length));
-    ondocumentchange(insertDelimitedTableRow(document, safeInsertAt));
+    ondocumentchange(insertTableRow(document, safeInsertAt));
     selectedRow = safeInsertAt;
   }
 
   function removeRowAt(rowIndex: number) {
     if (!editable) return;
-    ondocumentchange(removeDelimitedTableRow(document, rowIndex));
+    ondocumentchange(removeTableRow(document, rowIndex));
     selectedRow = Math.max(0, Math.min(rowIndex, document.rows.length - 2));
   }
 
@@ -187,14 +205,14 @@
     if (!editable) return;
     const safeInsertAt = Math.max(0, Math.min(insertAt, columnCount));
     insertColumnWidth(safeInsertAt);
-    ondocumentchange(insertDelimitedTableColumn(document, safeInsertAt));
+    ondocumentchange(insertTableColumn(document, safeInsertAt));
     selectedColumn = safeInsertAt;
   }
 
   function removeColumnAt(columnIndex: number) {
     if (!editable) return;
     removeColumnWidth(columnIndex);
-    ondocumentchange(removeDelimitedTableColumn(document, columnIndex));
+    ondocumentchange(removeTableColumn(document, columnIndex));
     selectedColumn = Math.max(0, Math.min(columnIndex, columnCount - 2));
   }
 
@@ -205,11 +223,28 @@
 
   function handleCellInput(event: Event, rowIndex: number, columnIndex: number) {
     if (!editable) return;
-    const value = (event.currentTarget as HTMLTextAreaElement).value;
+    const target = event.currentTarget as HTMLTextAreaElement;
     ondocumentchange(
-      updateDelimitedTableCell(document, rowIndex, columnIndex, value),
-      { mergeKey: `delimited-cell:${rowIndex}:${columnIndex}` }
+      updateTableCell(document, rowIndex, columnIndex, target.value),
+      {
+        mergeKey: `table-cell:${rowIndex}:${columnIndex}`,
+        cell: { row: rowIndex, column: columnIndex, start: target.selectionStart, end: target.selectionEnd }
+      }
     );
+  }
+
+  function reportCellSelection(event: Event, row: number, column: number) {
+    const target = event.currentTarget as HTMLTextAreaElement;
+    oncellselection?.({ row, column, start: target.selectionStart, end: target.selectionEnd });
+  }
+
+  function handleCellBeforeInput(event: InputEvent, row: number, column: number) {
+    if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') {
+      event.preventDefault();
+      onhistoryinput?.(event.inputType === 'historyUndo' ? 'undo' : 'redo');
+      return;
+    }
+    reportCellSelection(event, row, column);
   }
 
   function focusCell(rowIndex: number, columnIndex: number) {
@@ -241,12 +276,33 @@
   }
 
   function handleCellKeydown(event: KeyboardEvent, rowIndex: number, columnIndex: number) {
+    if (event.isComposing || event.keyCode === 229) {
+      event.stopPropagation();
+      return;
+    }
+    const target = event.currentTarget as HTMLTextAreaElement;
+    if (embedded && onleave) {
+      const before = (event.key === 'ArrowUp' && rowIndex === 0 && target.selectionEnd === 0)
+        || (event.ctrlKey && event.key === 'Home');
+      const after = (event.key === 'ArrowDown' && rowIndex === document.rows.length - 1
+        && target.selectionStart === target.value.length)
+        || (event.ctrlKey && event.key === 'End') || event.key === 'Escape';
+      if (before || after) {
+        event.preventDefault();
+        onleave(before ? -1 : 1);
+        return;
+      }
+    }
     if (event.key !== 'Tab') return;
     event.preventDefault();
 
     const direction = event.shiftKey ? -1 : 1;
     const flatIndex = rowIndex * columnCount + columnIndex + direction;
     const cellCount = document.rows.length * columnCount;
+    if (embedded && onleave && (flatIndex < 0 || flatIndex >= cellCount)) {
+      onleave(direction);
+      return;
+    }
     const wrappedIndex = (flatIndex + cellCount) % cellCount;
     const nextRow = Math.floor(wrappedIndex / columnCount);
     const nextColumn = wrappedIndex % columnCount;
@@ -385,10 +441,10 @@
 
     const scrollRect = scrollRegion.getBoundingClientRect();
     const tableRect = table.getBoundingClientRect();
-    const clipLeft = Math.max(tableRect.left, scrollRect.left);
-    const clipRight = Math.min(tableRect.right, scrollRect.right);
-    const clipTop = Math.max(tableRect.top, scrollRect.top);
-    const clipBottom = Math.min(tableRect.bottom, scrollRect.bottom);
+    const clipLeft = Math.max(0, tableRect.left, scrollRect.left);
+    const clipRight = Math.min(globalThis.innerWidth, tableRect.right, scrollRect.right);
+    const clipTop = Math.max(0, tableRect.top, scrollRect.top);
+    const clipBottom = Math.min(globalThis.innerHeight, tableRect.bottom, scrollRect.bottom);
     if (clipRight <= clipLeft || clipBottom <= clipTop) return [];
 
     const hitTestX = Math.min(
@@ -684,7 +740,7 @@
     const clipLeft = Math.max(headerRect.left, scrollRect.left);
     const clipRight = Math.min(headerRect.right, scrollRect.right);
     const clipTop = Math.max(headerRect.top, scrollRect.top);
-    const clipBottom = scrollRect.bottom;
+    const clipBottom = Math.min(globalThis.innerHeight, scrollRect.bottom);
     if (clipRight <= clipLeft || clipBottom <= clipTop) return null;
 
     const preview = globalThis.document.createElement('div');
@@ -734,6 +790,8 @@
     event.preventDefault();
     event.stopPropagation();
 
+    const dragDocument = document;
+    let cancelReorder: (() => void) | null = null;
     const handle = event.currentTarget as HTMLElement;
     const pointerEventTarget = globalThis.window;
     const pointerId = event.pointerId;
@@ -760,6 +818,8 @@
     };
 
     const cleanup = () => {
+      cancelPointerInteraction = null;
+      cancelReorder?.();
       stopPointerTracking();
       dragPreview?.destroy();
       clearDragState();
@@ -790,9 +850,15 @@
         ? createReorderAnimationController('row', rowIndex, document.rows.length)
         : null;
 
+      cancelReorder = () => reorderAnimation?.destroy();
       const commitMove = () => {
+        if (disposed || document !== dragDocument) {
+          cleanup();
+          return;
+        }
+        cancelPointerInteraction = null;
         flushSync(() => {
-          ondocumentchange(moveDelimitedTableRow(document, rowIndex, targetIndex));
+          ondocumentchange(moveTableRow(document, rowIndex, targetIndex));
           selectedRow = targetIndex;
         });
         reorderAnimation?.destroy();
@@ -821,6 +887,7 @@
       cleanup();
     };
 
+    cancelPointerInteraction = cleanup;
     pointerEventTarget.addEventListener('pointermove', updateTarget, true);
     pointerEventTarget.addEventListener('pointerup', finishDrag, true);
     pointerEventTarget.addEventListener('pointercancel', cancelDrag, true);
@@ -837,6 +904,8 @@
     event.preventDefault();
     event.stopPropagation();
 
+    const dragDocument = document;
+    let cancelReorder: (() => void) | null = null;
     const handle = event.currentTarget as HTMLElement;
     const pointerEventTarget = globalThis.window;
     const pointerId = event.pointerId;
@@ -863,6 +932,8 @@
     };
 
     const cleanup = () => {
+      cancelPointerInteraction = null;
+      cancelReorder?.();
       stopPointerTracking();
       dragPreview?.destroy();
       clearDragState();
@@ -893,10 +964,16 @@
         ? createReorderAnimationController('column', columnIndex, columnCount)
         : null;
 
+      cancelReorder = () => reorderAnimation?.destroy();
       const commitMove = () => {
+        if (disposed || document !== dragDocument) {
+          cleanup();
+          return;
+        }
+        cancelPointerInteraction = null;
         flushSync(() => {
           moveColumnWidth(columnIndex, targetIndex);
-          ondocumentchange(moveDelimitedTableColumn(document, columnIndex, targetIndex));
+          ondocumentchange(moveTableColumn(document, columnIndex, targetIndex));
           selectedColumn = targetIndex;
         });
         reorderAnimation?.destroy();
@@ -925,6 +1002,7 @@
       cleanup();
     };
 
+    cancelPointerInteraction = cleanup;
     pointerEventTarget.addEventListener('pointermove', updateTarget, true);
     pointerEventTarget.addEventListener('pointerup', finishDrag, true);
     pointerEventTarget.addEventListener('pointercancel', cancelDrag, true);
@@ -935,7 +1013,7 @@
     event.preventDefault();
     const targetIndex = rowIndex + (event.key === 'ArrowUp' ? -1 : 1);
     if (targetIndex < 0 || targetIndex >= document.rows.length) return;
-    ondocumentchange(moveDelimitedTableRow(document, rowIndex, targetIndex));
+    ondocumentchange(moveTableRow(document, rowIndex, targetIndex));
     selectedRow = targetIndex;
     focusRowHandle(targetIndex);
   }
@@ -946,7 +1024,7 @@
     const targetIndex = columnIndex + (event.key === 'ArrowLeft' ? -1 : 1);
     if (targetIndex < 0 || targetIndex >= columnCount) return;
     moveColumnWidth(columnIndex, targetIndex);
-    ondocumentchange(moveDelimitedTableColumn(document, columnIndex, targetIndex));
+    ondocumentchange(moveTableColumn(document, columnIndex, targetIndex));
     selectedColumn = targetIndex;
     focusColumnHandle(targetIndex);
   }
@@ -1093,68 +1171,80 @@
 {/snippet}
 
 {#snippet cellEditor(row: string[], rowIndex: number, columnIndex: number, isHeader = false)}
+  <!-- 측정용 텍스트와 입력칸의 글자 배치를 공유하고, 표 행이 가장 높은 셀에 맞춰 높이를 결정한다. -->
+  <div
+    class="table-cell-size"
+    class:header-cell-editor={isHeader}
+    aria-hidden="true"
+  >{(row[columnIndex] ?? '') + '\u200b'}</div>
   <textarea
     class="table-cell-editor"
     class:header-cell-editor={isHeader}
     class:selected-cell={selectedRow === rowIndex && selectedColumn === columnIndex}
     data-table-row={rowIndex}
     data-table-column={columnIndex}
+    style:text-align={document.columnAlignments?.[columnIndex] ?? 'start'}
     value={row[columnIndex] ?? ''}
     dir="auto"
-    rows={Math.min(4, Math.max(1, (row[columnIndex] ?? '').split(/\r\n|\r|\n/u).length))}
+    rows={1}
+    wrap="soft"
     readonly={!editable}
     aria-label={isHeader
       ? t('table.headerCell', { column: getColumnName(columnIndex) })
       : t('table.cell', { row: rowIndex + 1, column: getColumnName(columnIndex) })}
     spellcheck="false"
-    onfocus={() => selectCell(rowIndex, columnIndex)}
+    onfocus={(event) => { selectCell(rowIndex, columnIndex); reportCellSelection(event, rowIndex, columnIndex); }}
     onpointerdown={() => selectCell(rowIndex, columnIndex)}
+    onselect={(event) => reportCellSelection(event, rowIndex, columnIndex)}
+    onbeforeinput={(event) => handleCellBeforeInput(event, rowIndex, columnIndex)}
     oninput={(event) => handleCellInput(event, rowIndex, columnIndex)}
     onkeydown={(event) => handleCellKeydown(event, rowIndex, columnIndex)}
   ></textarea>
 {/snippet}
 
-<div class="table-editor" bind:this={tableEditorEl}>
-  <div class="table-toolbar" role="toolbar" aria-label={t('table.toolbar', { format: formatLabel })}>
-    <div class="table-summary">
-      <span class="format-badge">{formatLabel}</span>
-      <span>{t('table.dimensions', { rows: document.rows.length, columns: columnCount })}</span>
+<div class="table-editor" class:embedded bind:this={tableEditorEl}>
+  {#if !embedded}
+    <div class="table-toolbar" role="toolbar" aria-label={t('table.toolbar', { format: formatLabel })}>
+      <div class="table-summary">
+        <span class="format-badge">{formatLabel}</span>
+        <span>{t('table.dimensions', { rows: document.rows.length, columns: columnCount })}</span>
+      </div>
+
+      <div class="toolbar-spacer"></div>
+
+      <button
+        class="compact-tool toggle-tool"
+        class:active={highlightHeader}
+        type="button"
+        aria-pressed={highlightHeader}
+        onclick={() => onhighlightheaderchange(!highlightHeader)}
+        title={t('table.toggleHeader')}
+      >
+        {t('table.firstRow')}
+      </button>
+      <button
+        class="compact-tool toggle-tool"
+        class:active={showRowIndices}
+        type="button"
+        aria-pressed={showRowIndices}
+        onclick={() => onshowrowindiceschange(!showRowIndices)}
+        title={t('table.toggleRowNumbers')}
+      >
+        {t('table.rowNumbers')}
+      </button>
     </div>
 
-    <div class="toolbar-spacer"></div>
-
-    <button
-      class="compact-tool toggle-tool"
-      class:active={highlightHeader}
-      type="button"
-      aria-pressed={highlightHeader}
-      onclick={() => onhighlightheaderchange(!highlightHeader)}
-      title={t('table.toggleHeader')}
-    >
-      {t('table.firstRow')}
-    </button>
-    <button
-      class="compact-tool toggle-tool"
-      class:active={showRowIndices}
-      type="button"
-      aria-pressed={showRowIndices}
-      onclick={() => onshowrowindiceschange(!showRowIndices)}
-      title={t('table.toggleRowNumbers')}
-    >
-      {t('table.rowNumbers')}
-    </button>
-  </div>
-
-  {#if !editable}
-    <div class="table-readonly-note">{t('table.readonly')}</div>
+    {#if !editable}
+      <div class="table-readonly-note">{t('table.readonly')}</div>
+    {/if}
   {/if}
 
-  <div class="table-scroll-region">
-    <table class="data-table" style={`width: ${tablePixelWidth}px`}>
+  <div class="table-scroll-region" bind:contentRect={scrollRegionRect}>
+    <table class="data-table" style:width={`${tablePixelWidth}px`}>
       <colgroup>
         <col class="row-control-column" />
         {#each Array(columnCount) as _, columnIndex}
-          <col style={`width: ${getColumnWidth(columnIndex)}px`} />
+          <col style:width={`${getColumnWidth(columnIndex)}px`} />
         {/each}
       </colgroup>
       <thead>
@@ -1190,7 +1280,7 @@
               <button
                 class="column-resize-handle"
                 type="button"
-                aria-label={t('table.resizeColumn', { column: getColumnName(columnIndex), width: getColumnWidth(columnIndex) })}
+                aria-label={t('table.resizeColumn', { column: getColumnName(columnIndex), width: Math.round(getColumnWidth(columnIndex)) })}
                 title={t('table.resizeColumnHint', { column: getColumnName(columnIndex) })}
                 onpointerdown={(event) => startColumnResize(event, columnIndex)}
                 ondblclick={(event) => handleColumnResizeDoubleClick(event, columnIndex)}
@@ -1377,6 +1467,15 @@
     box-sizing: border-box;
   }
 
+  .table-editor.embedded {
+    height: auto;
+    background: transparent;
+  }
+
+  .embedded .table-scroll-region {
+    flex: none;
+  }
+
   .drag-preview-layer {
     position: fixed;
     z-index: 1000;
@@ -1472,6 +1571,8 @@
   }
 
   .data-table {
+    width: 100%;
+    min-width: 500px;
     border-collapse: separate;
     border-spacing: 0;
     table-layout: fixed;
@@ -1485,15 +1586,11 @@
 
   .data-table th,
   .data-table td {
+    position: relative;
     border-right: 1px solid var(--color-table-border, var(--border-color));
     border-bottom: 1px solid var(--color-table-border, var(--border-color));
     padding: 0;
     background: var(--color-render-bg, var(--bg-editor));
-  }
-
-  .data-table tbody tr {
-    content-visibility: auto;
-    contain-intrinsic-size: 30px;
   }
 
   .column-control-row th {
@@ -1745,23 +1842,36 @@
     vertical-align: top;
   }
 
-  .table-cell-editor {
-    caret-color: var(--color-caret);
+  .table-cell-editor,
+  .table-cell-size {
     display: block;
     width: 100%;
     min-height: 30px;
-    max-height: 92px;
     padding: 6px 8px;
     box-sizing: border-box;
     border: 0;
     outline: 0;
-    resize: none;
-    overflow: auto;
     background: transparent;
     color: var(--color-render-text, var(--text-color));
     font: inherit;
     line-height: 17px;
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+
+  .table-cell-size {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .table-cell-editor {
+    position: absolute;
+    inset: 0;
+    height: 100%;
+    resize: none;
+    overflow: hidden;
+    caret-color: var(--color-caret);
   }
 
   .table-cell-editor::selection {
@@ -1789,7 +1899,8 @@
     background: var(--color-hl-code-bg) !important;
   }
 
-  .header-data-row .table-cell-editor {
+  .header-data-row .table-cell-editor,
+  .header-data-row .table-cell-size {
     color: var(--color-hl-code-text);
     font-weight: 650;
   }

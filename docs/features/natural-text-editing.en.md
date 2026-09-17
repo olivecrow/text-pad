@@ -113,6 +113,16 @@ In render mode, the editor shows the other end of the paired character touching 
 - Pointer placement, arrow movement, and selection on a heading map the actual rendered glyph widths back to source positions. Do not leave a collapsed caret trapped inside a hidden marker range.
 - Links, emphasis, and inline code inside a heading keep their exact source ranges, and saved text never receives display-only size, weight, color, or divider data.
 
+## Markdown tables
+
+- Render body tables with consecutive header and pipe-delimiter rows using the same cell, row, and column editor as CSV/TSV. Place the table directly in the document without a separate format label, toolbar, or enclosing border. Rendering and mode changes do not modify source text. Keep tables inside code, comments, quotes, or lists, and tables exceeding the budget, as source text.
+- Map cell selection and caret boundaries to actual source positions, including escaped pipes, character references, and `<br>` line breaks. Editing an existing cell changes only its content range, preserving surrounding prose and other cells' whitespace and delimiters. Row and column operations normalize only that table range while preserving its newline style and column alignment.
+- Merge consecutive input only within the same table and cell; record each row or column operation independently. Undo and redo restore both source text and cell selection. Do not intercept cell-navigation keys during IME composition.
+- `Tab`/`Shift+Tab` move between cells and leave the last/first cell for the following/preceding prose. `Escape` leaves for the following prose; ArrowUp at the start of the first row and ArrowDown at the end of the last row leave in their respective directions. `Ctrl+Home`/`Ctrl+End` also leave for the preceding/following prose. If no prose line exists at the document boundary, create one empty line and record it as an independent undo step.
+- Tables fill the available body width with a minimum of 500 pixels; narrower regions scroll horizontally within the table. Cells wrap to their width without internal scrolling, including breaks within long words. Each row and its inputs grow or shrink to fit the tallest cell. Window or column resizing and visual wrapping alone add neither source newlines nor Undo records. Apply this layout to the shared CSV/TSV editor as well.
+- The table's full height determines subsequent prose positions and scroll extent; long tables scroll vertically with the document. Source selections and copying started outside the table include its source string. Within cells, use the shared table editor's text selection. Keep emphasis and link syntax as editable Markdown strings in cells.
+- Example: `| 품목 | 수량 |` followed by `| :--- | ---: |` and `| 연필 | 2 |` produces a two-column table aligned left/right. Replacing `연필` with `연필 세트` preserves other cells and surrounding prose; one undo restores `연필`.
+
 ## Rendered line checkboxes
 
 - In plain-text and Markdown documents, start rendering an unchecked or checked checkbox when the first content after optional leading indentation is `[]` or `[V]` and the marker is immediately followed by a literal Space (U+0020). Do not reinterpret the same strings inside a fenced code block.

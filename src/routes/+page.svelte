@@ -77,7 +77,12 @@
     type TranslationKey,
     type TranslationValues
   } from "$lib/i18n";
-  import DelimitedTableEditor from "$lib/DelimitedTableEditor.svelte";
+  import TableEditor from "$lib/TableEditor.svelte";
+  import {
+    parseMarkdownTables, replaceMarkdownTable, getMarkdownTableCellAtOffset,
+    type MarkdownTableBlock
+  } from "$lib/markdown-table";
+  import type { TableDocument, TableCellSelection, TableDocumentChangeOptions } from "$lib/table-document";
   import { APP_VERSION_FALLBACK } from "$lib/app-metadata";
   import {
     checkForAppUpdate,
@@ -2167,7 +2172,42 @@
     return Math.max(1, editorViewportWidth - paddingLeft - paddingRight);
   }
 
+  let selectedDocumentFormat = $derived(
+    filePath === null ? getDocumentFormatById(selectedDocumentFormatId) : null
+  );
+  let activeDocumentFormat = $derived(
+    selectedDocumentFormat ?? getDocumentFormatForContent(fileContent, filePath || fileName)
+  );
+  let shouldShowNewDocumentFormatToolbar = $derived(
+    !isSettingsWindow && filePath === null && fileContent.length === 0
+  );
+  let isActiveDocumentRenderEnabled = $derived(
+    isEnhancedDocumentWithinBudget
+    && isDocumentFormatRenderEnabled(activeDocumentFormat, documentFeatureSettings)
+  );
+  let isActiveDocumentEditEnabled = $derived(isDocumentFormatEditEnabled(activeDocumentFormat, documentFeatureSettings));
+
   let renderWrapContentWidth = $derived(getEditorWrapContentWidth());
+  let markdownTableBlocks = $derived(
+    isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown'
+      ? parseMarkdownTables(fileContent, lineStartOffsets, MAX_INTERACTIVE_TABLE_CELLS)
+      : []
+  );
+  let markdownTableByLine = $derived.by(() => {
+    const lines = new Map<number, MarkdownTableBlock>();
+    for (const block of markdownTableBlocks) {
+      for (let line = block.startLine; line <= block.endLine; line += 1) lines.set(line, block);
+    }
+    return lines;
+  });
+  let blockLineHeightOverrides = $derived.by(() => {
+    const heights = new Map<number, number>();
+    for (const block of markdownTableBlocks) {
+      heights.set(block.startLine, 48 + block.document.rows.length * 31);
+      for (let line = block.startLine + 1; line <= block.endLine; line += 1) heights.set(line, 0);
+    }
+    return heights;
+  });
   let renderedLineMeasurementContext = $derived([
     renderWrapContentWidth.toFixed(3),
     measuredLineHeight.toFixed(3),
@@ -2177,7 +2217,10 @@
     tabSize,
     filePath || fileName,
     JSON.stringify(documentFeatureSettings),
-    JSON.stringify(markdownRenderSettings)
+    JSON.stringify(markdownRenderSettings),
+    markdownTableBlocks.map((block) => `${block.startLine}:${block.endLine}`).join(','),
+    delimitedTableHighlightHeader,
+    delimitedTableShowRowIndices
   ].join('|'));
   let renderLineLayout = $derived(getEditorLineLayout(editorLineLayoutCache, {
     content: fileContent,
@@ -2193,6 +2236,7 @@
     measureTextEndWidth: measureEditorTextEndWidth,
     measureTextWidth: measureEditorTextWidth,
     getListContinuationIndent: getMeasuredListContinuationIndent,
+    lineHeightOverrides: blockLineHeightOverrides,
     change: latestContentChange
   }));
   let renderEditorScrollHeight = $derived(getEditorScrollHeight({
@@ -2289,20 +2333,6 @@
   ));
 
   // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
-  let selectedDocumentFormat = $derived(
-    filePath === null ? getDocumentFormatById(selectedDocumentFormatId) : null
-  );
-  let activeDocumentFormat = $derived(
-    selectedDocumentFormat ?? getDocumentFormatForContent(fileContent, filePath || fileName)
-  );
-  let shouldShowNewDocumentFormatToolbar = $derived(
-    !isSettingsWindow && filePath === null && fileContent.length === 0
-  );
-  let isActiveDocumentRenderEnabled = $derived(
-    isEnhancedDocumentWithinBudget
-    && isDocumentFormatRenderEnabled(activeDocumentFormat, documentFeatureSettings)
-  );
-  let isActiveDocumentEditEnabled = $derived(isDocumentFormatEditEnabled(activeDocumentFormat, documentFeatureSettings));
   let pairedDelimiterIndex = $derived(
     isRenderMode && isActiveDocumentRenderEnabled
       ? createPairedDelimiterIndex(fileContent)
@@ -2574,6 +2604,15 @@
       steadyEditorCaretVisible = editorHasFocus && isActiveDocumentRenderEnabled && shouldRenderHighlightLayer;
       if (!steadyEditorCaretVisible) return;
       if (revealCaret && ensureRenderedCaretLineVisible(start)) return;
+
+      const table = markdownTableByLine.get(findLineIndexForOffset(start));
+      if (table) {
+        steadyEditorCaretVisible = false;
+        if (revealCaret && document.activeElement === textareaEl) {
+          void tick().then(() => focusMarkdownTableCell(table, start));
+        }
+        return;
+      }
 
       const caretRect = getRenderedCaretRectForOffset(start);
       if (!caretRect || !editorViewportEl) {
@@ -3470,8 +3509,8 @@
         || activeTabId !== editedTabId
         || editorActivationGeneration !== activationGeneration
       ) return;
-      textareaEl.focus({ preventScroll: true });
       setTextareaSelectionFromContent(snapshot.selection.start, snapshot.selection.end, snapshot.content);
+      textareaEl.focus({ preventScroll: true });
       updateCursorPosition();
     });
   }
@@ -3577,6 +3616,74 @@
       mergeKey: options.mergeKey ?? null,
       selectionAlreadyApplied: true
     });
+  }
+
+  function updateMarkdownTableSelection(block: MarkdownTableBlock, selection: TableCellSelection) {
+    const cell = block.cells[selection.row]?.[selection.column];
+    if (!cell || !textareaEl) return;
+    const start = cell.offsets[Math.min(selection.start, cell.offsets.length - 1)];
+    const end = cell.offsets[Math.min(selection.end, cell.offsets.length - 1)];
+    setTextareaSelectionFromContent(start, end);
+    updateActiveTab({ selectionStart: start, selectionEnd: end });
+    setLastEditorSnapshot({ content: fileContent, selection: { start, end } });
+    hideSteadyEditorCaret();
+    clearRenderedSelectionHighlight();
+  }
+
+  function focusMarkdownTableCell(block: MarkdownTableBlock, offset: number) {
+    if (document.activeElement !== textareaEl || getTextareaSelectionInContent().start !== offset) return;
+    const position = getMarkdownTableCellAtOffset(block, offset);
+    const cell = editorViewportEl?.querySelector<HTMLTextAreaElement>(
+      `[data-markdown-table="${block.startLine}"] [data-table-row="${position.row}"][data-table-column="${position.column}"]`
+    );
+    if (!cell) return;
+    cell.setSelectionRange(position.offset, position.offset);
+    cell.focus();
+  }
+
+  function commitMarkdownTableEdit(
+    block: MarkdownTableBlock,
+    nextDocument: TableDocument,
+    options: TableDocumentChangeOptions = {}
+  ) {
+    if (!isActiveDocumentEditEnabled) return;
+    const nextContent = replaceMarkdownTable(fileContent, block, nextDocument, options.cell);
+    if (nextContent === fileContent) return;
+    if (!options.mergeKey) closeActiveUndoGroup();
+    const before = getCurrentEditorSnapshot();
+    const offsetIndex = createTextOffsetIndex(nextContent);
+    const nextBlock = parseMarkdownTables(nextContent, offsetIndex.lineStartOffsets, MAX_INTERACTIVE_TABLE_CELLS)
+      .find((candidate) => candidate.start === block.start);
+    const cell = options.cell && nextBlock?.cells[options.cell.row]?.[options.cell.column];
+    const start = cell && options.cell
+      ? cell.offsets[Math.min(options.cell.start, cell.offsets.length - 1)] : block.start;
+    const end = cell && options.cell
+      ? cell.offsets[Math.min(options.cell.end, cell.offsets.length - 1)] : start;
+    commitEditorEdit(before, { content: nextContent, selection: { start, end } }, {
+      mergeKey: options.mergeKey ? `markdown:${block.start}:${options.mergeKey}` : null,
+      selectionAlreadyApplied: true,
+      syncRenderCaretAfterUpdate: true,
+      offsetIndex
+    });
+    if (textareaEl) textareaEl.value = offsetIndex.textareaValue;
+    setTextareaSelectionFromContent(start, end, nextContent);
+  }
+
+  function leaveMarkdownTable(block: MarkdownTableBlock, direction: -1 | 1) {
+    let offset = direction < 0
+      ? (block.startLine > 0 ? getLineEndOffset(fileContent, lineStartOffsets[block.startLine - 1]) : 0)
+      : (lineStartOffsets[block.endLine + 1] ?? fileContent.length);
+    if (direction < 0 && block.start === 0) {
+      commitManualEditorEdit(block.lineEnding + fileContent, { start: 0, end: 0 });
+    } else if (direction > 0 && block.end === fileContent.length) {
+      offset = fileContent.length + block.lineEnding.length;
+      commitManualEditorEdit(fileContent + block.lineEnding, { start: offset, end: offset });
+    } else if (textareaEl) {
+      closeActiveUndoGroup();
+      setTextareaSelectionFromContent(offset, offset);
+      textareaEl.focus({ preventScroll: true });
+      updateCursorPosition();
+    }
   }
 
   function getNativeInputMergeKey(inputType: string, before: EditorSnapshot, isComposing: boolean): string | null {
@@ -6398,7 +6505,8 @@
       {/if}
       <div class="editor-container">
         {#if shouldShowDelimitedTableEditor && activeDelimitedTableDocument}
-          <DelimitedTableEditor
+          {#key activeTabId}
+          <TableEditor
             document={activeDelimitedTableDocument}
             formatLabel={t(activeDocumentFormat.labelKey)}
             locale={locale}
@@ -6408,9 +6516,11 @@
             animateReorder={delimitedTableAnimateReorder}
             reorderDurationMs={delimitedTableReorderDurationMs}
             ondocumentchange={commitDelimitedTableEdit}
+            onhistoryinput={(direction) => direction === 'undo' ? performUndo() : performRedo()}
             onhighlightheaderchange={(enabled) => delimitedTableHighlightHeader = enabled}
             onshowrowindiceschange={(enabled) => delimitedTableShowRowIndices = enabled}
           />
+          {/key}
         {:else}
         <!-- 라인 번호 Gutter -->
         {#if isRenderMode && isEnhancedDocumentWithinBudget}
@@ -6418,6 +6528,7 @@
               <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
                 {#each Array(endLine - startLine + 1) as _, idx}
                   {@const lineIdx = startLine + idx}
+                  {#if !markdownTableByLine.has(lineIdx) || markdownTableByLine.get(lineIdx)?.startLine === lineIdx}
                   <div
                     class="gutter-line-number"
                     class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1}
@@ -6425,6 +6536,7 @@
                   >
                     {lineIdx + 1}
                   </div>
+                  {/if}
                 {/each}
               </div>
           </div>
@@ -6455,7 +6567,7 @@
                   {@const listLayout = renderListLineLayouts[idx] ?? null}
                   {@const indentGuideCount = listLayout ? listLayout.indentGuideCount : line?.indentLevel ?? 0}
                   {@const listTokenParts = listLayout ? getListRenderTokenParts(line?.tokens ?? [], listLayout.prefixLength) : null}
-                  {#if line}
+                  {#if line && !markdownTableByLine.has(lineIdx)}
                     <div
                       use:observeRenderedLine
                       class="backdrop-line"
@@ -6506,6 +6618,35 @@
               </div>
             </div>
           {/if}
+
+          {#each markdownTableBlocks.filter((block) => block.startLine <= endLine && block.endLine >= startLine) as block (`${activeTabId}:${block.startLine}`)}
+            <div
+              class="backdrop-line render-table-block"
+              class:table-source-selected={isEditorFocused && (activeTab?.selectionStart ?? 0) < block.end && (activeTab?.selectionEnd ?? 0) > block.start}
+              use:observeRenderedLine
+              data-line-index={block.startLine}
+              data-markdown-table={block.startLine}
+              style:top={`${getRenderLineTop(block.startLine) + editorTopPadding}px`}
+            >
+              <TableEditor
+                document={block.document}
+                formatLabel={t(activeDocumentFormat.labelKey)}
+                {locale}
+                embedded
+                editable={isActiveDocumentEditEnabled}
+                highlightHeader={delimitedTableHighlightHeader}
+                showRowIndices={delimitedTableShowRowIndices}
+                animateReorder={delimitedTableAnimateReorder}
+                reorderDurationMs={delimitedTableReorderDurationMs}
+                ondocumentchange={(next, options) => commitMarkdownTableEdit(block, next, options)}
+                oncellselection={(selection) => updateMarkdownTableSelection(block, selection)}
+                onleave={(direction) => leaveMarkdownTable(block, direction)}
+                onhistoryinput={(direction) => direction === 'undo' ? performUndo() : performRedo()}
+                onhighlightheaderchange={(enabled) => delimitedTableHighlightHeader = enabled}
+                onshowrowindiceschange={(enabled) => delimitedTableShowRowIndices = enabled}
+              />
+            </div>
+          {/each}
 
           {#if shouldRenderHighlightLayer}
             {#each renderedPairDecorations as decoration, index (`${decoration.offset}:${index}`)}
@@ -7508,6 +7649,22 @@
     -webkit-font-smoothing: subpixel-antialiased;
     -moz-osx-font-smoothing: auto;
     font-weight: var(--font-render-weight, normal);
+  }
+
+  .render-table-block {
+    position: absolute;
+    left: 0;
+    z-index: 3;
+    padding: 0 12px 8px;
+  }
+
+  .table-source-selected::after {
+    content: '';
+    position: absolute;
+    inset: 0 12px 8px;
+    background: color-mix(in srgb, var(--color-selection) 28%, transparent);
+    pointer-events: none;
+    border-radius: 4px;
   }
 
   .backdrop-line.markdown-heading-line .line-content {

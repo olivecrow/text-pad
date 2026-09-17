@@ -29,8 +29,10 @@
 - `src/lib/markdown-settings.ts`: Markdown 제목 1~6단계의 공통 표시 설정.
 - `src/lib/settings-transfer.ts`: 버전이 붙은 설정 JSON 생성, 이전·미래 버전 호환 가져오기와 값 정규화.
 - `src/lib/theme-colors.ts`: 시스템 기본 팔레트, 16진수 색상 정규화와 읽기 쉬운 전경색 계산을 공유하는 순수 색상 모듈.
-- `src/lib/delimited-table.ts`: CSV/TSV 파싱, 직렬화, 셀·행·열 변경 계산.
-- `src/lib/DelimitedTableEditor.svelte`: CSV/TSV 표 편집 화면과 행·열 조작.
+- `src/lib/table-document.ts`: 저장 형식과 독립된 표 데이터, 셀·행·열 변경과 열 정렬 이동 계산.
+- `src/lib/TableEditor.svelte`: CSV/TSV와 Markdown이 함께 사용하는 셀 입력, 행·열 조작, 열 너비와 표 표시 설정.
+- `src/lib/delimited-table.ts`: CSV/TSV 파싱과 직렬화. 공통 표 연산의 기존 내보내기 이름은 호환성을 위해 유지한다.
+- `src/lib/markdown-table.ts`: Markdown 표 범위·셀 원문 위치·열 정렬 파싱, 셀 교체와 표 범위 직렬화.
 - `src/lib/EditorMenuBar.svelte`: 파일·편집·도움말 메뉴와 오른쪽 도구 모음의 표현 및 메뉴 전환을 소유하고, 실제 편집·파일·창 명령은 명시적인 콜백 계약으로 호출하는 컴포넌트.
 - `src/lib/tab-drag.ts`: 탭 드래그 메타데이터, 드롭 삽입 위치와 같은 창 안 재정렬 계산.
 - `src/lib/app-updater.ts`: 설치 버전 조회, 업데이트 확인·설치·재시작 연결.
@@ -125,6 +127,7 @@
 - `.md`, `.markdown` 제목 1~6단계의 크기·굵기·구분선, 숨긴 제목 표식, 링크·강조·인용·코드 구분.
 - `.txt`와 Markdown은 선택적인 선행 들여쓰기 뒤의 `[]`·`[V]` 표식에 일반 스페이스가 이어지는 체크박스, 목록, 인라인·울타리 코드, 문자열, 숫자, 색상 코드, 괄호 구조의 줄 토큰화와 캐시를 공유하고 Markdown 고유 제목·링크·강조·인용·HTML 주석만 옵션으로 확장한다.
 - `.csv`, `.tsv` 파일의 표 표시, 셀 편집, 외부 여백의 행·열 추가·제거, 드래그 이동과 열 너비 조절.
+- Markdown 본문 안의 파이프 표도 같은 표 편집기를 사용하되 형식 이름·도구 막대·바깥 테두리 없이 표를 바로 표시한다. 문서 전체에서 최대 2,000개 셀을 배정하고, 표의 첫 원문 줄에 실측 블록 전체 높이를 반영하며 포함된 나머지 줄은 높이 0으로 처리한다. 표 앞뒤 문장·줄 번호·가상화·세로 스크롤 범위는 이 높이 계산을 공유한다.
 - 데이터 파일 형식의 키 깊이 3단계 색상 반복 표시.
 - 중첩된 괄호와 따옴표는 요소 종류보다 바깥쪽에서 안쪽으로 들어가는 깊이를 우선해서 색상을 적용한다.
 - 주석 안의 색상 코드는 주석보다 안쪽 요소로 다시 강조한다.
@@ -151,6 +154,7 @@
 - 새 제품 지원 형식은 먼저 `supported-text-formats.json`에 식별자, 확장자 또는 관례적 파일명·경로 패턴, 대표 샘플을 추가하고 `src/lib/document-formats.ts`에 형식 판별, 렌더 파서, 주석 문법, 문법 검사 여부, 렌더 편집 가능 여부를 연결한다. `npm run validate:formats`가 열기·저장과 Windows 설치 연결을 함께 검사하므로 별도 확장자 목록을 새로 만들지 않는다. 확장자가 없는 형식은 모든 파일 필터로 선택할 수 있게 하되 Windows 파일 연결에는 확장자만 등록한다. 형식별 렌더 표시와 렌더 편집은 설정 객체를 통해 켜고 끌 수 있어야 하며, 설정창에서는 해당 형식의 트리 메뉴 최상단에 배치한다.
 - 세부 표시 계약은 `docs/features/render-mode.md`를 기준으로 한다.
 - CSV/TSV 표 편집은 `docs/features/delimited-table.md`를 기준으로 한다.
+- Markdown 표 범위와 원문 보존은 `docs/features/markdown-table.md`를 기준으로 한다.
 
 ## 다국어 UI
 

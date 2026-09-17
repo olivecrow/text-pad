@@ -35,6 +35,7 @@ graph TD
 - `docs/features/render-mode.md`: 렌더 모드 표시 계약.
 - `docs/features/natural-text-editing.md`, `docs/features/natural-text-editing.en.md`: 글머리, 자동 쌍 문자, 들여쓰기, 캐럿, 실행 취소를 아우르는 자연스러운 텍스트 편집 지침 한국어판과 영어판.
 - `docs/features/delimited-table.md`: CSV/TSV 표 표시와 편집 계약.
+- `docs/features/markdown-table.md`: 공통 표 편집기를 사용하는 Markdown 본문 표와 원문 범위 보존 계약.
 - `docs/features/editor-undo.md`: 편집기 실행 취소 계약.
 - `docs/features/settings-window.md`: 독립 설정창 계약.
 - `docs/features/theme-preferences.md`: 테마와 사용자 설정 저장 계약.
@@ -59,6 +60,7 @@ graph TD
 - 설정 버튼을 처음 눌렀을 때 독립 설정창을 동적으로 생성하고 표시.
 - 설정창에서 파일 형식별 렌더 표시와 렌더 편집 모듈 켜기/끄기.
 - CSV/TSV 렌더 모드에서 셀 편집, 행·열 추가·제거·이동, 열 너비 조절, 첫 행 강조와 행 번호 표시.
+- Markdown 본문의 파이프 표를 같은 표 편집기로 표시하며 열 정렬, 셀·행·열 편집과 실행 취소를 지원한다. 표 밖 문장과 원문 줄바꿈을 보존한다.
 - Windows 앱 표시 이름과 번들 실행 파일 이름을 `text-pad`로 생성.
 - 현재 제품 지원 확장자를 Windows 파일 연결과 기본 앱 후보 정보로 등록해 `연결 프로그램`의 항상 사용 또는 Windows 기본 앱 설정에서 선택 가능하게 함.
 - NSIS 설치 파일에서 같은 버전 삭제를 선택하면 삭제 후 설치를 재개하지 않고 종료.
