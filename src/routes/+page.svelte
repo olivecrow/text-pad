@@ -129,7 +129,6 @@
     createFencedCodeBlockCache,
     getEditorLineLayout,
     getFencedCodeBlockRanges,
-    getRenderListIndentGuideCount,
     type FencedCodeBlockRange,
     type RenderedLineHeightMeasurements,
     type RenderListLineLayout
@@ -2184,6 +2183,7 @@
     content: fileContent,
     lineStartOffsets,
     contentWidth: renderWrapContentWidth,
+    tabSize,
     fencedCodeRanges: fencedCodeBlocks,
     wrapEnabled: isRenderMode && isEnhancedDocumentWithinBudget,
     measurements: renderedLineHeightMeasurements,
@@ -3857,12 +3857,8 @@
     return (lineStartOffsets[lineIndex] ?? 0) + layout.prefixLength;
   }
 
-  function getRenderListBodyColumnWidth(layout: RenderListLineLayout): number {
-    return Math.max(1, measureEditorTextWidth(`${layout.marker.indent}${layout.marker.marker}`));
-  }
-
   function getRenderListLineStyle(layout: RenderListLineLayout): string {
-    return `--list-prefix-width: ${getRenderListBodyColumnWidth(layout)}px;`;
+    return `--list-visual-indent: ${layout.visualIndentWidth}px; --list-prefix-width: ${layout.prefixWidth}px;`;
   }
 
   function handleRenderListBoundaryArrowLeft(event: KeyboardEvent): boolean {
@@ -5336,10 +5332,13 @@
     let rect: DOMRect | null = range.getClientRects()[0] ?? null;
     if (rect && rect.height <= 0) rect = null;
 
-    if (!rect && boundary.offset < boundary.node.data.length) {
+    if (boundary.offset < boundary.node.data.length) {
       range.setEnd(boundary.node, boundary.offset + 1);
-      rect = range.getClientRects()[0] ?? null;
-      if (rect && rect.height <= 0) rect = null;
+      const nextRect = range.getClientRects()[0];
+      // 접힌 범위가 자동 줄바꿈 앞줄 끝을 가리키면 실제 다음 글자의 줄 시작을 사용한다.
+      if (nextRect && nextRect.height > 0 && (!rect || nextRect.top > rect.top + 0.5)) {
+        rect = nextRect;
+      }
     } else if (!rect && boundary.offset > 0) {
       range.setStart(boundary.node, boundary.offset - 1);
       range.setEnd(boundary.node, boundary.offset);
@@ -6454,7 +6453,7 @@
                   {@const lineIdx = startLine + idx}
                   {@const line = parsedLines[idx]}
                   {@const listLayout = renderListLineLayouts[idx] ?? null}
-                  {@const indentGuideCount = listLayout ? getRenderListIndentGuideCount(listLayout, tabSize) : line?.indentLevel ?? 0}
+                  {@const indentGuideCount = listLayout ? listLayout.indentGuideCount : line?.indentLevel ?? 0}
                   {@const listTokenParts = listLayout ? getListRenderTokenParts(line?.tokens ?? [], listLayout.prefixLength) : null}
                   {#if line}
                     <div
@@ -7607,6 +7606,7 @@
     bottom: 0;
     width: 1px;
     background-color: var(--color-indent-guide);
+    opacity: 0.5;
   }
 
   .line-content {
@@ -7626,6 +7626,8 @@
     align-items: start;
     width: 100%;
     min-width: 0;
+    box-sizing: border-box;
+    padding-left: var(--list-visual-indent);
   }
 
   .list-item-prefix {

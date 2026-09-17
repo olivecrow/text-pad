@@ -902,6 +902,7 @@ try {
     measurementContext: 'source',
     measuredLineHeight: 20,
     fencedCodeHorizontalPadding: 12,
+    tabSize: 4,
     measureTextEndWidth: (text, start = 0) => start + text.length,
     measureTextWidth: (text) => text.length,
     getListContinuationIndent: (marker) => listMarkers.getListContinuationIndent(marker, 4)
@@ -924,6 +925,7 @@ try {
     measurementContext: 'mode-switch',
     measuredLineHeight: 20,
     fencedCodeHorizontalPadding: 12,
+    tabSize: 4,
     measureTextEndWidth: (text, start = 0) => start + text.length,
     measureTextWidth: (text) => text.length,
     getListContinuationIndent: (marker) => listMarkers.getListContinuationIndent(marker, 4)
@@ -936,13 +938,35 @@ try {
   assert.equal(wrappedAfterSource.visitedLineCount, modeIndex.lineStartOffsets.length);
   assert.equal(wrappedAfterSource.listLayouts.length, modeIndex.lineStartOffsets.length);
   assert.ok(wrappedAfterSource.listLayouts[1]);
-  assert.equal(editorLayout.getRenderListIndentGuideCount(wrappedAfterSource.listLayouts[1], 4), 0);
+  assert.equal(wrappedAfterSource.listLayouts[1].indentGuideCount, 0);
   const sourceAfterWrapped = editorLayout.getEditorLineLayout(modeCache, {
     ...modeOptions,
     wrapEnabled: false
   });
   assert.equal(sourceAfterWrapped.visitedLineCount, 0);
   assert.equal(sourceAfterWrapped.listLayouts.length, 0);
+
+  // 표시 여백은 원문 위치나 연속 줄 구조를 바꾸지 않고 줄바꿈 폭에만 반영한다.
+  for (const newline of ['\n', '\r\n']) {
+    const insetContent = ['1. abcdef', '   abcdef', 'ordinary'].join(newline);
+    const insetIndex = offsets.createTextOffsetIndex(insetContent);
+    const insetLayout = editorLayout.getEditorLineLayout(editorLayout.createEditorLineLayoutCache(), {
+      ...modeOptions,
+      content: insetContent,
+      lineStartOffsets: insetIndex.lineStartOffsets,
+      wrapEnabled: true
+    });
+    for (const lineIndex of [0, 1]) {
+      assert.equal(insetLayout.listLayouts[lineIndex].prefixLength, 3);
+      assert.equal(insetLayout.listLayouts[lineIndex].visualIndentWidth, 4);
+      assert.equal(insetLayout.listLayouts[lineIndex].prefixWidth, 3);
+      assert.equal(insetLayout.getLineHeight(lineIndex), 40);
+      assert.equal(insetLayout.listLayouts[lineIndex].indentGuideCount, 0);
+    }
+    assert.equal(insetLayout.listLayouts[1].ownerLineIndex, 0);
+    assert.equal(insetLayout.listLayouts[2], null);
+    assert.equal(insetLayout.getLineTop(2), 80);
+  }
 
   assert.equal(editorScrollExtent.getEditorScrollHeight({
     baseBottomPadding: 8,
@@ -1077,7 +1101,40 @@ try {
     wrapEnabled: true
   });
   assert.ok(nestedModeLayout.listLayouts[1]);
-  assert.equal(editorLayout.getRenderListIndentGuideCount(nestedModeLayout.listLayouts[1], 4), 1);
+  assert.equal(nestedModeLayout.listLayouts[1].indentGuideCount, 0);
+
+  for (const newline of ['\n', '\r\n']) {
+    for (const tabSize of [4, 8]) {
+      const unit = ' '.repeat(tabSize);
+      const guideContent = [
+        `${unit}parent`, `${unit.repeat(2)}1. item`, `${unit.repeat(3)}a) nested`,
+        `${unit.repeat(3)}   continuation`, '', '1. root', `${unit}A. nested`, '',
+        `${unit.repeat(2)}normal`, `${unit.repeat(3)}- first`, `${unit}* outdent`,
+        `${unit.repeat(3)}+ deeper`
+      ].join(newline);
+      const guideCache = editorLayout.createEditorLineLayoutCache();
+      const guideOptions = {
+        ...modeOptions, content: guideContent, tabSize, wrapEnabled: true,
+        lineStartOffsets: offsets.createTextOffsetIndex(guideContent).lineStartOffsets
+      };
+      const guideLayout = editorLayout.getEditorLineLayout(guideCache, guideOptions);
+      assert.deepEqual(guideLayout.listLayouts.map(line => line?.indentGuideCount ?? null),
+        [null, 1, 1, 1, null, 0, 0, null, null, 2, 1, 1]);
+
+      // 목록 원문은 그대로여도 앞선 일반 줄의 들여쓰기 변경을 캐시 종료 조건에 반영한다.
+      const changedContent = guideContent.slice(unit.length);
+      const changedGuideOptions = {
+        ...guideOptions, content: changedContent,
+        lineStartOffsets: offsets.createTextOffsetIndex(changedContent).lineStartOffsets,
+        change: textChanges.getTextChange(guideContent, changedContent)
+      };
+      const changedGuideLayout = editorLayout.getEditorLineLayout(guideCache, changedGuideOptions);
+      assert.deepEqual(changedGuideLayout.listLayouts.map(line => line?.indentGuideCount ?? null),
+        [null, 0, 0, 0, null, 0, 0, null, null, 2, 1, 1]);
+      const freshGuideLayout = editorLayout.getEditorLineLayout(editorLayout.createEditorLineLayoutCache(), changedGuideOptions);
+      assert.deepEqual(changedGuideLayout.listLayouts, freshGuideLayout.listLayouts);
+    }
+  }
 
 
   const wrappedLineCount = 12_000;
@@ -1102,6 +1159,7 @@ try {
     measurementContext: 'render',
     measuredLineHeight: 20,
     fencedCodeHorizontalPadding: 12,
+    tabSize: 4,
     measureTextEndWidth: (text, start = 0) => start + text.length,
     measureTextWidth: (text) => text.length,
     getListContinuationIndent: (marker) => listMarkers.getListContinuationIndent(marker, 4)
