@@ -100,7 +100,7 @@ function getHexColorAt(text: string, index: number): string | null {
 function parseInlineText(text: string, includeNumbers = true): Token[] {
   const tokens: Token[] = [];
   const inlineRegex = includeNumbers
-    ? /#[0-9a-fA-F]{6}(?![0-9a-zA-Z_])|\b\d+(?:\.\d+)?\b/g
+    ? /#[0-9a-fA-F]{6}(?![0-9a-zA-Z_])|\d+(?:\.\d+)?/g
     : /#[0-9a-fA-F]{6}(?![0-9a-zA-Z_])/g;
   let lastIndex = 0;
   let match;
@@ -110,6 +110,8 @@ function parseInlineText(text: string, includeNumbers = true): Token[] {
     const matchText = match[0];
     const isColorMatch = matchText.startsWith('#');
     if (isColorMatch && !hasWhitespaceWordBoundary(text, matchIndex, matchIndex + matchText.length)) {
+      // 색상 코드가 아니면 # 다음의 숫자도 일반 텍스트 규칙으로 다시 확인한다.
+      inlineRegex.lastIndex = matchIndex + 1;
       continue;
     }
 

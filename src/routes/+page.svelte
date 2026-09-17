@@ -62,7 +62,7 @@
     type MarkdownHeadingLevel,
     type MarkdownRenderSettings
   } from "$lib/markdown-settings";
-  import { onDestroy, tick, untrack } from "svelte";
+  import { flushSync, onDestroy, tick, untrack } from "svelte";
   import AboutDialog from "$lib/AboutDialog.svelte";
   import EditorMenuBar from "$lib/EditorMenuBar.svelte";
   import SettingsWindow from "$lib/SettingsWindow.svelte";
@@ -2129,6 +2129,7 @@
   let charCount = $derived(fileContent.length);
   let textareaDisplayContent = $derived(textOffsetIndex.textareaValue);
   let editorViewportWidth = $state<number>(500);
+  let liveEditorViewportWidth = $state<number>(500);
   const renderViewportController = isBrowser
     ? new RenderViewportController({
         scheduler: createBrowserRenderViewportScheduler(),
@@ -2150,12 +2151,6 @@
       })
     : null;
 
-  function getEditorTextBoxWidth(): number {
-    const fallbackWidth = Math.max(1, editorViewportWidth);
-    if (!isBrowser || !textareaEl) return fallbackWidth;
-    return Math.max(1, textareaEl.clientWidth || fallbackWidth);
-  }
-
   function getEditorTextPaddingLeft(): number {
     if (!isBrowser || !textareaEl) return editorHorizontalPadding / 2;
 
@@ -2170,7 +2165,7 @@
     const textareaStyle = getComputedStyle(textareaEl);
     const paddingLeft = Number.parseFloat(textareaStyle.paddingLeft) || 0;
     const paddingRight = Number.parseFloat(textareaStyle.paddingRight) || 0;
-    return Math.max(1, getEditorTextBoxWidth() - paddingLeft - paddingRight);
+    return Math.max(1, editorViewportWidth - paddingLeft - paddingRight);
   }
 
   let renderWrapContentWidth = $derived(getEditorWrapContentWidth());
@@ -2206,8 +2201,7 @@
     renderedContentHeight: renderLineLayout.totalHeight,
     topPadding: editorTopPadding
   }));
-  let shouldShowNativeRenderText = $derived(isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling);
-  let shouldRenderHighlightLayer = $derived(isRenderMode && isEnhancedDocumentWithinBudget && !shouldShowNativeRenderText);
+  let shouldRenderHighlightLayer = $derived(isRenderMode && isEnhancedDocumentWithinBudget);
 
   function syncRenderedLineHeightMeasurements() {
     if (!shouldRenderHighlightLayer || !editorViewportEl) return;
@@ -2236,13 +2230,27 @@
       nextHeights[lineIndex] = height;
     }
 
-    if (!hasChanged) return;
+    if (!hasChanged) {
+      // 높이가 같아도 줄바꿈 위치와 글자 좌표는 달라질 수 있다.
+      renderViewportController?.syncCaretAfterLayout();
+      scheduleRenderedHighlights();
+      return;
+    }
+    const viewport = editorViewportEl;
+    const previousScrollTop = viewport.scrollTop;
+    const wasAtBottom = previousScrollTop > 0
+      && Math.abs(viewport.scrollHeight - viewport.clientHeight - previousScrollTop) <= 1;
     renderedLineHeightMeasurements = {
       content: fileContent,
       context: renderedLineMeasurementContext,
       heights: nextHeights
     };
     void tick().then(() => {
+      // 끝에서 새 표시 줄을 실측해 높이가 늘어나도 사용자가 도달한 끝을 유지한다.
+      if (wasAtBottom && editorViewportEl === viewport && viewport.scrollTop >= previousScrollTop) {
+        viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+        updateActiveTab({ scrollTop: viewport.scrollTop });
+      }
       renderViewportController?.syncCaretAfterLayout();
       scheduleRenderedHighlights();
     });
@@ -2659,15 +2667,19 @@
     const viewport = editorViewportEl;
     if (!viewport || !renderViewportController) return;
 
-    renderViewportController.connectViewport(
-      viewport.clientWidth || editorViewportWidth,
-      viewport.clientHeight || clientHeight
-    );
+    untrack(() => {
+      liveEditorViewportWidth = viewport.clientWidth || editorViewportWidth;
+      renderViewportController.connectViewport(
+        liveEditorViewportWidth,
+        viewport.clientHeight || clientHeight
+      );
+    });
 
     const observer = new ResizeObserver((entries) => {
       const entry = entries[entries.length - 1];
       if (!entry) return;
 
+      liveEditorViewportWidth = entry.contentRect.width;
       renderViewportController.observeViewportSize(
         entry.contentRect.width,
         entry.contentRect.height
@@ -3602,7 +3614,14 @@
     });
   }
 
+  function syncInputWidthBeforeEditing() {
+    if (!isRenderMode) return;
+    // 방향키와 조합 입력의 기본 동작 전에 투명 입력층의 줄바꿈도 맞춘다.
+    flushSync(() => renderViewportController?.flushPendingViewportWidth());
+  }
+
   function handleEditorBeforeInput(event: InputEvent) {
+    syncInputWidthBeforeEditing();
     if (event.inputType === 'historyUndo') {
       event.preventDefault();
       performUndo();
@@ -3633,6 +3652,7 @@
   }
 
   function handleEditorCompositionStart() {
+    syncInputWidthBeforeEditing();
     isComposingEditorText = true;
     pendingNativeInput = null;
   }
@@ -3683,6 +3703,7 @@
       scrollTop,
       scrollLeft,
       editorViewportWidth,
+      liveEditorViewportWidth,
       measuredLineHeight,
       currentFontSize,
       currentRenderFontFamilyCSS,
@@ -4631,6 +4652,7 @@
   ]);
 
   function handleEditorKeyDown(event: KeyboardEvent) {
+    syncInputWidthBeforeEditing();
     if (editorMovementKeys.has(event.key)) {
       pendingRenderCaretMovementDirection = event.key === 'ArrowLeft'
         || event.key === 'ArrowUp'
@@ -5413,7 +5435,7 @@
       pointMaximum,
       clientX,
       clientY,
-      Math.max(editorViewportWidth, 1),
+      Math.max(liveEditorViewportWidth, 1),
       (offset) => {
         const boundary = boundaries.getBoundary(offset);
         return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
@@ -5749,6 +5771,7 @@
   }
 
   function handleEditorPointerDown(event: PointerEvent) {
+    syncInputWidthBeforeEditing();
     if (event.button === 0) {
       closeActiveUndoGroup();
       markdownHeadingReplacementCaret = null;
@@ -6320,11 +6343,11 @@
     <!-- 편집 공간 -->
     <main
       class="editor-area"
+      style:--editor-layout-width={`${editorViewportWidth}px`}
       class:render-mode={isRenderMode && isEnhancedDocumentWithinBudget}
       class:render-selection-active={isRenderMode && isEnhancedDocumentWithinBudget && hasEditorSelection}
       class:render-custom-selection={isRenderMode && shouldRenderHighlightLayer && hasRenderedSelectionHighlight}
       class:render-wrap-settling={isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling}
-      class:render-native-text-visible={shouldShowNativeRenderText}
     >
       {#if shouldShowNewDocumentFormatToolbar && isNewDocumentFormatPickerOpen}
         <div
@@ -6393,7 +6416,6 @@
         <!-- 라인 번호 Gutter -->
         {#if isRenderMode && isEnhancedDocumentWithinBudget}
           <div class="editor-gutter" style="background-color: var(--color-render-bg); border-right: 1px solid var(--color-gutter-border);">
-            {#if !isRenderWrapSettling}
               <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
                 {#each Array(endLine - startLine + 1) as _, idx}
                   {@const lineIdx = startLine + idx}
@@ -6406,7 +6428,6 @@
                   </div>
                 {/each}
               </div>
-            {/if}
           </div>
         {/if}
 
@@ -6456,7 +6477,7 @@
                       class:markdown-heading-line={line.headingLevel !== undefined}
                       class:markdown-heading-divider={line.headingLevel !== undefined && line.headingLevel <= 2 && markdownRenderSettings.showHeadingDividers}
                       class:styled-text-geometry={line.headingLevel !== undefined}
-                      style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize}; {getMarkdownHeadingLineStyle(line.headingLevel)} {listLayout ? getRenderListLineStyle(listLayout) : ''}"
+                      style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; min-height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize}; {getMarkdownHeadingLineStyle(line.headingLevel)} {listLayout ? getRenderListLineStyle(listLayout) : ''}"
                     >
                       {#each Array(indentGuideCount) as _, i}
                         <span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>
@@ -6507,8 +6528,9 @@
             bind:this={textareaEl}
             class="editor-textarea"
             data-testid="editor-textarea"
-            style="height: {isRenderMode && isEnhancedDocumentWithinBudget ? `${renderEditorScrollHeight}px` : '100%'}; font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled && !shouldShowNativeRenderText ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode && isEnhancedDocumentWithinBudget ? editorCursorStyle : 'text'};"
+            style="height: {isRenderMode && isEnhancedDocumentWithinBudget ? `${renderEditorScrollHeight}px` : '100%'}; font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode && isEnhancedDocumentWithinBudget ? editorCursorStyle : 'text'};"
             wrap={isRenderMode && isEnhancedDocumentWithinBudget ? 'soft' : 'off'}
+            style:transform={isRenderMode && isEnhancedDocumentWithinBudget ? `scaleX(${liveEditorViewportWidth / Math.max(1, editorViewportWidth)})` : null}
             value={textareaDisplayContent}
             onkeydown={handleEditorKeyDown}
             onbeforeinput={handleEditorBeforeInput}
@@ -7650,6 +7672,9 @@
 
   /* 렌더 모드 활성화 시 스타일 */
   .render-mode .editor-textarea {
+    width: var(--editor-layout-width);
+    /* 투명 입력층의 클릭 범위만 확장한다. 보이는 텍스트와 선택 좌표는 렌더층이 소유한다. */
+    transform-origin: top left;
     background-color: transparent;
     color: transparent;
     caret-color: var(--color-render-text, var(--text-color));
@@ -7689,18 +7714,6 @@
 
   .render-mode.render-custom-selection .editor-textarea::selection {
     background: transparent;
-  }
-
-  .render-mode.render-native-text-visible .editor-backdrop {
-    opacity: 0;
-  }
-
-  .render-mode.render-native-text-visible .editor-textarea {
-    color: var(--color-render-text, var(--text-color));
-  }
-
-  .render-mode.render-native-text-visible .editor-textarea::selection {
-    color: var(--color-render-text, var(--text-color));
   }
 
   .steady-editor-caret {

@@ -114,6 +114,41 @@ try {
   const arrowSubstitution = await server.ssrLoadModule('/src/lib/arrow-substitution.ts');
   const markdownHeadingEdit = await server.ssrLoadModule('/src/lib/markdown-heading-edit.ts');
 
+  const numberHighlightSamples = [
+    ['asdf123 123asdf asdf123asdf 한글123끝', ['123', '123', '123', '123']],
+    ['id_123', ['123']],
+    ['123_id', ['123']],
+    ['asdf 1e 23e41 ewqd', ['1', '23', '41']],
+    ['v12.34kg -56.78 90', ['12.34', '56.78', '90']],
+    ['#123456 word#123456 #123456, #1234567', ['123456', '123456', '1234567']],
+    ['"word123" `word456` (word789)', ['123', '456', '789']],
+    ['1. item23', ['23']],
+    ['asdf1231523'.repeat(200), Array(200).fill('1231523')]
+  ];
+  const collectTokensOfType = (tokens, type) => tokens.flatMap((token) => [
+    ...(token.type === type ? [token.text] : []),
+    ...collectTokensOfType(token.children || [], type)
+  ]);
+  for (const formatId of ['plain', 'markdown']) {
+    for (const [content, expectedNumbers] of numberHighlightSamples) {
+      const rendered = documentFormats.parseDocumentForRender(content, {
+        pathOrName: 'numbers', formatId, tabSize: 4, lineStartOffsets: [0]
+      });
+      const tokens = rendered.lines[0].tokens;
+      assert.deepEqual(collectTokensOfType(tokens, 'number'), expectedNumbers,
+        `${formatId} should highlight digit runs next to letters without changing other syntax`);
+      assert.equal(flattenTokens(tokens), content, `${formatId} number highlighting must preserve source text`);
+      if (content.startsWith('#123456 ')) {
+        assert.deepEqual(collectTokensOfType(tokens, 'color'), ['#123456']);
+      }
+    }
+  }
+  const numberedComment = documentFormats.parseDocumentForRender('<!-- word123 #123456 --> word789', {
+    pathOrName: 'numbers.md', formatId: 'markdown', tabSize: 4, lineStartOffsets: [0]
+  });
+  assert.deepEqual(collectTokensOfType(numberedComment.lines[0].tokens, 'number'), ['789']);
+  assert.deepEqual(collectTokensOfType(numberedComment.lines[0].tokens, 'color'), ['#123456']);
+
   const offsetSamples = [
     '',
     'plain text',
@@ -1006,6 +1041,10 @@ try {
   assert.deepEqual(wrapSettlingStates, [true]);
   viewportScheduler.flushAnimationFrame();
   assert.deepEqual(wrapSettlingStates, [true, false]);
+  viewportController.observeViewportSize(640, 435);
+  assert.equal(viewportScheduler.timeoutCount, 0);
+  assert.equal(viewportScheduler.animationFrameCount, 0);
+  assert.deepEqual(viewportWidths, [500, 510, 640]);
   viewportController.observeViewportSize(700, 440);
   assert.deepEqual(wrapSettlingStates, [true, false, true]);
   viewportController.disconnectViewport();
@@ -1014,6 +1053,20 @@ try {
   assert.deepEqual(wrapSettlingStates, [true, false, true, false]);
   viewportScheduler.flushTimeouts();
   assert.deepEqual(viewportWidths, [500, 510, 640]);
+
+  // 입력 시작 시에는 대기 중인 전체 입력창 폭을 즉시 확정한다.
+  viewportController.connectViewport(700, 440);
+  viewportController.observeViewportSize(760, 440);
+  viewportController.flushPendingViewportWidth();
+  assert.equal(viewportScheduler.timeoutCount, 0);
+  assert.equal(viewportWidths.at(-1), 760);
+  const flushedWidthCount = viewportWidths.length;
+  viewportController.flushPendingViewportWidth();
+  assert.equal(viewportWidths.length, flushedWidthCount);
+  viewportController.dispose();
+  viewportController.flushPendingViewportWidth();
+  viewportScheduler.flushAnimationFrame();
+  assert.equal(viewportWidths.length, flushedWidthCount);
 
   const nestedModeContent = '    1. item\n       continuation';
   const nestedModeIndex = offsets.createTextOffsetIndex(nestedModeContent);

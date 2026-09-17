@@ -18,6 +18,10 @@ Natural editing is not editing with the most features. It is editing that does n
 
 ## Rendered layout and pointer selection
 
+- When measured visible-line heights increase the document height at the scroll bottom, preserve the bottom position. Do not force a return to the bottom after the user scrolls upward or the editor viewport changes.
+
+- During continuous window-width changes, visible text immediately wraps at the current width. Keep syntax highlighting and line numbers visible, and update line positions, the caret, and selection backgrounds from actual displayed-line heights and text coordinates. Preserve source text and selection offsets. Only offscreen estimates and full-document wrapping in the transparent input wait until width changes stop for 80ms; synchronize the input width before pointer presses, keyboard navigation, text input, or composition starts. Height-only changes must not delay the pending width update.
+
 - Render mode wraps at character boundaries to use the remaining width. Hyphens and syntax token boundaries are not separate preferred wrapping points. Source newlines remain unchanged.
 - The actual height of each displayed line determines subsequent line positions, line numbers, and scroll extent. After content or presentation changes, remeasure displayed lines even when their dimensions are unchanged. Offscreen estimates are not authoritative heights for displayed lines.
 - Clicks, Shift-clicks, and both drag endpoints map visible rendered text to source offsets. Selection does not use the transparent input element's separate wrapping geometry. Backward selection and drag autoscrolling outside the viewport are supported.

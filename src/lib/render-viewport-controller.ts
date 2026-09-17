@@ -77,6 +77,12 @@ export class RenderViewportController {
     this.pendingViewportWidth = width;
     this.onViewportHeightChange(height);
 
+    // 높이만 바뀌면 가상화 범위만 갱신하고 폭 확정 타이머는 유지한다.
+    if (!widthChanged) {
+      this.hasObservedViewportResize = true;
+      return;
+    }
+
     if (this.hasObservedViewportResize && widthChanged) {
       this.invalidateWrapSettleFrames();
       if (this.isWrapSettlingEnabled()) {
@@ -105,6 +111,12 @@ export class RenderViewportController {
 
     this.invalidateWrapSettleFrames();
     this.setWrapSettling(false);
+  }
+
+  flushPendingViewportWidth(): void {
+    if (this.isDisposed || !this.isViewportConnected || this.viewportResizeTimer === null) return;
+    this.scheduler.clearTimeout(this.viewportResizeTimer);
+    this.flushViewportWidth();
   }
 
   requestCaretReveal(): void {

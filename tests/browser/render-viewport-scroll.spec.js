@@ -165,6 +165,7 @@ test('render checkboxes continue on Enter and keep one final visual width', asyn
   const textarea = page.getByTestId('editor-textarea');
   await textarea.fill('[] item1\n[V] item1');
   await expect(page.locator('.hl-checkbox')).toHaveCount(2);
+  await expect(page.locator('.hl-number')).toHaveText(['1', '1']);
 
   const checkboxMetrics = await page.locator('.backdrop-line').evaluateAll((lines) => lines.slice(0, 2).map((line) => {
     const checkbox = line.querySelector('.hl-checkbox');
@@ -172,16 +173,20 @@ test('render checkboxes continue on Enter and keep one final visual width', asyn
 
     const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
     let itemLeft = Number.NaN;
+    // 숫자 강조로 본문이 여러 노드로 나뉘어도 원문에서 같은 글자의 위치를 찾는다.
+    const itemIndex = line.textContent?.indexOf('item1') ?? -1;
+    let textOffset = 0;
     let node = walker.nextNode();
     while (node) {
-      const itemIndex = node.textContent?.indexOf('item1') ?? -1;
-      if (itemIndex >= 0) {
+      const textLength = node.textContent?.length ?? 0;
+      if (itemIndex >= textOffset && itemIndex < textOffset + textLength) {
         const range = document.createRange();
-        range.setStart(node, itemIndex);
-        range.setEnd(node, itemIndex + 1);
+        range.setStart(node, itemIndex - textOffset);
+        range.setEnd(node, itemIndex - textOffset + 1);
         itemLeft = range.getBoundingClientRect().left;
         break;
       }
+      textOffset += textLength;
       node = walker.nextNode();
     }
 
@@ -445,9 +450,103 @@ test('wrapped comments retain measured heights after edits and pointer selection
     .toEqual([130, first.length + 1 + 40, 'backward']);
   await expect(textarea).toHaveValue(source);
   await page.setViewportSize({ width: 650, height: 650 });
+  await expect(page.locator('.editor-area')).not.toHaveClass(/render-wrap-settling/);
+  await expect.poll(() => page.evaluate(() => {
+    const viewport = document.querySelector('[data-testid="editor-viewport"]');
+    const input = document.querySelector('[data-testid="editor-textarea"]');
+    const backdrop = document.querySelector('.editor-backdrop');
+    return viewport && input && backdrop
+      ? Math.max(Math.abs(viewport.clientWidth - input.clientWidth), Math.abs(viewport.clientWidth - backdrop.clientWidth))
+      : Infinity;
+  })).toBeLessThanOrEqual(1);
+  await expect.poll(() => textarea.evaluate(e => { const input = /** @type {HTMLTextAreaElement} */ (e); return [input.selectionStart, input.selectionEnd, input.selectionDirection]; }))
+    .toEqual([130, first.length + 1 + 40, 'backward']);
   await assertNoOverlap();
 });
 
+
+test('visible wrapping, selection and line numbers follow continuous resizing before input settles', async ({ page }) => {
+  await page.goto('/');
+  const textarea = page.getByTestId('editor-textarea');
+  const source = Array.from({ length: 180 }, (_, i) => `${i}: 한글 mixed text ${'실시간 줄바꿈 확인 '.repeat(16)}`).join('\n');
+  await textarea.fill(source);
+  await textarea.press('Control+Home');
+  await textarea.evaluate(element => {
+    const input = /** @type {HTMLTextAreaElement} */ (element);
+    input.setSelectionRange(10, 130, 'backward');
+    input.dispatchEvent(new Event('select', { bubbles: true }));
+  });
+  await expect(page.locator('.editor-area')).toHaveClass(/render-custom-selection/);
+  await page.waitForTimeout(250);
+  const samples = [];
+  for (const width of [860, 820, 780, 740, 700, 660, 700, 760, 820, 880, 940, 1000]) {
+    await page.setViewportSize({ width, height: 650 });
+    // 연속 변경 중 두 화면 갱신만 기다린다. 80ms 안정화 대기를 하지 않는다.
+    const sample = await page.evaluate(async () => {
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(undefined))));
+      const viewport = document.querySelector('[data-testid="editor-viewport"]');
+      const input = /** @type {HTMLTextAreaElement} */ (document.querySelector('[data-testid="editor-textarea"]'));
+      const lines = [...document.querySelectorAll('.backdrop-line')].map(e => e.getBoundingClientRect());
+      const box = viewport?.getBoundingClientRect();
+      return {
+        width: viewport?.clientWidth ?? 0,
+        lineWidth: lines[0]?.width ?? 0,
+        lineHeight: lines[0]?.height ?? 0,
+        lineCount: lines.length,
+        overlaps: lines.slice(1).filter((r, i) => r.top < lines[i].bottom - 0.5).length,
+        gutterCount: document.querySelectorAll('.gutter-line-number').length,
+        inputWidth: input.clientWidth,
+        hitWidth: input.getBoundingClientRect().width,
+        hitLeft: input.getBoundingClientRect().left - (box?.left ?? 0),
+        selection: [input.selectionStart, input.selectionEnd, input.selectionDirection],
+        highlights: CSS.highlights.get('render-selection')?.size ?? 0
+      };
+    });
+    samples.push(sample);
+    expect(sample.lineCount).toBeGreaterThan(0);
+    expect(sample.gutterCount).toBe(sample.lineCount);
+    expect(Math.abs(sample.width - sample.lineWidth)).toBeLessThanOrEqual(1);
+    expect(Math.abs(sample.width - sample.hitWidth)).toBeLessThanOrEqual(1);
+    expect(Math.abs(sample.hitLeft)).toBeLessThanOrEqual(1);
+    expect(sample.overlaps).toBe(0);
+    expect(sample.selection).toEqual([10, 130, 'backward']);
+    expect(sample.highlights).toBeGreaterThan(0);
+  }
+  // 입력창은 아직 이전 폭이어도 표시 줄은 여러 중간 폭에서 이미 줄바꿈했다.
+  expect(samples.filter(sample => Math.abs(sample.width - sample.inputWidth) > 1).length).toBeGreaterThan(6);
+  expect(new Set(samples.map(sample => sample.lineHeight)).size).toBeGreaterThan(1);
+  await expect(textarea).toHaveValue(source);
+  await textarea.press('ArrowRight');
+  await expect.poll(() => textarea.evaluate(element => element.clientWidth))
+    .toBe(await page.getByTestId('editor-viewport').evaluate(element => element.clientWidth));
+  await textarea.press('x');
+  await expect(textarea).toHaveValue(source.slice(0, 130) + 'x' + source.slice(130));
+  await textarea.press('Control+z');
+  await expect(textarea).toHaveValue(source);
+  await page.setViewportSize({ width: 720, height: 650 });
+  const point = await page.locator('.backdrop-line[data-line-index="0"] .line-content').evaluate(element => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    let remaining = 20;
+    while (node && remaining >= (node.textContent?.length ?? 0)) {
+      remaining -= node.textContent?.length ?? 0;
+      node = walker.nextNode();
+    }
+    if (!node) throw new Error('포인터 검증용 글자 없음');
+    const range = document.createRange();
+    range.setStart(node, remaining);
+    range.setEnd(node, remaining + 1);
+    const rect = range.getBoundingClientRect();
+    return { x: rect.left + 0.5, y: rect.top + rect.height / 2 };
+  });
+  await page.mouse.click(point.x, point.y);
+  await expect.poll(() => textarea.evaluate(element => /** @type {HTMLTextAreaElement} */ (element).selectionStart)).toBe(20);
+  await page.locator('.render-mode-toggle').click();
+  await page.setViewportSize({ width: 1000, height: 650 });
+  await expect.poll(() => textarea.evaluate(element => element.clientWidth))
+    .toBe(await page.getByTestId('editor-viewport').evaluate(element => element.clientWidth));
+  await expect(textarea).toHaveValue(source);
+});
 
 test('render theme settings expose comments and added colors for both themes', async ({ page }) => {
   await page.goto('/');
