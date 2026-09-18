@@ -36,6 +36,7 @@ export type DesktopInvoke = <T>(
 ) => Promise<T>;
 
 export interface DesktopFileService {
+  readDocumentImage(documentPath: string, relativePath: string): Promise<{ mimeType: string; bytes: number[] }>;
   getStartupFiles(): Promise<OpenedTextFile[]>;
   openFileDialog(filters: readonly DesktopFileDialogFilter[]): Promise<OpenedTextFile | null>;
   openFilePaths(paths: readonly string[]): Promise<OpenedTextFile[]>;
@@ -46,6 +47,7 @@ export interface DesktopFileService {
 }
 
 export const desktopFileCommands = {
+  readDocumentImage: 'read_document_image',
   getStartupFiles: 'get_startup_files',
   openFileDialog: 'open_file_dialog',
   openFilePaths: 'open_file_paths',
@@ -57,6 +59,9 @@ export const desktopFileCommands = {
 
 export function createDesktopFileService(invokeCommand: DesktopInvoke): DesktopFileService {
   return {
+    readDocumentImage(documentPath, relativePath) {
+      return invokeCommand(desktopFileCommands.readDocumentImage, { documentPath, relativePath });
+    },
     getStartupFiles(): Promise<OpenedTextFile[]> {
       return invokeCommand(desktopFileCommands.getStartupFiles);
     },

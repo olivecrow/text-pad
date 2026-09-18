@@ -15,6 +15,7 @@ try {
   const openedFile = { path: 'C:\\docs\\note.md', content: '# note', encoding: 'utf8' };
   const savedFile = { path: 'C:\\docs\\saved.md', encoding: 'utf8' };
   const responses = new Map([
+    [desktopFileModule.desktopFileCommands.readDocumentImage, { mimeType: 'image/png', bytes: [137, 80, 78, 71] }],
     [desktopFileModule.desktopFileCommands.getStartupFiles, [openedFile]],
     [desktopFileModule.desktopFileCommands.openFileDialog, openedFile],
     [desktopFileModule.desktopFileCommands.openFilePaths, [openedFile]],
@@ -47,6 +48,7 @@ try {
   assert.equal(await files.setupEditorWindowWheel(), undefined);
   assert.deepEqual(await files.takePendingOpenFiles(), [openedFile]);
   assert.equal(await files.writeFileContent(writeOptions), undefined);
+  assert.deepEqual(await files.readDocumentImage(openedFile.path, './image.png'), { mimeType: 'image/png', bytes: [137, 80, 78, 71] });
 
   assert.deepEqual(calls, [
     { command: 'get_startup_files', args: undefined },
@@ -55,7 +57,8 @@ try {
     { command: 'save_file_dialog', args: saveOptions },
     { command: 'setup_editor_window_wheel', args: undefined },
     { command: 'take_pending_open_files', args: undefined },
-    { command: 'write_file_content', args: writeOptions }
+    { command: 'write_file_content', args: writeOptions },
+    { command: 'read_document_image', args: { documentPath: openedFile.path, relativePath: './image.png' } }
   ]);
 
   assert.equal(desktopWindowModule.desktopWindows.isAvailable(), false);

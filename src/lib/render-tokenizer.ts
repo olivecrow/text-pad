@@ -14,6 +14,7 @@ export interface Token {
     | 'quote-marker'
     | 'strong'
     | 'emphasis'
+    | 'strike'
     | 'comment'
     | 'color'
     | 'paren'
@@ -310,25 +311,41 @@ function finalizeTokens(root: Token): Token[] {
 }
 
 function getMarkdownInlineTokenAt(line: string, index: number): Token | null {
+  if (isEscapedAt(line, index)) return null;
   const firstChar = line[index];
   if (firstChar === '[') {
     const link = line.slice(index).match(/^\[[^\]\r\n]+\]\([^)\r\n]+\)/u)?.[0];
     return link ? { type: 'link', text: link } : null;
   }
 
+  if (firstChar === '~') {
+    const strike = line.slice(index).match(/^~~(?=\S)(.+?\S|\S)~~/u)?.[0];
+    if (strike) return markdownDelimitedToken('strike', strike, 2);
+  }
   if (firstChar !== '*' && firstChar !== '_') return null;
+  if (firstChar === '_' && isWordLikeChar(line[index - 1])) return null;
   const remaining = line.slice(index);
+  const triple = remaining.match(firstChar === '*' ? /^\*\*\*(?=\S)(.+?\S|\S)\*\*\*/u : /^___(?=\S)(.+?\S|\S)___/u)?.[0];
+  if (triple) return { type: 'strong', text: triple, children: [markdownDelimitedToken('emphasis', triple, 3)] };
   const strongPattern = firstChar === '*'
     ? /^\*\*[^*\r\n]+\*\*/u
     : /^__[^_\r\n]+__/u;
   const strong = remaining.match(strongPattern)?.[0];
-  if (strong) return { type: 'strong', text: strong };
+  if (strong) return markdownDelimitedToken('strong', strong, 2);
 
   const emphasisPattern = firstChar === '*'
     ? /^\*[^*\r\n]+\*/u
     : /^_[^_\r\n]+_/u;
   const emphasis = remaining.match(emphasisPattern)?.[0];
-  return emphasis ? { type: 'emphasis', text: emphasis } : null;
+  return emphasis ? markdownDelimitedToken('emphasis', emphasis, 1) : null;
+}
+
+function markdownDelimitedToken(type: Token['type'], text: string, width: number): Token {
+  return { type, text, children: [
+    { type: 'text', text: text.slice(0, width), hiddenSyntax: true },
+    ...tokenizeLineWithState(text.slice(width, -width), { markdown: { hideHeadingMarkers: true }, suppressCodeFence: true }).tokens,
+    { type: 'text', text: text.slice(-width), hiddenSyntax: true }
+  ] };
 }
 
 export function tokenizeLineWithState(line: string, options: TokenizeLineOptions = {}): TokenizeLineResult {

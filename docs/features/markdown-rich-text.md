@@ -1,0 +1,37 @@
+# Markdown 서식과 HTML 표시
+
+Markdown 문서는 기존 줄 편집·표 편집과 복합 서식 미리보기를 함께 사용한다. 저장·복사·실행 취소의 기준은 원문이며, 표시 결과를 다시 Markdown으로 직렬화하지 않는다.
+
+## 표시 범위
+
+- 일반 줄의 `**굵게**`, `__굵게__`, `*기울임*`, `_기울임_`, `***굵은 기울임***`, `~~취소선~~`은 서식 표식을 숨겨 표시하고 원문 위치로 직접 편집한다.
+- HTML 블록과 HTML·이미지·링크·문자 참조가 들어 있는 문단, 가로 구분선은 복합 서식 미리보기로 표시한다. `&amp;`, `&nbsp;`, 숫자 문자 참조도 해석한다.
+- 글자 서식: `strong/b`, `em/i`, `del/s`, `ins/u`, `sub/sup`, `small`, `mark`, `code`, `kbd`, `samp`, `var`, `abbr`, `cite`, `q`, `dfn`, `ruby/rt/rp`, `bdi/bdo`, `time`.
+- 문서 구조: `p`, `div`, `span`, `center`, `h1`~`h6`, `br/wbr`, `hr`, `blockquote`, `ul/ol/li`, `dl/dt/dd`, `figure/figcaption`, `table/caption/colgroup/col/thead/tbody/tfoot/tr/th/td`.
+- 접기 영역: 중첩 `details/summary`, 초기 `open` 속성. 영역 안에서 빈 줄로 분리된 Markdown 문단·목록·표·코드도 해석한다. HTML 안의 Markdown 해석은 CommonMark의 HTML 블록 경계를 따른다.
+- 링크·이미지: `a`, `img`, Markdown 링크·이미지와 문서 다른 곳의 정의를 사용하는 참조형 링크·이미지. 정렬 `align`, 이미지 `width/height`, 표 `colspan/rowspan`, 목록 `start/reversed/value`, `title/alt`, 글 방향 `dir`과 언어 `lang`을 제한된 속성으로 지원한다.
+- 외부 링크는 운영체제의 기본 브라우저로 열고 `#제목` 링크는 문서 제목 위치로 이동한다. 외부 문서 경로·실행 파일·사용자 정의 프로토콜을 임의 실행하지 않는다.
+
+## 이미지
+
+- HTTP/HTTPS 이미지는 브라우저 이미지 요소로 표시하고 참조 페이지 주소를 보내지 않는다. 외부 이미지 서버에는 이미지 요청이 전달된다.
+- 저장된 문서의 상대 이미지 경로는 `read_document_image` 명령으로 읽는다. 사용자가 연 문서의 승인 경로를 먼저 확인하고, 실제 경로가 그 문서 폴더 안에 있는 이미지만 허용한다. 상위 폴더 밖 이동, 절대 경로, 임의 파일 형식은 거절한다.
+- PNG, JPEG, GIF, WebP, SVG, AVIF, BMP, ICO를 지원하며 로컬 이미지 하나는 최대 4 MiB다. SVG도 실행 가능한 문서로 삽입하지 않고 이미지 요소로만 표시한다. 사용을 마친 임시 이미지 주소는 해제한다.
+- 문서가 아직 저장되지 않았거나 이미지 파일이 없으면 원문과 대체 텍스트를 유지한다. `samples/ouroboros README.ko.md`에 적힌 `./docs/images/ouroboros.png` 파일 자체는 이 저장소에 포함되어 있지 않다.
+
+## 편집과 배치
+
+- 복합 서식 영역의 `‹/›` 버튼 또는 본문 두 번 클릭은 기존 원문 모드로 전환하고 해당 영역의 정확한 원문 범위를 선택한다. 키보드 입력 위치가 복합 영역 안에 있으면 입력 전에 원문 모드로 전환한다. 숨긴 태그 길이로 화면 좌표를 추측하지 않는다.
+- 접기·펼치기와 모드 전환은 원문이나 실행 취소 기록을 바꾸지 않는다. 원문 변경은 기존 입력·실행 취소 경로로 처리한다.
+- 실제 미리보기 높이를 기존 줄 배치에 반영한다. 이미지 로드, 접기·펼치기, 창 폭 변경 뒤에도 다음 문단과 겹치지 않는다. 화면 밖에서는 기존 가상화 방식을 사용한다.
+- 복합 HTML 안의 표는 미리보기의 일부다. 그 밖의 Markdown 표는 기존 공통 셀 편집기를 그대로 사용한다.
+- 코드 블록과 인라인 코드 안의 태그를 HTML로 실행하지 않는다. 문서 전체 렌더 예산 외에 복합 블록은 500개, 블록당 원문은 128 KiB, Markdown 중첩 해석은 32단계로 제한한다. 범위를 넘는 블록은 기존 원문 표시로 남긴다.
+
+## 보안과 구현
+
+- [markdown-it](https://github.com/markdown-it/markdown-it)으로 Markdown을 해석하고 [DOMPurify](https://github.com/cure53/DOMPurify) 허용 목록으로 최종 HTML을 정리한다.
+- 스크립트, 이벤트 속성, 임의 스타일·클래스·식별자, 폼, iframe, 직접 삽입한 SVG/MathML, 위험한 주소 프로토콜을 제거한다. 사용자 문서가 앱의 선택·입력용 속성을 위조할 수 없다.
+- `src/lib/markdown-rich-text.ts`: 원문 범위 탐색, Markdown 해석, HTML 정리, 내부 제목 링크.
+- `src/lib/MarkdownRichBlock.svelte`: 복합 서식 표시, 상대 이미지 수명 관리, 원문 전환 버튼.
+- `src/routes/+page.svelte`: 기존 표·줄 배치와 미리보기 연결, 정확한 원문 편집 경계.
+- `src-tauri/src/file_commands.rs`: 승인된 문서 기준의 크기·경로 제한 이미지 읽기.

@@ -22,6 +22,9 @@
   } from "$lib/document-formats";
   import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatCategory, DocumentFormatId } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
+  import MarkdownRichBlockView from '$lib/MarkdownRichBlock.svelte';
+  import { parseMarkdownRichBlocks, findMarkdownAnchorLine, type MarkdownRichBlock } from '$lib/markdown-rich-text';
+  import { openUrl } from '@tauri-apps/plugin-opener';
   import { getCheckboxEnterEdit } from "$lib/checkbox-markers";
   import {
     formatListMarker,
@@ -2188,9 +2191,21 @@
   let isActiveDocumentEditEnabled = $derived(isDocumentFormatEditEnabled(activeDocumentFormat, documentFeatureSettings));
 
   let renderWrapContentWidth = $derived(getEditorWrapContentWidth());
+  let markdownRichBlocks = $derived(
+    isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown'
+      ? parseMarkdownRichBlocks(fileContent, lineStartOffsets) : []
+  );
+  let markdownRichByLine = $derived.by(() => {
+    const lines = new Map<number, MarkdownRichBlock>();
+    for (const block of markdownRichBlocks) {
+      for (let line = block.startLine; line <= block.endLine; line += 1) lines.set(line, block);
+    }
+    return lines;
+  });
   let markdownTableBlocks = $derived(
     isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown'
       ? parseMarkdownTables(fileContent, lineStartOffsets, MAX_INTERACTIVE_TABLE_CELLS)
+        .filter((block) => !markdownRichBlocks.some((rich) => rich.startLine <= block.endLine && rich.endLine >= block.startLine))
       : []
   );
   let markdownTableByLine = $derived.by(() => {
@@ -2202,6 +2217,10 @@
   });
   let blockLineHeightOverrides = $derived.by(() => {
     const heights = new Map<number, number>();
+    for (const block of markdownRichBlocks) {
+      heights.set(block.startLine, measuredLineHeight * Math.min(6, block.endLine - block.startLine + 1));
+      for (let line = block.startLine + 1; line <= block.endLine; line += 1) heights.set(line, 0);
+    }
     for (const block of markdownTableBlocks) {
       heights.set(block.startLine, 48 + block.document.rows.length * 31);
       for (let line = block.startLine + 1; line <= block.endLine; line += 1) heights.set(line, 0);
@@ -2219,6 +2238,7 @@
     JSON.stringify(documentFeatureSettings),
     JSON.stringify(markdownRenderSettings),
     markdownTableBlocks.map((block) => `${block.startLine}:${block.endLine}`).join(','),
+    markdownRichBlocks.map((block) => `${block.startLine}:${block.endLine}`).join(','),
     delimitedTableHighlightHeader,
     delimitedTableShowRowIndices
   ].join('|'));
@@ -2605,6 +2625,11 @@
       if (!steadyEditorCaretVisible) return;
       if (revealCaret && ensureRenderedCaretLineVisible(start)) return;
 
+      const rich = markdownRichByLine.get(findLineIndexForOffset(start));
+      if (rich) {
+        steadyEditorCaretVisible = false;
+        return;
+      }
       const table = markdownTableByLine.get(findLineIndexForOffset(start));
       if (table) {
         steadyEditorCaretVisible = false;
@@ -3783,6 +3808,30 @@
     scheduleRenderedHighlights();
   }
 
+  async function editMarkdownRichBlock(block: MarkdownRichBlock) {
+    if (!textareaEl) return;
+    // 미리보기 DOM의 글자 수를 원문 오프셋으로 추측하지 않는다.
+    // 동일한 원문 편집기로 돌아가 정확한 블록 범위를 선택한다.
+    if (isRenderMode) toggleRenderMode();
+    await tick();
+    textareaEl.focus();
+    setTextareaSelectionFromContent(block.start, block.end);
+    updateEditorSelectionState();
+  }
+
+  async function openMarkdownRichLink(href: string) {
+    if (href.startsWith('#')) {
+      const line = findMarkdownAnchorLine(fileContent, href);
+      if (line !== null && editorViewportEl) editorViewportEl.scrollTop = getRenderLineTop(line);
+      return;
+    }
+    if (!/^(https?:\/\/|mailto:)/iu.test(href)) return;
+    try {
+      if (desktopWindows.isAvailable()) await openUrl(href);
+      else window.open(href, '_blank', 'noopener,noreferrer');
+    } catch (error) { console.error('링크를 열 수 없습니다', error); }
+  }
+
   function handleEditorSelectionChange() {
     if (!textareaEl) return;
     if (document.activeElement !== textareaEl) {
@@ -4768,6 +4817,11 @@
 
   function handleEditorKeyDown(event: KeyboardEvent) {
     syncInputWidthBeforeEditing();
+    if (isRenderMode && markdownRichByLine.has(findLineIndexForOffset(getCurrentEditorSelection().start))
+      && !event.ctrlKey && !event.metaKey && !event.altKey && event.key !== 'Shift') {
+      // 복합 HTML 안의 원문 입력은 기존 원문 편집기에서 정확한 위치를 보여 준다.
+      toggleRenderMode();
+    }
     if (editorMovementKeys.has(event.key)) {
       pendingRenderCaretMovementDirection = event.key === 'ArrowLeft'
         || event.key === 'ArrowUp'
@@ -6544,7 +6598,7 @@
               <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
                 {#each Array(endLine - startLine + 1) as _, idx}
                   {@const lineIdx = startLine + idx}
-                  {#if !markdownTableByLine.has(lineIdx) || markdownTableByLine.get(lineIdx)?.startLine === lineIdx}
+                  {#if (!markdownTableByLine.has(lineIdx) || markdownTableByLine.get(lineIdx)?.startLine === lineIdx) && (!markdownRichByLine.has(lineIdx) || markdownRichByLine.get(lineIdx)?.startLine === lineIdx)}
                   <div
                     class="gutter-line-number"
                     class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1}
@@ -6583,7 +6637,7 @@
                   {@const listLayout = renderListLineLayouts[idx] ?? null}
                   {@const indentGuideCount = listLayout ? listLayout.indentGuideCount : line?.indentLevel ?? 0}
                   {@const listTokenParts = listLayout ? getListRenderTokenParts(line?.tokens ?? [], listLayout.prefixLength) : null}
-                  {#if line && !markdownTableByLine.has(lineIdx)}
+                  {#if line && !markdownTableByLine.has(lineIdx) && !markdownRichByLine.has(lineIdx)}
                     <div
                       use:observeRenderedLine
                       class="backdrop-line"
@@ -6634,6 +6688,16 @@
               </div>
             </div>
           {/if}
+
+          {#each markdownRichBlocks.filter((block) => block.startLine <= endLine && block.endLine >= startLine) as block (`${activeTabId}:${block.startLine}`)}
+            <div class="backdrop-line render-rich-block"
+              class:table-source-selected={isEditorFocused && (activeTab?.selectionStart ?? 0) < block.end && (activeTab?.selectionEnd ?? 0) > block.start}
+              use:observeRenderedLine data-line-index={block.startLine} data-markdown-rich={block.startLine}
+              style:top={`${getRenderLineTop(block.startLine) + editorTopPadding}px`}>
+              <MarkdownRichBlockView source={block.source} environment={block.environment} documentPath={filePath} editLabel={t('toolbar.switchToSource')}
+                onedit={() => editMarkdownRichBlock(block)} onlink={openMarkdownRichLink} />
+            </div>
+          {/each}
 
           {#each markdownTableBlocks.filter((block) => block.startLine <= endLine && block.endLine >= startLine) as block (`${activeTabId}:${block.startLine}`)}
             <div
@@ -6943,6 +7007,7 @@
   :global(.hl-emphasis) {
     font-style: italic;
   }
+  :global(.hl-strike) { text-decoration: line-through; }
   :global(.hl-quote-marker) {
     color: var(--color-hl-list-marker);
     font-weight: 700;
@@ -7667,7 +7732,7 @@
     font-weight: var(--font-render-weight, normal);
   }
 
-  .render-table-block {
+  .render-table-block, .render-rich-block {
     position: absolute;
     left: 0;
     z-index: 3;

@@ -54,6 +54,7 @@ const desktopFileServiceSource = fs.readFileSync(
 const generatedCommands = [...tauriBuildSource.matchAll(/^\s*"([a-z_]+)",?$/gm)]
   .map((match) => match[1]);
 const expectedGeneratedCommands = [
+  'read_document_image',
   'get_startup_files',
   'open_file_dialog',
   'open_file_paths',

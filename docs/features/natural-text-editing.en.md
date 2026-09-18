@@ -125,6 +125,14 @@ In render mode, the editor shows the other end of the paired character touching 
 - The table's full height determines subsequent prose positions and scroll extent; long tables scroll vertically with the document. Source selections and copying started outside the table include its source string. Within cells, use the shared table editor's text selection. Keep emphasis and link syntax as editable Markdown strings in cells.
 - Example: `| 품목 | 수량 |` followed by `| :--- | ---: |` and `| 연필 | 2 |` produces a two-column table aligned left/right. Replacing `연필` with `연필 세트` preserves other cells and surrounding prose; one undo restores `연필`.
 
+## Markdown formatting and HTML
+
+- Hide bold, italic, and strikethrough markers on ordinary lines while retaining their source offsets; clicking visible text edits at that position and supports Undo.
+- Render paragraphs containing HTML, images, links, or character references, and horizontal rules, as safe rich previews. Example: `<p align="center"><strong>Title</strong><br><sub>Description</sub></p>`.
+- The `‹/›` button or a double-click on a rich block switches to source mode and selects that block's exact source. If keyboard input starts inside a rich block, reveal source mode before editing. Never estimate source offsets from preview text length.
+- Apply the actual height of `<details><summary>More</summary>…</details>` disclosure changes, image loading, and width changes to following paragraphs and scroll extent. Disclosure state and source-mode switching change neither source text nor Undo history.
+- Keep tags inside code literal. Never execute document scripts, events, or arbitrary styles. Tables inside rich HTML remain part of its preview; other Markdown tables retain the existing cell editor.
+
 ## Rendered line checkboxes
 
 - In plain-text and Markdown documents, start rendering an unchecked or checked checkbox when the first content after optional leading indentation is `[]` or `[V]` and the marker is immediately followed by a literal Space (U+0020). Do not reinterpret the same strings inside a fenced code block.
