@@ -12,6 +12,7 @@ test('Markdown tables reuse cell editing, preserve surrounding source and undo t
   await expect(blocks.first().locator('.table-editor')).toHaveCSS('border-width', '0px');
   const cell = blocks.first().locator('[data-table-row="1"][data-table-column="0"]');
   await cell.click();
+  await expect(page.locator('.status-bar')).toContainText(/(?:행|Ln) 7,/);
   await cell.press('End');
   await cell.pressSequentially(' pie');
   await expect(editor).toHaveValue(source.replace('Apple', 'Apple pie'));

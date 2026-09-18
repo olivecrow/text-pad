@@ -3783,16 +3783,28 @@
     scheduleRenderedHighlights();
   }
 
+  function handleEditorSelectionChange() {
+    if (!textareaEl) return;
+    if (document.activeElement !== textareaEl) {
+      // 표 셀에서 전달한 원문 선택은 상태 표시만 갱신한다.
+      syncCursorState(false);
+      return;
+    }
+    if (pendingRenderCaretPointerDown && !pendingRenderCaretPointerDown.moved) return;
+
+    const selection = getTextareaSelectionInContent();
+    // 가상화로 DOM이 바뀌어도 selectionchange가 발생할 수 있다.
+    // 원문 선택이 그대로라면 사용자 이동으로 취급해 캐럿까지 스크롤하지 않는다.
+    if (selection.start === activeTab?.selectionStart && selection.end === activeTab?.selectionEnd) return;
+    updateCursorPosition();
+  }
+
   $effect(() => {
     if (!isBrowser || !textareaEl) return;
 
     const handleDocumentSelectionChange = () => {
-      if (document.activeElement === textareaEl) {
-        if (pendingRenderCaretPointerDown && !pendingRenderCaretPointerDown.moved) return;
-        updateCursorPosition();
-      }
+      if (document.activeElement === textareaEl) handleEditorSelectionChange();
     };
-
     document.addEventListener('selectionchange', handleDocumentSelectionChange);
     return () => document.removeEventListener('selectionchange', handleDocumentSelectionChange);
   });
@@ -5108,7 +5120,6 @@
 
     if (isRenderMode && isEnhancedDocumentWithinBudget) {
       if (!editorViewportEl) return;
-      renderViewportController?.cancelCaretReveal();
       const renderScrollDelta = getRenderWheelScrollDelta({
         deltaMode: e.deltaMode,
         deltaY: e.deltaY,
@@ -5154,7 +5165,7 @@
     syncSteadyEditorCaretPosition();
   }
 
-  function handleEditorViewportPointerDown() {
+  function cancelPendingRenderCaretReveal() {
     if (isRenderMode && isEnhancedDocumentWithinBudget) {
       renderViewportController?.cancelCaretReveal();
     }
@@ -5164,8 +5175,13 @@
     const viewport = editorViewportEl;
     if (!viewport) return;
 
-    viewport.addEventListener('pointerdown', handleEditorViewportPointerDown);
-    return () => viewport.removeEventListener('pointerdown', handleEditorViewportPointerDown);
+    viewport.addEventListener('pointerdown', cancelPendingRenderCaretReveal);
+    // 표 셀 위의 휠은 원문 textarea를 거치지 않으므로 뷰포트에서 함께 처리한다.
+    viewport.addEventListener('wheel', cancelPendingRenderCaretReveal, { capture: true, passive: true });
+    return () => {
+      viewport.removeEventListener('pointerdown', cancelPendingRenderCaretReveal);
+      viewport.removeEventListener('wheel', cancelPendingRenderCaretReveal, true);
+    };
   });
 
   // passive: false 리스너로 등록하여 preventDefault() 오동작 차단 및 Rust 네이티브 가로 휠 이벤트 통합
@@ -6683,7 +6699,7 @@
             onpointermove={trackRenderCaretPointerMove}
             onpointercancel={handleEditorPointerCancel}
             onkeyup={updateCursorPosition}
-            onselect={updateCursorPosition}
+            onselect={handleEditorSelectionChange}
             onclick={handleEditorClick}
             ondblclick={handleEditorDoubleClick}
             onmousemove={handleEditorMouseMove}

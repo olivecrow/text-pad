@@ -19,6 +19,7 @@ Natural editing is not editing with the most features. It is editing that does n
 ## Rendered layout and pointer selection
 
 - When measured visible-line heights increase the document height at the scroll bottom, preserve the bottom position. Do not force a return to the bottom after the user scrolls upward or the editor viewport changes.
+- When rendered lines or tables enter or leave the viewport during scrolling, browser selection notifications must not scroll back to the caret if the source selection range is unchanged. Wheel input anywhere in the editor, including table cells, also cancels a pending caret reveal after editing. Subsequent actual keyboard navigation, clicks, and edits reveal the input position again.
 
 - During continuous window-width changes, visible text immediately wraps at the current width. Keep syntax highlighting and line numbers visible, and update line positions, the caret, and selection backgrounds from actual displayed-line heights and text coordinates. Preserve source text and selection offsets. Only offscreen estimates and full-document wrapping in the transparent input wait until width changes stop for 80ms; synchronize the input width before pointer presses, keyboard navigation, text input, or composition starts. Height-only changes must not delay the pending width update.
 
