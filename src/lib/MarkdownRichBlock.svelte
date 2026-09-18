@@ -66,7 +66,11 @@
   .rich-content :global(code), .rich-content :global(kbd) { padding: .1em .25em; }
   .rich-content :global(kbd) { border: 1px solid var(--color-gutter-border); box-shadow: 0 1px 0 var(--color-gutter-border); }
   .rich-content :global(mark) { background: var(--color-selection); color: inherit; }
-  .rich-content :global(blockquote) { margin: .5em 0; padding-left: 1em; border-left: 3px solid var(--color-gutter-border); }
+  .rich-content :global(blockquote) { margin: .5em 0; padding: .2em 1em; border-left: 3px solid var(--color-gutter-border); color: color-mix(in srgb, var(--color-render-text) 80%, var(--color-render-bg)); }
+  .rich-content :global(blockquote > :first-child) { margin-top: 0; }
+  .rich-content :global(blockquote > :last-child) { margin-bottom: 0; }
+  .rich-content :global(strong) { font-weight: 700; }
+  .rich-content :global(em) { font-style: italic; }
   .rich-content :global(details) { border-left: 2px solid var(--color-gutter-border); padding-left: .7em; }
   .rich-content :global(summary) { cursor: pointer; }
   .rich-content :global(table) { border-collapse: collapse; max-width: 100%; }

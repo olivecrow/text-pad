@@ -28,6 +28,7 @@
 - `src/lib/render-budgets.ts`: 향상 렌더와 대화형 표가 허용하는 공통 문서 크기 예산.
 - `src/lib/markdown-settings.ts`: Markdown 제목 1~6단계의 공통 표시 설정.
 - `src/lib/markdown-rich-text.ts`, `src/lib/MarkdownRichBlock.svelte`: Markdown의 안전한 HTML·이미지·링크·접기 미리보기와 정확한 원문 편집 전환. [서식 지원 계약](features/markdown-rich-text.md)을 따른다.
+- `src/lib/markdown-inline.ts`: 공용 Markdown 해석기로 중첩 강조를 판정하고, 숨긴 표식을 포함한 원문 길이를 유지해 줄 편집 토큰에 연결한다. 여러 줄 강조와 인용문은 복합 미리보기의 배치·원문 전환을 사용한다.
 - `src/lib/settings-transfer.ts`: 버전이 붙은 설정 JSON 생성, 이전·미래 버전 호환 가져오기와 값 정규화.
 - `src/lib/theme-colors.ts`: 시스템 기본 팔레트, 16진수 색상 정규화와 읽기 쉬운 전경색 계산을 공유하는 순수 색상 모듈.
 - `src/lib/table-document.ts`: 저장 형식과 독립된 표 데이터, 셀·행·열 변경과 열 정렬 이동 계산.

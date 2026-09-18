@@ -116,7 +116,7 @@ In render mode, the editor shows the other end of the paired character touching 
 
 ## Markdown tables
 
-- Render body tables with consecutive header and pipe-delimiter rows using the same cell, row, and column editor as CSV/TSV. Place the table directly in the document without a separate format label, toolbar, or enclosing border. Rendering and mode changes do not modify source text. Keep tables inside code, comments, quotes, or lists, and tables exceeding the budget, as source text.
+- Render body tables with consecutive header and pipe-delimiter rows using the same cell, row, and column editor as CSV/TSV. Place the table directly in the document without a separate format label, toolbar, or enclosing border. Rendering and mode changes do not modify source text. Keep tables inside code, comments, or lists, and tables exceeding the budget, as source text; display tables inside blockquotes as part of their preview.
 - Map cell selection and caret boundaries to actual source positions, including escaped pipes, character references, and `<br>` line breaks. Editing an existing cell changes only its content range, preserving surrounding prose and other cells' whitespace and delimiters. Row and column operations normalize only that table range while preserving its newline style and column alignment.
 - Merge consecutive input only within the same table and cell; record each row or column operation independently. Undo and redo restore both source text and cell selection. Do not intercept cell-navigation keys during IME composition.
 - `Tab`/`Shift+Tab` move between cells and leave the last/first cell for the following/preceding prose. `Escape` leaves for the following prose; ArrowUp at the start of the first row and ArrowDown at the end of the last row leave in their respective directions. `Ctrl+Home`/`Ctrl+End` also leave for the preceding/following prose. If no prose line exists at the document boundary, create one empty line and record it as an independent undo step.
@@ -128,10 +128,12 @@ In render mode, the editor shows the other end of the paired character touching 
 ## Markdown formatting and HTML
 
 - Hide bold, italic, and strikethrough markers on ordinary lines while retaining their source offsets; clicking visible text edits at that position and supports Undo.
+- Interpret `**bold *nested italic* end**`, `*italic **nested bold** end*`, `***both***`, and emphasis inside quotation marks. Keep intraword underscores, escaped asterisks, unmatched markers, and markers with adjacent inner whitespace literal. Emphasis markers inside inline or fenced code remain text.
+- Consecutive `>` lines form one quote area with a left border; a bare `>` separates internal paragraphs and `> >` creates a nested quote. Render emphasis, lists, tables, and code within the quote; use Markdown paragraph boundaries for lazy continuation lines and the end of the area. Edit quotes and multiline emphasis through the rich block's source-mode transition, preserving source newlines.
 - Render paragraphs containing HTML, images, links, or character references, and horizontal rules, as safe rich previews. Example: `<p align="center"><strong>Title</strong><br><sub>Description</sub></p>`.
 - The `‹/›` button or a double-click on a rich block switches to source mode and selects that block's exact source. If keyboard input starts inside a rich block, reveal source mode before editing. Never estimate source offsets from preview text length.
 - Apply the actual height of `<details><summary>More</summary>…</details>` disclosure changes, image loading, and width changes to following paragraphs and scroll extent. Disclosure state and source-mode switching change neither source text nor Undo history.
-- Keep tags inside code literal. Never execute document scripts, events, or arbitrary styles. Tables inside rich HTML remain part of its preview; other Markdown tables retain the existing cell editor.
+- Keep tags inside code literal. Never execute document scripts, events, or arbitrary styles. Tables inside rich HTML or blockquotes remain part of their preview; other Markdown tables retain the existing cell editor.
 
 ## Rendered line checkboxes
 

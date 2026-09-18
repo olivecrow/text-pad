@@ -1,6 +1,7 @@
 import { getListMarkerAtStart } from './list-markers';
 import { getCheckboxMarkerAtStart } from './checkbox-markers';
 import type { MarkdownHeadingLevel } from './markdown-settings';
+import { getMarkdownInlineSpans } from './markdown-inline';
 
 export interface Token {
   type:
@@ -318,34 +319,7 @@ function getMarkdownInlineTokenAt(line: string, index: number): Token | null {
     return link ? { type: 'link', text: link } : null;
   }
 
-  if (firstChar === '~') {
-    const strike = line.slice(index).match(/^~~(?=\S)(.+?\S|\S)~~/u)?.[0];
-    if (strike) return markdownDelimitedToken('strike', strike, 2);
-  }
-  if (firstChar !== '*' && firstChar !== '_') return null;
-  if (firstChar === '_' && isWordLikeChar(line[index - 1])) return null;
-  const remaining = line.slice(index);
-  const triple = remaining.match(firstChar === '*' ? /^\*\*\*(?=\S)(.+?\S|\S)\*\*\*/u : /^___(?=\S)(.+?\S|\S)___/u)?.[0];
-  if (triple) return { type: 'strong', text: triple, children: [markdownDelimitedToken('emphasis', triple, 3)] };
-  const strongPattern = firstChar === '*'
-    ? /^\*\*[^*\r\n]+\*\*/u
-    : /^__[^_\r\n]+__/u;
-  const strong = remaining.match(strongPattern)?.[0];
-  if (strong) return markdownDelimitedToken('strong', strong, 2);
-
-  const emphasisPattern = firstChar === '*'
-    ? /^\*[^*\r\n]+\*/u
-    : /^_[^_\r\n]+_/u;
-  const emphasis = remaining.match(emphasisPattern)?.[0];
-  return emphasis ? markdownDelimitedToken('emphasis', emphasis, 1) : null;
-}
-
-function markdownDelimitedToken(type: Token['type'], text: string, width: number): Token {
-  return { type, text, children: [
-    { type: 'text', text: text.slice(0, width), hiddenSyntax: true },
-    ...tokenizeLineWithState(text.slice(width, -width), { markdown: { hideHeadingMarkers: true }, suppressCodeFence: true }).tokens,
-    { type: 'text', text: text.slice(-width), hiddenSyntax: true }
-  ] };
+  return null;
 }
 
 export function tokenizeLineWithState(line: string, options: TokenizeLineOptions = {}): TokenizeLineResult {
@@ -532,6 +506,7 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
     i = listMarker.indent.length + listMarker.marker.length;
   }
 
+  const markdownSpans = options.markdown ? getMarkdownInlineSpans(line) : null;
   while (i < len) {
     if (nextState?.blockCommentEnd) {
       const endIndex = indexOfMarker(line, nextState.blockCommentEnd, i, nextState.blockCommentCaseInsensitive);
@@ -553,6 +528,13 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
     const top = getTop();
     const quoteFrameIndex = getActiveQuoteFrameIndex();
     const activeQuoteFrame = quoteFrameIndex === -1 ? null : stack[quoteFrameIndex];
+
+    const markdownSpan = markdownSpans?.get(i);
+    if (markdownSpan && activeQuoteFrame?.openChar !== '`') {
+      appendChild(top.token, markdownSpan.token);
+      i = markdownSpan.end;
+      continue;
+    }
 
     if (activeQuoteFrame && char === '\\') {
       addChar(char);

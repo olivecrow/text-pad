@@ -177,6 +177,42 @@ try {
   const pairedDelimiterHighlighting = await server.ssrLoadModule('/src/lib/paired-delimiter-highlighting.ts');
   const arrowSubstitution = await server.ssrLoadModule('/src/lib/arrow-substitution.ts');
   const markdownHeadingEdit = await server.ssrLoadModule('/src/lib/markdown-heading-edit.ts');
+  const tokenizer = await server.ssrLoadModule('/src/lib/render-tokenizer.ts');
+  const markdownRich = await server.ssrLoadModule('/src/lib/markdown-rich-text.ts');
+  const emphasisCases = [
+    ['*italic* **bold**', ['emphasis', 'strong']],
+    ['**bold *nested* end**', ['strong', 'emphasis']],
+    ['*italic **nested** end*', ['emphasis', 'strong']],
+    ['***both*** ___both___', ['emphasis', 'strong', 'emphasis', 'strong']],
+    ['"**quoted**" and \'*quoted*\'', ['strong', 'emphasis']],
+    ['a_b_c a__b__c * spaced * ** spaced **', []],
+    ['\\*literal\\* **closed** unmatched*', ['strong']],
+    ['``*literal* ` **literal**`` **bold**', ['strong']],
+    ['~~old **bold**~~', ['strike', 'strong']],
+    ['**한글 *중첩😀* 강조**', ['strong', 'emphasis']]
+  ];
+  const emphasisTypes = (tokens) => tokens.flatMap((token) => [
+    ...(['strong', 'emphasis', 'strike'].includes(token.type) ? [token.type] : []),
+    ...emphasisTypes(token.children || [])
+  ]);
+  for (const [source, expected] of emphasisCases) {
+    const tokens = tokenizer.tokenizeLine(source, { markdown: { hideHeadingMarkers: true } });
+    assert.equal(flattenTokens(tokens), source, 'Emphasis must preserve every source character');
+    assert.deepEqual(emphasisTypes(tokens), expected, source);
+  }
+  for (const newline of ['\n', '\r\n']) {
+    const quote = ['> first', '> **second**', '>', '> > nested', '> tail'].join(newline);
+    const source = `before${newline}${newline}${quote}${newline}${newline}after`;
+    const blocks = markdownRich.parseMarkdownRichBlocks(source, getSlowLineStarts(source));
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].source, quote);
+    assert.equal(source.slice(blocks[0].start, blocks[0].end), quote);
+    const multiline = `**first${newline}second**`;
+    assert.equal(markdownRich.parseMarkdownRichBlocks(multiline, getSlowLineStarts(multiline))[0].source, multiline);
+  }
+  for (const source of ['```md\n> literal **text**\n```', '    > literal', '\\> literal']) {
+    assert.equal(markdownRich.parseMarkdownRichBlocks(source, getSlowLineStarts(source)).length, 0, source);
+  }
 
   const numberHighlightSamples = [
     ['asdf123 123asdf asdf123asdf 한글123끝', ['123', '123', '123', '123']],

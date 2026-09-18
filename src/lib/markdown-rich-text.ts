@@ -17,7 +17,7 @@ export interface MarkdownRichBlock {
 }
 
 export function parseMarkdownRichBlocks(content: string, lineStarts: number[]): MarkdownRichBlock[] {
-  if (!/[<!&\[]|^ {0,3}[-*_]/mu.test(content)) return [];
+  if (!/[<!&\[*_~]|^ {0,3}[>\-]/mu.test(content)) return [];
   const environment: Record<string, unknown> = {};
   const tokens = markdown.parse(content, environment);
   const ranges: Array<[number, number]> = [];
@@ -55,10 +55,11 @@ export function parseMarkdownRichBlocks(content: string, lineStarts: number[]): 
     coveredUntil = endLine;
   }
   for (const token of tokens) {
-    if (token.type === 'hr' && token.map) ranges.push([token.map[0], token.map[1]]);
+    if (['hr', 'blockquote_open'].includes(token.type) && token.map) ranges.push([token.map[0], token.map[1]]);
     if (token.type !== 'inline' || !token.map) continue;
     if (!token.children?.some((child) => ['html_inline', 'image', 'link_open'].includes(child.type))
-      && !/&(?:#\d+|#x[\da-f]+|[a-z][\da-z]+);/iu.test(token.content)) continue;
+      && !/&(?:#\d+|#x[\da-f]+|[a-z][\da-z]+);/iu.test(token.content)
+      && !(token.map[1] - token.map[0] > 1 && token.children?.some((child) => ['em_open', 'strong_open', 's_open'].includes(child.type)))) continue;
     ranges.push([token.map[0], token.map[1]]);
   }
   ranges.sort((a, b) => a[0] - b[0]);

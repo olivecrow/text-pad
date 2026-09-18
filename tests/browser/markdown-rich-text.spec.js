@@ -107,3 +107,78 @@ test('reference links retain document context and heading links scroll within th
   await expect.poll(() => page.getByTestId('editor-viewport').evaluate((el) => el.scrollTop)).toBeGreaterThan(500);
   await expect(editor).toHaveValue(source);
 });
+
+test('nested and quoted emphasis hides only valid markers and keeps editable source geometry', async ({ page }) => {
+  await page.goto('/');
+  const source = '# Emphasis\n\n**굵게 *중첩 기울임* 끝** and "*따옴표 안*"\n\n*기울임 **중첩 굵게** 끝* and ***둘 다***\n\na_b_c * spaced * ** spaced ** and ``*code* **code**``';
+  const editor = page.getByTestId('editor-textarea');
+  await editor.fill(source);
+  const italic = page.locator('.hl-strong .hl-emphasis').filter({ hasText: '중첩 기울임' });
+  await expect(italic).toHaveCSS('font-style', 'italic');
+  await expect(italic).toHaveCSS('font-weight', '700');
+  await expect(page.locator('.hl-emphasis .hl-strong').filter({ hasText: '중첩 굵게' })).toBeVisible();
+  await expect(page.locator('.hl-string .hl-emphasis')).toContainText('따옴표 안');
+  await expect(page.locator('.hl-code .hl-strong, .hl-code .hl-emphasis')).toHaveCount(0);
+  await expect(page.locator('.hl-strong').filter({ hasText: ' spaced ' })).toHaveCount(0);
+  for (const width of [900, 460]) {
+    await page.setViewportSize({ width, height: 650 });
+    await expect.poll(() => noOverlap(page)).toBe(true);
+  }
+  const point = await italic.evaluate((el) => {
+    const text = [...el.querySelectorAll('span')].find((span) => span.textContent === '중첩 기울임');
+    if (!text?.firstChild) throw new Error('Missing emphasis text');
+    const range = document.createRange();
+    range.setStart(text.firstChild, 2); range.collapse(true);
+    const rect = range.getBoundingClientRect();
+    return { x: rect.x, y: rect.y + rect.height / 2 };
+  });
+  await page.mouse.click(point.x, point.y);
+  await page.keyboard.insertText('추가');
+  await expect(editor).toHaveValue(source.replace('중첩 기울임', '중첩추가 기울임'));
+  await page.keyboard.press('Control+z');
+  await expect(editor).toHaveValue(source);
+});
+
+test('consecutive quotes form one nested block, wrap without overlap and edit the exact source', async ({ page }) => {
+  await page.goto('/');
+  const quote = '> 첫 인용 줄\n> 두 번째 **굵게**와 *기울임*\n>\n> > 중첩 인용\n>\n> - 첫 항목\n> - 둘째 항목\n>\n> ```md\n> **literal**\n> ```\n>\n> ' + '길게 이어지는 인용문입니다. '.repeat(12);
+  const source = '# 인용문\n\n' + quote + '\n\n일반 문단\n\n> 별도 인용';
+  const editor = page.getByTestId('editor-textarea');
+  await editor.fill(source);
+  await editor.press('Control+Home');
+  const block = page.locator('[data-markdown-rich="2"]');
+  await expect(block.locator('.rich-content > blockquote')).toHaveCount(1);
+  await expect(block.locator('blockquote blockquote')).toHaveText('중첩 인용');
+  await expect(block.locator('strong')).toHaveText('굵게');
+  await expect(block.locator('em')).toHaveText('기울임');
+  await expect(block.locator('li')).toHaveCount(2);
+  await expect(block.locator('pre')).toHaveText('**literal**\n');
+  await expect(block.locator('.rich-content > blockquote')).toHaveCSS('border-left-width', '3px');
+  for (const width of [900, 460]) {
+    await page.setViewportSize({ width, height: 850 });
+    await expect.poll(() => noOverlap(page)).toBe(true);
+  }
+  await page.screenshot({ path: 'output/markdown-quotes.png' });
+  await block.locator('.edit-source').click({ force: true });
+  expect(await editor.evaluate((el) => {
+    const input = /** @type {HTMLTextAreaElement} */ (el);
+    return input.value.slice(input.selectionStart, input.selectionEnd);
+  })).toBe(quote);
+  await page.keyboard.insertText('> 수정한 인용문');
+  await page.keyboard.press('Control+z');
+  await expect(editor).toHaveValue(source);
+});
+
+test('lazy quote continuation and multiline emphasis use full paragraphs but code stays literal', async ({ page }) => {
+  await page.goto('/');
+  const source = '> 인용 시작\n이어지는 문장\n\n**여러 줄\n굵게**와 *여러 줄\n기울임*\n\n```md\n> **코드의 원문**\n```\n\n    > 들여쓴 코드\n\n\\> 일반 문장';
+  const editor = page.getByTestId('editor-textarea');
+  await editor.fill(source);
+  await editor.press('Control+Home');
+  await expect(page.locator('.rich-content blockquote')).toHaveCount(1);
+  await expect(page.locator('.rich-content blockquote')).toContainText('이어지는 문장');
+  await expect(page.locator('.rich-content strong')).toHaveText('여러 줄\n굵게');
+  await expect(page.locator('.rich-content em')).toHaveText('여러 줄\n기울임');
+  await expect(page.locator('.fenced-code-middle')).toContainText('> **코드의 원문**');
+  await expect(editor).toHaveValue(source);
+});
