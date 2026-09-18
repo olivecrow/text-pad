@@ -30,6 +30,12 @@ Natural editing is not editing with the most features. It is editing that does n
 - Show the selection background throughout a drag, before the pointer button is released. Update the endpoint from pointer movement events, and do not repeatedly cancel a pending paint. Use the current theme’s selection background color.
 - Clicking and dragging do not change source text or undo history. Subsequent typing and undo use the existing source-offset conversion and edit history paths.
 
+## Soft wrapping of keys and values
+
+- In render mode, lines recognized by the syntax parser as a key, separator, and value align subsequent display rows with the value start. This also applies to ENV `export API_URL = value`, INI, Properties, TOML, and JSON/YAML key/value rows. Do not reinterpret `=` or `:` inside strings or comments as separators.
+- Measure actual displayed widths, including fonts, tabs, and separator spacing, and remeasure after width or setting changes. Use ordinary wrapping if the value does not start on the first display row or the prefix exceeds 80% of the row width.
+- Consecutive and trailing spaces each occupy width and wrap onto subsequent display rows. Added display indentation and soft wraps do not change source text, copying, saving, or undo history. Clicks, drags, Up/Down, Home/End, and Shift selection follow actual displayed positions. Preserve default source-mode editing.
+
 ## Display-only formatting of structured data
 
 - Complete structures within one source line are automatically arranged into display rows in render mode: JSON/JSONC/JSON Lines objects and arrays, YAML flow collections, TOML arrays and inline tables, and XML elements. Line numbers, diagnostics, and JSON Lines record boundaries remain based on source text.

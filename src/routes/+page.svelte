@@ -117,6 +117,7 @@
   import { getEditorDuplicationEdit } from "$lib/editor-duplication";
   import { getArrowSubstitutionSpaceEdit } from "$lib/arrow-substitution";
   import { getJsonPairEnterEdit } from "$lib/json-pair-enter";
+  import { alignKeyValue, getKeyValueStart } from "$lib/key-value-wrapping";
   import {
     createPairedDelimiterIndex,
     getPairedDelimiterHighlightAtCaret
@@ -5754,7 +5755,7 @@
     const backward = textareaEl.selectionDirection === 'backward';
     const offset = backward ? selection.start : selection.end;
     // 이웃한 원문 줄에서 펼친 줄로 들어갈 때도 입력창의 원래 줄 높이를 쓰지 않는다.
-    if (!parsedLines.some(line => line.prettyRows)) return false;
+    if (!parsedLines.some(line => line.prettyRows || getKeyValueStart(line.tokens) !== null)) return false;
     const caret = getRenderedCaretRectForOffset(offset);
     if (!caret || !editorViewportEl) return false;
     const viewport = editorViewportEl.getBoundingClientRect();
@@ -6741,11 +6742,13 @@
                           {#each line.prettyRows as row}
                             <span class="pretty-print-row" data-source-start={row.start} data-source-end={row.end}
                               style="padding-left: min(60%, {measureEditorPlainTextWidth(' '.repeat(row.indentColumns))}px);">
+                              <span class="pretty-row-content" use:alignKeyValue={{ tokens: row.tokens, context: renderedLineMeasurementContext }}>
                               {#each row.tokens as token}
                                 <span class:pretty-space-after={token.type === 'punctuation' && token.text === ':' && !/\s/.test(fileContent[token.end ?? 0] ?? '')}>
                                   {@render renderToken(token)}
                                 </span>
                               {/each}
+                              </span>
                             </span>
                           {/each}
                         </span>
@@ -6762,7 +6765,7 @@
                           </span>
                         </span>
                       {:else}
-                        <span class="line-content">
+                        <span class="line-content" use:alignKeyValue={{ tokens: line.tokens, context: renderedLineMeasurementContext }}>
                           {#each line.tokens as token}
                             {@render renderToken(token)}
                           {/each}
@@ -7824,6 +7827,16 @@
     min-width: 0;
   }
 
+  .pretty-row-content {
+    display: block;
+  }
+
+  :global(.key-value-wrapping) {
+    box-sizing: border-box;
+    padding-left: var(--key-value-indent);
+    text-indent: calc(-1 * var(--key-value-indent));
+  }
+
   .pretty-space-after {
     padding-right: var(--pretty-space-width);
   }
@@ -7945,7 +7958,7 @@
 
   .line-content {
     display: block;
-    white-space: pre-wrap;
+    white-space: break-spaces;
     color: var(--color-render-text, var(--text-color));
   }
 
@@ -7973,7 +7986,7 @@
     grid-column: 2;
     min-width: 0;
     min-height: 1lh;
-    white-space: pre-wrap;
+    white-space: break-spaces;
     overflow-wrap: break-word;
     word-break: break-all;
   }
@@ -8016,7 +8029,7 @@
     caret-color: var(--color-render-text, var(--text-color));
     font-family: var(--font-render-family, var(--font-notepad));
     font-weight: var(--font-render-weight, normal);
-    white-space: pre-wrap;
+    white-space: break-spaces;
     overflow-wrap: break-word;
     word-break: break-all;
     overflow: hidden;
