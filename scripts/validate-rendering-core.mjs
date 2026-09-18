@@ -97,6 +97,26 @@ try {
   const delimited = await server.ssrLoadModule('/src/lib/delimited-table.ts');
   const markdownTables = await server.ssrLoadModule('/src/lib/markdown-table.ts');
   const tables = await server.ssrLoadModule('/src/lib/table-document.ts');
+  const tableColumns = await server.ssrLoadModule('/src/lib/table-column-layout.ts');
+  assert.deepEqual(tableColumns.getTableColumnTextWeights({ rows: [['H', 'Name', ''], ['한😀', '\r\nabc'], ['z']] }), [2, Math.sqrt(7), 0]);
+  // 내용이 16배 많아도 자동 너비는 4배만 배분하고, 수동 너비에는 보정을 반복하지 않는다.
+  const softenedWeights = tableColumns.getTableColumnTextWeights({ rows: [['x', 'x'.repeat(16)]] });
+  assert.deepEqual(tableColumns.allocateTableColumnWidths(softenedWeights, 1000), [200, 800]);
+  assert.deepEqual(tableColumns.allocateTableColumnWidths([1, 3], 400), [100, 300]);
+  assert.deepEqual(tableColumns.allocateTableColumnWidths([0, 1, 9], 500), [100, 100, 300]);
+  assert.deepEqual(tableColumns.allocateTableColumnWidths([0, 0, 0], 600), [200, 200, 200]);
+  assert.deepEqual(tableColumns.allocateTableColumnWidths([0], 457), [457]);
+  assert.deepEqual(tableColumns.allocateTableColumnWidths(Array(20).fill(1), 457), Array(20).fill(100));
+  assert.deepEqual(tableColumns.allocateTableColumnWidths([], 500), []);
+  for (const available of [457, 600, 1000, 1800]) {
+    const weights = [1, 300, 0, 50, 4, 160, 20];
+    const widths = tableColumns.allocateTableColumnWidths(weights, available);
+    assert.ok(widths.every((width) => width >= 100));
+    assert.ok(Math.abs(widths.reduce((sum, width) => sum + width, 0) - Math.max(available, weights.length * 100)) < 0.001);
+    if (widths[1] > 100 && widths[5] > 100) {
+      assert.ok(Math.abs(widths[1] / widths[5] - weights[1] / weights[5]) < 0.001);
+    }
+  }
   const parseTables = (content, limit = 2000) => markdownTables.parseMarkdownTables(
     content, offsets.createTextOffsetIndex(content).lineStartOffsets, limit
   );
@@ -1406,7 +1426,7 @@ try {
       + `XML range cache (${xmlParseDuration.toFixed(1)}ms), 250k-line uniform layout (${uniformDuration.toFixed(1)}ms), `
       + `incremental layout/parser checkpoints, viewport lifecycle, prioritized editor commands, shared input diffs, bounded caches/undo, worker cancellation, `
       + `auto-pair right-context rules, paired-delimiter highlighting, JSON pair Enter, arrow substitutions, editor duplication, list-marker backspace, Markdown heading application, render checkboxes, new-table templates, `
-      + `and table copy-on-write.`
+      + `table copy-on-write, and softened content-weighted column widths with a 100px minimum.`
   );
 } finally {
   await server.close();

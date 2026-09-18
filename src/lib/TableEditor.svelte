@@ -14,6 +14,11 @@
     type TableCellSelection,
     type TableDocumentChangeOptions
   } from './table-document';
+  import {
+    allocateTableColumnWidths,
+    getTableColumnTextWeights,
+    MIN_TABLE_COLUMN_WIDTH
+  } from './table-column-layout';
   import { translate, type AppLocale, type TranslationKey, type TranslationValues } from './i18n';
 
   interface DragPreviewController {
@@ -28,8 +33,6 @@
     destroy: () => void;
   }
 
-  const DEFAULT_COLUMN_WIDTH = 160;
-  const MIN_COLUMN_WIDTH = 72;
   const ROW_CONTROL_WIDTH = 43;
 
   interface Props {
@@ -89,7 +92,7 @@
   let columnDropBoundary: number | null = null;
   let rowDropIndicatorElement: HTMLElement | null = null;
   let columnDropIndicatorElement: HTMLElement | null = null;
-  let columnWidths = $state<number[]>([]);
+  let manualColumnWeights = $state<number[] | null>(null);
   let resizingColumn = $state<number | null>(null);
   let columnCount = $derived(getTableColumnCount(document));
   let safeReorderDurationMs = $derived.by(() => {
@@ -98,13 +101,16 @@
     return Math.max(50, Math.min(2000, Math.round(numericDuration / 50) * 50));
   });
   let scrollRegionRect = $state<DOMRectReadOnly>();
-  let tablePixelWidth = $derived(Math.max(500, scrollRegionRect?.width ?? 500));
-  let columnWeightTotal = $derived(
-    Array.from(
-      { length: columnCount },
-      (_, columnIndex) => columnWidths[columnIndex] ?? DEFAULT_COLUMN_WIDTH
-    ).reduce((total, width) => total + width, 0)
-  );
+  let tablePixelWidth = $derived(Math.max(
+    500,
+    scrollRegionRect?.width ?? 500,
+    ROW_CONTROL_WIDTH + columnCount * MIN_TABLE_COLUMN_WIDTH
+  ));
+  let contentColumnWeights = $derived(getTableColumnTextWeights(document));
+  let columnWidths = $derived(allocateTableColumnWidths(
+    manualColumnWeights?.length === columnCount ? manualColumnWeights : contentColumnWeights,
+    tablePixelWidth - ROW_CONTROL_WIDTH
+  ));
 
   $effect(() => {
     selectedRow = Math.max(0, Math.min(selectedRow, document.rows.length - 1));
@@ -112,23 +118,16 @@
   });
 
   $effect(() => {
-    if (columnWidths.length === columnCount) return;
-    columnWidths = Array.from(
-      { length: columnCount },
-      (_, columnIndex) => columnWidths[columnIndex] ?? DEFAULT_COLUMN_WIDTH
-    );
+    // 원문 편집·실행 취소 등으로 열 구조가 외부에서 바뀌면 내용을 기준으로 다시 배분한다.
+    if (manualColumnWeights && manualColumnWeights.length !== columnCount) manualColumnWeights = null;
   });
 
-  function getColumnWeight(columnIndex: number): number {
-    return (columnWidths[columnIndex] ?? DEFAULT_COLUMN_WIDTH) / columnWeightTotal;
-  }
-
   function getColumnWidth(columnIndex: number): number {
-    return (tablePixelWidth - ROW_CONTROL_WIDTH) * getColumnWeight(columnIndex);
+    return columnWidths[columnIndex];
   }
 
   function getNormalizedColumnWidths(): number[] {
-    return Array.from({ length: columnCount }, (_, columnIndex) => getColumnWidth(columnIndex));
+    return [...columnWidths];
   }
 
   function setColumnWidth(columnIndex: number, width: number) {
@@ -136,33 +135,36 @@
     const nextWidths = getNormalizedColumnWidths();
     const neighborIndex = columnIndex === columnCount - 1 ? columnIndex - 1 : columnIndex + 1;
     const combinedWidth = nextWidths[columnIndex] + nextWidths[neighborIndex];
-    const minimumWidth = Math.min(MIN_COLUMN_WIDTH, (tablePixelWidth - ROW_CONTROL_WIDTH) / columnCount);
+    const minimumWidth = MIN_TABLE_COLUMN_WIDTH;
     nextWidths[columnIndex] = Math.max(minimumWidth, Math.min(combinedWidth - minimumWidth, width));
     nextWidths[neighborIndex] = combinedWidth - nextWidths[columnIndex];
-    columnWidths = nextWidths;
+    manualColumnWeights = nextWidths;
   }
 
   function insertColumnWidth(columnIndex: number) {
+    if (!manualColumnWeights) return;
     const nextWidths = getNormalizedColumnWidths();
     nextWidths.splice(columnIndex, 0, (tablePixelWidth - ROW_CONTROL_WIDTH) / columnCount);
-    columnWidths = nextWidths;
+    manualColumnWeights = nextWidths;
   }
 
   function removeColumnWidth(columnIndex: number) {
+    if (!manualColumnWeights) return;
     if (columnCount <= 1) {
-      columnWidths = [DEFAULT_COLUMN_WIDTH];
+      manualColumnWeights = null;
       return;
     }
     const nextWidths = getNormalizedColumnWidths();
     nextWidths.splice(columnIndex, 1);
-    columnWidths = nextWidths;
+    manualColumnWeights = nextWidths;
   }
 
   function moveColumnWidth(fromIndex: number, toIndex: number) {
+    if (!manualColumnWeights) return;
     const nextWidths = getNormalizedColumnWidths();
     const [movedWidth] = nextWidths.splice(fromIndex, 1);
     nextWidths.splice(toIndex, 0, movedWidth);
-    columnWidths = nextWidths;
+    manualColumnWeights = nextWidths;
   }
 
   function getColumnLabel(index: number): string {
@@ -1078,7 +1080,7 @@
       }
     }
 
-    setColumnWidth(columnIndex, Math.max(48, widestContent + 22));
+    setColumnWidth(columnIndex, Math.max(MIN_TABLE_COLUMN_WIDTH, widestContent + 22));
   }
 
   function handleColumnResizeDoubleClick(event: MouseEvent, columnIndex: number) {
