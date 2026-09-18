@@ -160,6 +160,51 @@ try {
   assert.equal(parseTables('| a |\n| --- |\n\n```\n| b |\n| --- |\n```').length, 1);
   assert.equal(parseTables('- item\n\n  indented\n\n| a |\n| --- |').length, 1);
   const budgets = await server.ssrLoadModule('/src/lib/render-budgets.ts');
+  const prettyCache = documentFormats.createDocumentRenderCache();
+  const prettyParse = (content, formatId, extra = {}) => documentFormats.parseDocumentForRender(content, {
+    pathOrName: null, formatId, tabSize: 4,
+    lineStartOffsets: offsets.createTextOffsetIndex(content).lineStartOffsets,
+    renderCache: prettyCache, ...extra
+  }).lines;
+  const prettySamples = [
+    ['json', '{"id":9007199254740993,"id":1e+09,"text":"a,b {c} \\"quote\\"","a":[true,null,{},[]]}'],
+    ['jsonc', '{/* {,} */"x":[1,2,],"url":"https://a/b",}'],
+    ['jsonlines', '{"x":[1,2]}\r\n{"x":[3,4]}\r\n'],
+    ['yaml', '{name: test, items: [1,2], literal: "{a,b}"}'],
+    ['yaml', 'list: [one, two, {name: three}]\ntext: |\n  [a,b]\nother: [x,y]'],
+    ['toml', '[section]\nitems = [{name="a,b",value=1},{name="b",value=2}] # {,}'],
+    ['xml', '<?xml version="1.0"?><root><item a="x>y">text &amp; data</item><!-- <,> --><empty/></root>'],
+    ['xml', '<root><p>Hello <b>world</b>!</p><data><![CDATA[<a>,b]]></data><end/></root>']
+  ];
+  for (const [format, source] of prettySamples) {
+    const lines = prettyParse(source, format);
+    assert.ok(lines.some(line => line.prettyRows), `${format}: expected structured rows`);
+    const sourceLines = source.split(/\r?\n/);
+    for (const [index, line] of lines.entries()) {
+      assert.equal(flattenTokens(line.tokens), sourceLines[index]);
+      if (!line.prettyRows) continue;
+      assert.equal(line.prettyRows.map(row => flattenTokens(row.tokens)).join(''), sourceLines[index]);
+      for (const row of line.prettyRows) {
+        assert.equal(flattenTokens(row.tokens), source.slice(row.start, row.end));
+        for (const token of row.tokens) assert.equal(token.text, source.slice(token.start, token.end));
+      }
+      assert.deepEqual(prettyParse(source, format, { lineRange: { startLine: index, endLine: index } })[0], line);
+    }
+    assert.ok(prettyParse(source, format, { renderEnabled: false }).every(line => !line.prettyRows));
+  }
+  for (const [format, source] of [
+    ['json', '{"a":[1,2}'], ['json', '{"a":"unterminated'], ['json', '{}'],
+    ['json', '['.repeat(65) + '1' + ']'.repeat(65)],
+    ['json', '[' + Array(2100).fill('1').join(',') + ']'],
+    ['yaml', 'text: |\n  [a,b]\n  {x: y,z: w}'],
+    ['yaml', 'text: "hello\n  [a,b]"'],
+    ['toml', 'text = """\n[a,b]\n"""'],
+    ['xml', '<p>Hello <b>world</b>!</p>'],
+    ['xml', '<root xml:space="preserve">\n<a><b/><c/></a>\n</root>'],
+    ['plain', '{"a":[1,2]}'], ['csv', 'one,two,three']
+  ]) assert.ok(prettyParse(source, format).every(line => !line.prettyRows), `${format}: ${source.slice(0, 80)}`);
+  const xmlMixedRows = prettyParse('<root><p>Hello <b>world</b>!</p><end/></root>', 'xml')[0].prettyRows;
+  assert.deepEqual(xmlMixedRows.map(row => flattenTokens(row.tokens)), ['<root>', '<p>Hello <b>world</b>!</p>', '<end/>', '</root>']);
   const listMarkers = await server.ssrLoadModule('/src/lib/list-markers.ts');
   const checkboxMarkers = await server.ssrLoadModule('/src/lib/checkbox-markers.ts');
   const textChanges = await server.ssrLoadModule('/src/lib/text-change.ts');

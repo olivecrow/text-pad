@@ -4817,6 +4817,8 @@
 
   function handleEditorKeyDown(event: KeyboardEvent) {
     syncInputWidthBeforeEditing();
+    if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Shift'].includes(event.key)
+      || event.ctrlKey || event.metaKey) prettyPrintCaretAffinity = null;
     if (isRenderMode && markdownRichByLine.has(findLineIndexForOffset(getCurrentEditorSelection().start))
       && !event.ctrlKey && !event.metaKey && !event.altKey && event.key !== 'Shift') {
       // 복합 HTML 안의 원문 입력은 기존 원문 편집기에서 정확한 위치를 보여 준다.
@@ -4836,6 +4838,7 @@
       markdownHeadingReplacementCaret = null;
       return;
     }
+    if (handlePrettyPrintNavigation(event)) return;
     prepareRenderMarkdownHeadingReplacementMarker(event);
     renderEditorCommandPipeline.execute(event);
   }
@@ -5547,6 +5550,17 @@
     if (!lineContent) return null;
 
     const targetOffset = clamp(offsetInLine, 0, lineText.length);
+    const lineStart = lineStartOffsets[Number(lineElement.dataset.lineIndex)] ?? 0;
+    if (prettyPrintCaretAffinity?.content === fileContent
+      && prettyPrintCaretAffinity.offset === lineStart + targetOffset) {
+      const row = lineContent.querySelector<HTMLElement>(
+        `.pretty-print-row[data-source-start="${prettyPrintCaretAffinity.rowStart}"]`
+      );
+      if (row) {
+        const boundary = getTextNodeBoundary(row, prettyPrintCaretAffinity.offset - prettyPrintCaretAffinity.rowStart);
+        if (boundary) return getRenderedCaretRectAtBoundary(boundary);
+      }
+    }
     const listBody = lineContent.querySelector<HTMLElement>('.list-item-body');
     const listBodyStart = Number(lineContent.dataset.listBodyStart);
     if (listBody && Number.isFinite(listBodyStart)) {
@@ -5586,6 +5600,29 @@
     if (lineText.length === 0) return 0;
     const lineContent = lineElement.querySelector<HTMLElement>('.line-content');
     if (!lineContent) return 0;
+    const prettyRows = lineContent.querySelectorAll<HTMLElement>('.pretty-print-row');
+    if (prettyRows.length) {
+      let closest = prettyRows[0];
+      let distance = Number.POSITIVE_INFINITY;
+      for (const row of prettyRows) {
+        const rect = row.getBoundingClientRect();
+        const current = Math.max(rect.top - clientY, clientY - rect.bottom, 0);
+        if (current < distance) { closest = row; distance = current; }
+      }
+      const rowStart = Number(closest.dataset.sourceStart);
+      const rowEnd = Number(closest.dataset.sourceEnd);
+      const lineStart = lineStartOffsets[Number(lineElement.dataset.lineIndex)] ?? 0;
+      const maximum = rowEnd - rowStart;
+      const native = getNativeCaretTextOffsetAtPoint(closest, maximum, clientX, clientY, textareaEl);
+      const offset = native ?? findClosestRenderedTextOffset(maximum, clientX, clientY,
+        Math.max(liveEditorViewportWidth, 1), offset => {
+          const boundary = getTextNodeBoundary(closest, offset, true);
+          return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
+        });
+      // 같은 원문 경계의 앞줄 끝/뒷줄 시작 중 실제로 선택한 표시 쪽을 기억한다.
+      prettyPrintCaretAffinity = { content: fileContent, offset: rowStart + offset, rowStart };
+      return rowStart - lineStart + offset;
+    }
     const listBody = lineContent.querySelector<HTMLElement>('.list-item-body');
     const listBodyStart = Number(lineContent.dataset.listBodyStart);
     const pointRoot = listBody && Number.isFinite(listBodyStart) ? listBody : lineContent;
@@ -5702,6 +5739,42 @@
 
     const offsetInLine = getRenderedLineTextOffsetAtPoint(lineElement, lineText, clientX, clientY);
     return lineStart + offsetInLine;
+  }
+
+  let prettyPrintNavigationX: number | null = null;
+  let prettyPrintNavigationOffset: number | null = null;
+  let prettyPrintCaretAffinity: { content: string; offset: number; rowStart: number } | null = null;
+
+  function handlePrettyPrintNavigation(event: KeyboardEvent): boolean {
+    const vertical = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key);
+    if (!vertical) prettyPrintNavigationX = null;
+    if ((!vertical && event.key !== 'Home' && event.key !== 'End')
+      || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || !textareaEl) return false;
+    const selection = getTextareaSelectionInContent();
+    const backward = textareaEl.selectionDirection === 'backward';
+    const offset = backward ? selection.start : selection.end;
+    // 이웃한 원문 줄에서 펼친 줄로 들어갈 때도 입력창의 원래 줄 높이를 쓰지 않는다.
+    if (!parsedLines.some(line => line.prettyRows)) return false;
+    const caret = getRenderedCaretRectForOffset(offset);
+    if (!caret || !editorViewportEl) return false;
+    const viewport = editorViewportEl.getBoundingClientRect();
+    const direction = event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1;
+    const step = event.key.startsWith('Page')
+      ? Math.max(measuredLineHeight, editorViewportEl.clientHeight - measuredLineHeight)
+      : measuredLineHeight;
+    if (vertical && (prettyPrintNavigationX === null || prettyPrintNavigationOffset !== offset)) {
+      prettyPrintNavigationX = caret.left;
+    }
+    const target = getRenderedCaretOffsetAtPoint(
+      vertical ? prettyPrintNavigationX ?? caret.left : event.key === 'Home' ? viewport.left : viewport.right,
+      caret.top + caret.height / 2 + (vertical ? direction * step : 0)
+    );
+    if (target === null) return false;
+    event.preventDefault();
+    const anchor = event.shiftKey ? (backward ? selection.end : selection.start) : target;
+    setRenderPointerSelection(anchor, target);
+    prettyPrintNavigationOffset = target;
+    return true;
   }
 
   function findRenderedTokenElementAtPoint(
@@ -6663,7 +6736,20 @@
                       {#each Array(indentGuideCount) as _, i}
                         <span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>
                       {/each}
-                      {#if listLayout && listTokenParts}
+                      {#if line.prettyRows}
+                        <span class="line-content pretty-print-content" style="--pretty-space-width: {measureEditorPlainTextWidth(' ')}px;">
+                          {#each line.prettyRows as row}
+                            <span class="pretty-print-row" data-source-start={row.start} data-source-end={row.end}
+                              style="padding-left: min(60%, {measureEditorPlainTextWidth(' '.repeat(row.indentColumns))}px);">
+                              {#each row.tokens as token}
+                                <span class:pretty-space-after={token.type === 'punctuation' && token.text === ':' && !/\s/.test(fileContent[token.end ?? 0] ?? '')}>
+                                  {@render renderToken(token)}
+                                </span>
+                              {/each}
+                            </span>
+                          {/each}
+                        </span>
+                      {:else if listLayout && listTokenParts}
                         <span class="line-content list-item-content" data-list-body-start={listLayout.prefixLength}>
                           <span class="list-item-prefix">
                             {#each listTokenParts.prefixTokens as token}
@@ -7730,6 +7816,16 @@
     -webkit-font-smoothing: subpixel-antialiased;
     -moz-osx-font-smoothing: auto;
     font-weight: var(--font-render-weight, normal);
+  }
+
+  .pretty-print-row {
+    display: block;
+    box-sizing: border-box;
+    min-width: 0;
+  }
+
+  .pretty-space-after {
+    padding-right: var(--pretty-space-width);
   }
 
   .render-table-block, .render-rich-block {

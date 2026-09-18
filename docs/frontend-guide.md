@@ -13,6 +13,7 @@
 - `src/lib/xml-format.ts`: XML 태그·속성·엔터티·CDATA 토큰화와 well-formedness 오류 위치 계산.
 - `src/lib/specialized-text-formats.ts`: Gettext, REG, OpenSSH, systemd, hosts와 Git 메시지·신원·리비전 목록의 형식별 표시와 진단.
 - `src/lib/structured-rendering.ts`: 절대 위치 토큰의 화면 범위 선택, 줄 분할, 들여쓰기 깊이 계산.
+- `src/lib/structured-pretty-print.ts`: 구조화 데이터의 완결된 한 줄 구조를 원문 위치 그대로 표시 줄로 나눈다. YAML 어휘 경계 캐시, XML 혼합 본문 보호와 표시 줄/깊이 제한을 소유하며 원문 직렬화나 편집 기록을 만들지 않는다.
 - `src/lib/text-offset-index.ts`: 원문 줄 시작과 CRLF 위치 인덱스, 원문과 `textarea` 선택 위치의 이진 탐색 변환.
 - `src/lib/text-change.ts`, `src/lib/editor-input.ts`: 한 번 계산한 국소 변경 범위와 원문·`textarea` 위치 인덱스를 입력, 실행 취소, 렌더 캐시가 함께 쓰게 하는 편집 입력 모듈.
 - `src/lib/editor-command-pipeline.ts`: 키 입력 명령의 고유 식별자와 명시적 우선순위를 검증하고 첫 적용 명령만 실행하는 공통 파이프라인.

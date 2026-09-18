@@ -30,6 +30,25 @@ Natural editing is not editing with the most features. It is editing that does n
 - Show the selection background throughout a drag, before the pointer button is released. Update the endpoint from pointer movement events, and do not repeatedly cancel a pending paint. Use the current theme’s selection background color.
 - Clicking and dragging do not change source text or undo history. Subsequent typing and undo use the existing source-offset conversion and edit history paths.
 
+## Display-only formatting of structured data
+
+- Complete structures within one source line are automatically arranged into display rows in render mode: JSON/JSONC/JSON Lines objects and arrays, YAML flow collections, TOML arrays and inline tables, and XML elements. Line numbers, diagnostics, and JSON Lines record boundaries remain based on source text.
+- Display line breaks, configured indentation, and spacing after colons do not insert or replace source characters. For example, `{"items":[1,2]}` appears as follows on screen while copying or saving still produces the original single line.
+
+```json
+{
+    "items": [
+        1,
+        2
+    ]
+}
+```
+
+- Do not split structural symbols inside strings or comments. Preserve YAML block/multiline scalars, TOML multiline strings, and XML character data, CDATA, and mixed content. Skip expansion for XML documents containing `xml:space="preserve"`.
+- Clicks, drags, selection highlights, and the caret share the same source offsets. Within expanded lines and adjacent source lines, Up/Down, Home/End, PageUp/PageDown, and Shift selection follow actual display rows. At a source boundary shared by two display rows, show the caret at the chosen preceding row end or following row start. Ctrl combinations retain existing document navigation.
+- Typing, deletion, and pasting affect only the selected source range and use existing undo history. Formatting and mode switches create neither dirty state nor undo entries. Source mode and formats with rendering disabled do not expand structures.
+- Incomplete or mismatched structures, and lines exceeding 2,000 display rows or 64 nesting levels, retain the basic presentation. CSV/TSV keep their existing tables; do not arbitrarily expand plain text, logs, or INI-like formats with meaningful line boundaries. On narrow windows, cap indentation at 60% of the display row width and remeasure actual heights.
+
 ## Core principles
 
 ### Use source text as the single source of truth

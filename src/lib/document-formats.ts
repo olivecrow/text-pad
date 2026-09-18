@@ -53,6 +53,7 @@ import {
   type LineStateCheckpointCache
 } from './line-state-checkpoints';
 import type { TextChange } from './text-change';
+import { applyStructuredPrettyPrint, createPrettyPrintCache, type PrettyPrintCache } from './structured-pretty-print';
 
 
 export type ParsedLine = StructuredParsedLine;
@@ -141,6 +142,7 @@ interface JsonCommentState {
 }
 
 export interface DocumentRenderCache {
+  prettyPrint: PrettyPrintCache;
   xml: XmlRenderCache;
   lineOriented: LineOrientedRenderCache;
   jsonc: LineStateCheckpointCache<JsonCommentState>;
@@ -148,6 +150,7 @@ export interface DocumentRenderCache {
 }
 export function createDocumentRenderCache(): DocumentRenderCache {
   return {
+    prettyPrint: createPrettyPrintCache(),
     xml: createXmlRenderCache(),
     lineOriented: createLineOrientedRenderCache(),
     jsonc: createLineStateCheckpointCache<JsonCommentState>(),
@@ -1919,6 +1922,14 @@ export function getDocumentDiagnostic(
 }
 
 export function parseDocumentForRender(content: string, options: ParseDocumentOptions): DocumentRenderResult {
+  const result = parseDocumentSourceLines(content, options);
+  const enabled = options.renderEnabled ?? isDocumentFormatRenderEnabled(result.format, options.featureSettings);
+  return enabled ? { ...result, lines: applyStructuredPrettyPrint(
+    content, result.format.id, result.lines, options.tabSize, options.renderCache?.prettyPrint
+  ) } : result;
+}
+
+function parseDocumentSourceLines(content: string, options: ParseDocumentOptions): DocumentRenderResult {
   const format = getDocumentFormatById(options.formatId)
     ?? getDocumentFormatForContent(content, options.pathOrName);
   const lineRange = normalizeLineRange(options.lineStartOffsets.length, options.lineRange);
