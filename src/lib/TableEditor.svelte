@@ -84,8 +84,8 @@
 
   let tableEditorEl = $state<HTMLDivElement | null>(null);
   let dragPreviewHostEl = $state<HTMLDivElement | null>(null);
-  let selectedRow = $state(0);
-  let selectedColumn = $state(0);
+  let selectedRow = $state<number | null>(null);
+  let selectedColumn = $state<number | null>(null);
   let draggedRow = $state<number | null>(null);
   let draggedColumn = $state<number | null>(null);
   let rowDropBoundary: number | null = null;
@@ -113,8 +113,8 @@
   ));
 
   $effect(() => {
-    selectedRow = Math.max(0, Math.min(selectedRow, document.rows.length - 1));
-    selectedColumn = Math.max(0, Math.min(selectedColumn, columnCount - 1));
+    if (selectedRow !== null) selectedRow = Math.max(0, Math.min(selectedRow, document.rows.length - 1));
+    if (selectedColumn !== null) selectedColumn = Math.max(0, Math.min(selectedColumn, columnCount - 1));
   });
 
   $effect(() => {
@@ -188,6 +188,11 @@
   function selectCell(rowIndex: number, columnIndex: number) {
     selectedRow = rowIndex;
     selectedColumn = columnIndex;
+  }
+
+  function clearSelection() {
+    selectedRow = null;
+    selectedColumn = null;
   }
 
   function addRowAt(insertAt: number) {
@@ -1204,7 +1209,7 @@
   ></textarea>
 {/snippet}
 
-<div class="table-editor" class:embedded bind:this={tableEditorEl}>
+<div class="table-editor" class:embedded bind:this={tableEditorEl} onfocusout={clearSelection}>
   {#if !embedded}
     <div class="table-toolbar" role="toolbar" aria-label={t('table.toolbar', { format: formatLabel })}>
       <div class="table-summary">

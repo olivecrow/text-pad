@@ -22,6 +22,38 @@ async function openTable(page, format, rows) {
 }
 
 for (const format of ['Markdown', 'CSV', 'TSV']) {
+  test(`${format} starts unselected and clears cell highlights when focus leaves`, async ({ page }) => {
+    const rows = [['Name', 'Count'], ['Pencil', '2']];
+    if (format === 'Markdown') {
+      await page.goto('/');
+      await page.getByTestId('editor-textarea').fill(`Before\n\n${tableSource(format, rows)}\n\nAfter`);
+    } else {
+      await openTable(page, format, rows);
+    }
+    const table = page.locator('.table-editor');
+    const highlights = table.locator('.selected-cell, .selected-row, .selected-column');
+    await expect(table).toBeVisible();
+    await expect(highlights).toHaveCount(0);
+    const first = table.locator('[data-table-row="1"][data-table-column="0"]');
+    const next = table.locator('[data-table-row="1"][data-table-column="1"]');
+    await first.click();
+    await expect(first).toHaveClass(/selected-cell/);
+    await first.press('Tab');
+    await expect(next).toBeFocused();
+    await expect(next).toHaveClass(/selected-cell/);
+    await expect(table.locator('.selected-cell')).toHaveCount(1);
+    if (format === 'Markdown') {
+      await next.press('Escape');
+      await expect(page.getByTestId('editor-textarea')).toBeFocused();
+    } else {
+      await table.locator('.toggle-tool').last().click();
+    }
+    await expect(highlights).toHaveCount(0);
+    await expect(next).toHaveCSS('box-shadow', 'none');
+    await first.click();
+    await expect(first).toHaveClass(/selected-cell/);
+  });
+
   test(`${format} softens text-based column widths and preserves manual width choices`, async ({ page }) => {
     // 합계 글자 수 4:12:0. 빈 열에는 최소 너비를, 나머지에는 1:√3의 너비를 배분한다.
     await openTable(page, format, [['aa', 'bbbbbb', ''], ['cc', 'dddddd', '']]);

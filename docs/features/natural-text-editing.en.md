@@ -141,6 +141,7 @@ In render mode, the editor shows the other end of the paired character touching 
 
 ## Markdown tables
 
+- The shared CSV/TSV and Markdown table editor starts with no cell selected. Highlight a cell and its row/column only after a click or keyboard entry, and clear the selection highlight when focus leaves. Moving to another cell selects only that cell. Keep the header's normal styling independent of selection highlights.
 - Render body tables with consecutive header and pipe-delimiter rows using the same cell, row, and column editor as CSV/TSV. Place the table directly in the document without a separate format label, toolbar, or enclosing border. Rendering and mode changes do not modify source text. Keep tables inside code, comments, or lists, and tables exceeding the budget, as source text; display tables inside blockquotes as part of their preview.
 - Map cell selection and caret boundaries to actual source positions, including escaped pipes, character references, and `<br>` line breaks. Editing an existing cell changes only its content range, preserving surrounding prose and other cells' whitespace and delimiters. Row and column operations normalize only that table range while preserving its newline style and column alignment.
 - Merge consecutive input only within the same table and cell; record each row or column operation independently. Undo and redo restore both source text and cell selection. Do not intercept cell-navigation keys during IME composition.
