@@ -23,6 +23,7 @@
   import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatCategory, DocumentFormatId } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
   import MarkdownRichBlockView from '$lib/MarkdownRichBlock.svelte';
+  import { getRichTextBoundary, getRichTextOffsetAtPoint, getRichSelectionRanges, getRichTextRuns } from '$lib/markdown-rich-geometry';
   import { parseMarkdownRichBlocks, findMarkdownAnchorLine, type MarkdownRichBlock } from '$lib/markdown-rich-text';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { getCheckboxEnterEdit } from "$lib/checkbox-markers";
@@ -2579,6 +2580,8 @@
 
   function ensureRenderedCaretLineVisible(offset: number): boolean {
     if (!editorViewportEl || !isRenderMode || !isEnhancedDocumentWithinBudget) return false;
+    // 복합 블록의 중간 원문 줄은 높이 0이다. 보이는 블록은 실제 글자 사각형으로 스크롤한다.
+    if (getRichRoot(offset)) return false;
 
     const lineIndex = findLineIndexForOffset(offset);
     const lineStart = lineStartOffsets[lineIndex] ?? 0;
@@ -2629,11 +2632,6 @@
       if (!steadyEditorCaretVisible) return;
       if (revealCaret && ensureRenderedCaretLineVisible(start)) return;
 
-      const rich = markdownRichByLine.get(findLineIndexForOffset(start));
-      if (rich) {
-        steadyEditorCaretVisible = false;
-        return;
-      }
       const table = markdownTableByLine.get(findLineIndexForOffset(start));
       if (table) {
         steadyEditorCaretVisible = false;
@@ -3231,6 +3229,11 @@
     if (!editorViewportEl || selection.start === selection.end) return [];
 
     const ranges: Range[] = [];
+    for (const block of markdownRichBlocks) {
+      if (selection.end <= block.start || selection.start >= block.end) continue;
+      const root = getRichRoot(block.start);
+      if (root) ranges.push(...getRichSelectionRanges(root, selection.start - block.start, selection.end - block.start));
+    }
     for (let lineIndex = startLine; lineIndex <= endLine; lineIndex += 1) {
       const lineStart = lineStartOffsets[lineIndex] ?? 0;
       const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
@@ -3392,6 +3395,13 @@
   }
 
   function getSafeRenderedCaretOffset(offset: number, direction: -1 | 0 | 1): number {
+    const rich = markdownRichByLine.get(findLineIndexForOffset(offset));
+    const root = rich && getRichRoot(offset);
+    if (root && rich) {
+      const boundary = getRichTextBoundary(root, offset - rich.start, direction)
+        ?? getRichTextBoundary(root, offset - rich.start);
+      if (boundary) return rich.start + boundary.source;
+    }
     if (markdownHeadingReplacementCaret === offset) return offset;
 
     const headingMarker = getMarkdownHeadingMarkerRange(offset);
@@ -3789,12 +3799,14 @@
 
   function handleEditorCompositionStart() {
     syncInputWidthBeforeEditing();
+    closeActiveUndoGroup();
     isComposingEditorText = true;
     pendingNativeInput = null;
   }
 
   function handleEditorCompositionEnd() {
     isComposingEditorText = false;
+    closeActiveUndoGroup();
   }
 
   function handleEditorFocus() {
@@ -3810,6 +3822,79 @@
     updateEditorSelectionState();
     hideSteadyEditorCaret();
     scheduleRenderedHighlights();
+  }
+
+  function getRichRoot(offset: number): HTMLElement | null {
+    const block = markdownRichByLine.get(findLineIndexForOffset(offset));
+    if (!block || !editorViewportEl) return null;
+    const root = editorViewportEl.querySelector<HTMLElement>(`[data-markdown-rich="${block.startLine}"]`);
+    // 입력 직후에는 이전 DOM의 위치 정보를 새 원문에 사용하지 않는다.
+    return root?.dataset.richSource === block.source ? root : null;
+  }
+
+  function handleRichPointerDown(event: PointerEvent) {
+    const target = event.target as Element;
+    if (target.closest('button') || ((event.ctrlKey || event.metaKey) && target.closest('a, summary'))) return;
+    handleEditorPointerDown(event);
+  }
+
+  function handleRichDoubleClick(event: MouseEvent) {
+    if ((event.target as Element).closest('button') || event.ctrlKey || event.metaKey) return;
+    handleEditorDoubleClick(event);
+  }
+
+  function handleRichTextKey(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing || isComposingEditorText || event.ctrlKey || event.metaKey || event.altKey) return false;
+    if (!['ArrowLeft', 'ArrowRight', 'Backspace', 'Delete', 'Enter'].includes(event.key)) return false;
+    const selection = getTextareaSelectionInContent();
+    const backward = textareaEl.selectionDirection === 'backward';
+    const offset = backward ? selection.start : selection.end;
+    const block = markdownRichByLine.get(findLineIndexForOffset(offset));
+    const root = block && getRichRoot(offset);
+    if (!block || !root) return false;
+    if (event.key === 'Enter') {
+      const boundary = getRichTextBoundary(root, selection.start - block.start);
+      const inCode = !!boundary?.node.parentElement?.closest('pre');
+      const lineStart = lineStartOffsets[findLineIndexForOffset(selection.start)] ?? 0;
+      const quote = fileContent.slice(lineStart, selection.start).match(/^(?: {0,3}>[ \t]?)+/u)?.[0] ?? '';
+      const newline = fileContent.includes('\r\n') ? '\r\n' : '\n';
+      const inserted = /^\s*</u.test(block.source) && !inCode ? '<br>' : (inCode ? '' : '  ') + newline + quote;
+      event.preventDefault();
+      const next = selection.start + inserted.length;
+      commitRenderEditorEdit(fileContent.slice(0, selection.start) + inserted + fileContent.slice(selection.end), { start: next, end: next });
+      return true;
+    }
+    const direction = event.key === 'ArrowLeft' || event.key === 'Backspace' ? -1 : 1;
+    const local = offset - block.start;
+    const deleting = event.key === 'Backspace' || event.key === 'Delete';
+    if (deleting && selection.start !== selection.end) return false;
+    if (deleting) {
+      // 문자 참조와 태그 경계에서도 표시 문자 하나의 원문 범위만 지운다.
+      const candidates = getRichTextRuns(root).flatMap(run => {
+        const result: Array<{ start: number; end: number }> = [];
+        for (const segment of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(run.node.data)) {
+          const start = run.offsets[segment.index];
+          const end = run.offsets[segment.index + segment.segment.length];
+          if (end > start && (direction < 0 ? end <= local : start >= local)) result.push({ start, end });
+        }
+        return result;
+      }).sort((a, b) => direction < 0 ? b.end - a.end : a.start - b.start);
+      const range = candidates[0];
+      if (!range) { event.preventDefault(); return true; }
+      event.preventDefault();
+      const start = block.start + range.start;
+      const end = block.start + range.end;
+      commitManualEditorEdit(fileContent.slice(0, start) + fileContent.slice(end), { start, end: start },
+        { mergeKey: `rich-${event.key}`, keepRenderCaretVisible: true });
+      return true;
+    }
+    const boundary = getRichTextBoundary(root, local + direction, direction);
+    let target = boundary ? block.start + boundary.source
+      : direction < 0 ? Math.max(0, block.start - 1) : Math.min(fileContent.length, block.end + 1);
+    if (!event.shiftKey && selection.start !== selection.end) target = direction < 0 ? selection.start : selection.end;
+    event.preventDefault();
+    setRenderPointerSelection(event.shiftKey ? (backward ? selection.end : selection.start) : target, target);
+    return true;
   }
 
   async function editMarkdownRichBlock(block: MarkdownRichBlock) {
@@ -4823,11 +4908,6 @@
     syncInputWidthBeforeEditing();
     if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Shift'].includes(event.key)
       || event.ctrlKey || event.metaKey) prettyPrintCaretAffinity = null;
-    if (isRenderMode && markdownRichByLine.has(findLineIndexForOffset(getCurrentEditorSelection().start))
-      && !event.ctrlKey && !event.metaKey && !event.altKey && event.key !== 'Shift') {
-      // 복합 HTML 안의 원문 입력은 기존 원문 편집기에서 정확한 위치를 보여 준다.
-      toggleRenderMode();
-    }
     if (editorMovementKeys.has(event.key)) {
       pendingRenderCaretMovementDirection = event.key === 'ArrowLeft'
         || event.key === 'ArrowUp'
@@ -4842,6 +4922,7 @@
       markdownHeadingReplacementCaret = null;
       return;
     }
+    if (handleRichTextKey(event)) return;
     if (handlePrettyPrintNavigation(event)) return;
     prepareRenderMarkdownHeadingReplacementMarker(event);
     renderEditorCommandPipeline.execute(event);
@@ -5663,6 +5744,13 @@
   function getRenderedCaretRectForOffset(offset: number): DOMRect | null {
     if (!isBrowser || !editorViewportEl || !shouldRenderHighlightLayer) return null;
 
+    const rich = markdownRichByLine.get(findLineIndexForOffset(offset));
+    if (rich) {
+      const root = getRichRoot(offset);
+      const boundary = root && getRichTextBoundary(root, offset - rich.start);
+      return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
+    }
+
     const lineIndex = findLineIndexForOffset(offset);
     if (lineIndex < startLine || lineIndex > endLine) return null;
 
@@ -5734,6 +5822,12 @@
     const lineIndex = Number(lineElement.dataset.lineIndex);
     if (!Number.isFinite(lineIndex)) return null;
 
+    const rich = markdownRichByLine.get(lineIndex);
+    if (rich) {
+      const offset = getRichTextOffsetAtPoint(lineElement, clientX, clientY, getRenderedCaretRectAtBoundary, textareaEl);
+      return offset === null ? rich.start : rich.start + offset;
+    }
+
     const lineStart = lineStartOffsets[lineIndex] ?? 0;
     const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
     const headingMarkerOffset = getHiddenHeadingMarkerCaretOffsetAtPoint(lineElement, clientX, clientY);
@@ -5758,7 +5852,7 @@
     const backward = textareaEl.selectionDirection === 'backward';
     const offset = backward ? selection.start : selection.end;
     // 이웃한 원문 줄에서 펼친 줄로 들어갈 때도 입력창의 원래 줄 높이를 쓰지 않는다.
-    if (!parsedLines.some(line => line.prettyRows || getKeyValueStart(line.tokens) !== null)) return false;
+    if (!markdownRichBlocks.length && !parsedLines.some(line => line.prettyRows || getKeyValueStart(line.tokens) !== null)) return false;
     const caret = getRenderedCaretRectForOffset(offset);
     if (!caret || !editorViewportEl) return false;
     const viewport = editorViewportEl.getBoundingClientRect();
@@ -6024,6 +6118,9 @@
   }
 
   function handleEditorPointerDown(event: PointerEvent) {
+    // 너비 동기화가 스크롤 위치를 보정하기 전에 사용자가 누른 글자의 원문 위치를 확보한다.
+    const richOffset = (event.target as Element).closest('[data-markdown-rich]')
+      ? getRenderedCaretOffsetAtPoint(event.clientX, event.clientY) : null;
     syncInputWidthBeforeEditing();
     if (event.button === 0) {
       closeActiveUndoGroup();
@@ -6064,7 +6161,7 @@
 
     const range = findColorCodeAtPoint(event.clientX, event.clientY);
     if (!range) {
-      const offset = getRenderedCaretOffsetAtPoint(event.clientX, event.clientY);
+      const offset = richOffset ?? getRenderedCaretOffsetAtPoint(event.clientX, event.clientY);
       if (offset === null) return;
       event.preventDefault();
       const selection = getCurrentEditorSelection();
@@ -6166,8 +6263,10 @@
     if (!pointerDown || pointerDown.pointerId !== event.pointerId) return;
 
     if (pointerDown.anchor !== undefined) {
-      const offset = getRenderedCaretOffsetAtPoint(event.clientX, event.clientY);
-      if (offset !== null) setRenderPointerSelection(pointerDown.anchor, offset);
+      if (pointerDown.moved) {
+        const offset = getRenderedCaretOffsetAtPoint(event.clientX, event.clientY);
+        if (offset !== null) setRenderPointerSelection(pointerDown.anchor, offset);
+      }
       pendingRenderCaretPointerDown = null;
       suppressNextEditorClickAfterRenderAction = true;
       if (textareaEl.hasPointerCapture(event.pointerId)) textareaEl.releasePointerCapture(event.pointerId);
@@ -6782,11 +6881,13 @@
           {/if}
 
           {#each markdownRichBlocks.filter((block) => block.startLine <= endLine && block.endLine >= startLine) as block (`${activeTabId}:${block.startLine}`)}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="backdrop-line render-rich-block"
-              class:table-source-selected={isEditorFocused && (activeTab?.selectionStart ?? 0) < block.end && (activeTab?.selectionEnd ?? 0) > block.start}
+              onpointerdown={handleRichPointerDown} ondblclick={handleRichDoubleClick}
+              data-rich-source={block.source}
               use:observeRenderedLine data-line-index={block.startLine} data-markdown-rich={block.startLine}
               style:top={`${getRenderLineTop(block.startLine) + editorTopPadding}px`}>
-              <MarkdownRichBlockView source={block.source} environment={block.environment} documentPath={filePath} editLabel={t('toolbar.switchToSource')}
+              <MarkdownRichBlockView editable source={block.source} environment={block.environment} documentPath={filePath} editLabel={t('toolbar.switchToSource')}
                 onedit={() => editMarkdownRichBlock(block)} onlink={openMarkdownRichLink} />
             </div>
           {/each}

@@ -31,9 +31,9 @@ test('nested details expands Markdown, resizes paragraphs and source editing is 
   await editor.fill(text);
   const block = page.locator('[data-markdown-rich="0"]');
   await expect(block.locator('details')).toHaveCount(2);
-  await block.locator('summary').first().click();
+  await block.locator('summary').first().click({ modifiers: ['Control'] });
   await expect(block.locator('strong')).toHaveText('Bold');
-  await block.locator('summary').nth(1).click();
+  await block.locator('summary').nth(1).click({ modifiers: ['Control'] });
   await expect(block.locator('pre')).toHaveText('</details>\n');
   await expect.poll(() => noOverlap(page)).toBe(true);
   await block.locator('.edit-source').click({ force: true });
@@ -103,7 +103,7 @@ test('reference links retain document context and heading links scroll within th
   await editor.fill(source);
   await editor.press('Control+Home');
   await expect(page.locator('.rich-content a').filter({ hasText: 'site' })).toHaveAttribute('href', 'https://example.com');
-  await page.locator('.rich-content a').filter({ hasText: 'go' }).click();
+  await page.locator('.rich-content a').filter({ hasText: 'go' }).click({ modifiers: ['Control'] });
   await expect.poll(() => page.getByTestId('editor-viewport').evaluate((el) => el.scrollTop)).toBeGreaterThan(500);
   await expect(editor).toHaveValue(source);
 });

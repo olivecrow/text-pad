@@ -2,7 +2,7 @@
   import { renderMarkdownRichText } from './markdown-rich-text';
   import { desktopFiles } from './desktop-file-service';
   import { desktopWindows } from './desktop-window-service';
-  let { source, environment, documentPath, editLabel, onedit, onlink, inline = false, showEdit = true }: {
+  let { source, environment, documentPath, editLabel, onedit, onlink, inline = false, showEdit = true, editable = false }: {
     source: string;
     environment: Record<string, unknown>;
     documentPath: string | null;
@@ -11,9 +11,20 @@
     onlink: (href: string) => void;
     inline?: boolean;
     showEdit?: boolean;
+    editable?: boolean;
   } = $props();
-  const html = $derived(renderMarkdownRichText(source, environment, inline));
+  const html = $derived(renderMarkdownRichText(source, environment, inline, editable));
   let contentElement: HTMLDivElement;
+  let disclosureState: boolean[] = [];
+  $effect(() => {
+    void html;
+    if (!editable || !contentElement) return;
+    const disclosures = Array.from(contentElement.querySelectorAll('details'));
+    disclosures.forEach((element, index) => {
+      if (disclosureState[index] !== undefined) element.open = disclosureState[index];
+    });
+    return () => { disclosureState = disclosures.map(element => element.open); };
+  });
   $effect(() => {
     void html;
     const path = documentPath;
@@ -38,6 +49,10 @@
     return () => { cancelled = true; urls.forEach((url) => URL.revokeObjectURL(url)); };
   });
   function click(event: MouseEvent) {
+    if (editable && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      return;
+    }
     const anchor = (event.target as Element).closest('a');
     if (!anchor) return;
     event.preventDefault();
@@ -50,7 +65,7 @@
   {#if showEdit}<button class="edit-source" title={editLabel} aria-label={editLabel} onclick={onedit}>‹/›</button>{/if}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="rich-content" bind:this={contentElement} onclick={click} ondblclick={onedit}>{@html html}</div>
+  <div class="rich-content" class:editable bind:this={contentElement} onclick={click} ondblclick={editable ? undefined : onedit}>{@html html}</div>
 </div>
 
 <style>
@@ -61,6 +76,8 @@
   .edit-source { position: absolute; top: 0; right: 0; z-index: 1; font: inherit; font-size: 11px; border: 1px solid var(--color-gutter-border); border-radius: 3px; background: var(--color-render-bg); color: inherit; cursor: pointer; opacity: 0; }
   .rich-block:hover .edit-source, .edit-source:focus-visible { opacity: 1; }
   .rich-content { overflow-wrap: anywhere; white-space: normal; line-height: 1.6; }
+  .rich-content.editable { cursor: text; user-select: none; }
+  .rich-content.editable :global(a) { cursor: text; }
   .rich-content :global(p) { margin: .4em 0; }
   .rich-content :global(> :first-child) { margin-top: 0; }
   .rich-content :global(> :last-child) { margin-bottom: 0; }

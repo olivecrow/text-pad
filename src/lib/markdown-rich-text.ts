@@ -1,5 +1,6 @@
 import MarkdownIt from 'markdown-it';
 import DOMPurify from 'dompurify';
+import { renderMappedMarkdown, type MappedMarkdown } from './markdown-source-renderer';
 
 // Markdown 문법은 공용 해석기에 맡기고, 문서가 앱 DOM에 넣을 수 있는 것은
 // 아래 표시 전용 태그와 속성으로 제한한다. 원문은 절대로 직렬화하지 않는다.
@@ -77,16 +78,32 @@ export function parseMarkdownRichBlocks(content: string, lineStarts: number[], e
   }).filter((block) => block.source.length <= 128 * 1024);
 }
 
-export function renderMarkdownRichText(source: string, environment: Record<string, unknown> = {}, inline = false): string {
+export function renderMarkdownRichText(source: string, environment: Record<string, unknown> = {}, inline = false, editable = false): string {
   if (typeof window === 'undefined') return '';
-  const fragment = DOMPurify.sanitize(inline ? markdown.renderInline(source, environment) : markdown.render(source, environment), {
+  let mapped: MappedMarkdown | undefined;
+  if (editable) {
+    try { mapped = renderMappedMarkdown(source, environment); }
+    catch {
+      // 해석기가 제공하지 못한 경계를 추측하지 않는다. 이 블록만 편집 가능한 원문으로 표시한다.
+      mapped = { html: '', attribute: `data-rich-${crypto.randomUUID()}`, maps: [Array.from({ length: source.length + 1 }, (_, i) => i)] };
+      mapped.html = `<pre><span ${mapped.attribute}="0">${markdown.utils.escapeHtml(source)}</span></pre>`;
+    }
+  }
+  const fragment = DOMPurify.sanitize(mapped?.html ?? (inline ? markdown.renderInline(source, environment) : markdown.render(source, environment)), {
     ALLOWED_TAGS: tags,
     ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'width', 'height', 'align', 'dir', 'lang', 'open', 'start', 'reversed', 'value', 'colspan', 'rowspan', 'scope', 'datetime'],
     ALLOW_DATA_ATTR: false,
     ALLOW_ARIA_ATTR: false,
+    // 호출마다 생성한 속성 하나만 허용한다. 사용자 원문은 편집 위치 속성을 주입할 수 없다.
+    ADD_ATTR: mapped ? [mapped.attribute] : [],
     RETURN_DOM_FRAGMENT: true
   });
   for (const element of fragment.querySelectorAll('*')) {
+    if (mapped && element.hasAttribute(mapped.attribute)) {
+      const offsets = mapped.maps[Number(element.getAttribute(mapped.attribute))];
+      element.removeAttribute(mapped.attribute);
+      if (offsets) element.setAttribute('data-rich-offsets', offsets.join(','));
+    }
     for (const name of ['width', 'height', 'colspan', 'rowspan']) {
       const value = element.getAttribute(name);
       if (value && !/^\d{1,4}%?$/u.test(value)) element.removeAttribute(name);
