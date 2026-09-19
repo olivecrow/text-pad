@@ -2,15 +2,17 @@
   import { renderMarkdownRichText } from './markdown-rich-text';
   import { desktopFiles } from './desktop-file-service';
   import { desktopWindows } from './desktop-window-service';
-  let { source, environment, documentPath, editLabel, onedit, onlink }: {
+  let { source, environment, documentPath, editLabel, onedit, onlink, inline = false, showEdit = true }: {
     source: string;
     environment: Record<string, unknown>;
     documentPath: string | null;
     editLabel: string;
     onedit: () => void;
     onlink: (href: string) => void;
+    inline?: boolean;
+    showEdit?: boolean;
   } = $props();
-  const html = $derived(renderMarkdownRichText(source, environment));
+  const html = $derived(renderMarkdownRichText(source, environment, inline));
   let contentElement: HTMLDivElement;
   $effect(() => {
     void html;
@@ -44,8 +46,8 @@
   }
 </script>
 
-<div class="rich-block">
-  <button class="edit-source" title={editLabel} aria-label={editLabel} onclick={onedit}>‹/›</button>
+<div class="rich-block" class:inline>
+  {#if showEdit}<button class="edit-source" title={editLabel} aria-label={editLabel} onclick={onedit}>‹/›</button>{/if}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="rich-content" bind:this={contentElement} onclick={click} ondblclick={onedit}>{@html html}</div>
@@ -53,6 +55,9 @@
 
 <style>
   .rich-block { position: relative; min-height: 1.5em; }
+  .rich-block.inline { min-height: 17px; }
+  .inline .rich-content { line-height: inherit; }
+  .inline .rich-content::after { content: '\200b'; }
   .edit-source { position: absolute; top: 0; right: 0; z-index: 1; font: inherit; font-size: 11px; border: 1px solid var(--color-gutter-border); border-radius: 3px; background: var(--color-render-bg); color: inherit; cursor: pointer; opacity: 0; }
   .rich-block:hover .edit-source, .edit-source:focus-visible { opacity: 1; }
   .rich-content { overflow-wrap: anywhere; white-space: normal; line-height: 1.6; }

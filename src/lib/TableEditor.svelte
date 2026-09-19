@@ -1,6 +1,7 @@
 <script lang="ts" generics="T extends TableDocument">
   import { GripHorizontal, GripVertical, Minus, Plus } from '@lucide/svelte';
   import { flushSync, onDestroy } from 'svelte';
+  import type { Snippet } from 'svelte';
   import {
     getTableColumnCount,
     insertTableColumn,
@@ -45,6 +46,7 @@
     animateReorder: boolean;
     reorderDurationMs: number;
     embedded?: boolean;
+    cellPreview?: Snippet<[number, number]>;
     ondocumentchange: (document: T, options?: TableDocumentChangeOptions) => void;
     oncellselection?: (selection: TableCellSelection) => void;
     onleave?: (direction: -1 | 1) => void;
@@ -63,6 +65,7 @@
     animateReorder,
     reorderDurationMs,
     embedded = false,
+    cellPreview,
     ondocumentchange,
     oncellselection,
     onleave,
@@ -86,6 +89,7 @@
   let dragPreviewHostEl = $state<HTMLDivElement | null>(null);
   let selectedRow = $state<number | null>(null);
   let selectedColumn = $state<number | null>(null);
+  let focusedCell = $state<string | null>(null);
   let draggedRow = $state<number | null>(null);
   let draggedColumn = $state<number | null>(null);
   let rowDropBoundary: number | null = null;
@@ -1178,16 +1182,24 @@
 {/snippet}
 
 {#snippet cellEditor(row: string[], rowIndex: number, columnIndex: number, isHeader = false)}
+  {@const previewing = !!cellPreview && focusedCell !== `${rowIndex}:${columnIndex}`}
   <!-- 측정용 텍스트와 입력칸의 글자 배치를 공유하고, 표 행이 가장 높은 셀에 맞춰 높이를 결정한다. -->
   <div
     class="table-cell-size"
+    class:preview-hidden={previewing}
     class:header-cell-editor={isHeader}
     aria-hidden="true"
   >{(row[columnIndex] ?? '') + '\u200b'}</div>
+  {#if previewing && cellPreview}
+    <div class="table-cell-preview" class:header-cell-editor={isHeader} style:text-align={document.columnAlignments?.[columnIndex] ?? 'start'} dir="auto">
+      {@render cellPreview(rowIndex, columnIndex)}
+    </div>
+  {/if}
   <textarea
     class="table-cell-editor"
     class:header-cell-editor={isHeader}
     class:selected-cell={selectedRow === rowIndex && selectedColumn === columnIndex}
+    class:previewing
     data-table-row={rowIndex}
     data-table-column={columnIndex}
     style:text-align={document.columnAlignments?.[columnIndex] ?? 'start'}
@@ -1200,8 +1212,17 @@
       ? t('table.headerCell', { column: getColumnName(columnIndex) })
       : t('table.cell', { row: rowIndex + 1, column: getColumnName(columnIndex) })}
     spellcheck="false"
-    onfocus={(event) => { selectCell(rowIndex, columnIndex); reportCellSelection(event, rowIndex, columnIndex); }}
-    onpointerdown={() => selectCell(rowIndex, columnIndex)}
+    onfocus={(event) => { focusedCell = `${rowIndex}:${columnIndex}`; selectCell(rowIndex, columnIndex); reportCellSelection(event, rowIndex, columnIndex); }}
+    onblur={() => { focusedCell = null; }}
+    onpointerdown={(event) => {
+      selectCell(rowIndex, columnIndex);
+      if (previewing) {
+        event.preventDefault();
+        const target = event.currentTarget;
+        target.focus({ preventScroll: true });
+        target.select();
+      }
+    }}
     onselect={(event) => reportCellSelection(event, rowIndex, columnIndex)}
     onbeforeinput={(event) => handleCellBeforeInput(event, rowIndex, columnIndex)}
     oninput={(event) => handleCellInput(event, rowIndex, columnIndex)}
@@ -1850,7 +1871,8 @@
   }
 
   .table-cell-editor,
-  .table-cell-size {
+  .table-cell-size,
+  .table-cell-preview {
     display: block;
     width: 100%;
     min-height: 30px;
@@ -1871,6 +1893,10 @@
     visibility: hidden;
     pointer-events: none;
   }
+  .table-cell-size.preview-hidden { display: none; }
+  .table-cell-preview { pointer-events: none; white-space: normal; }
+  .table-cell-preview :global(a), .table-cell-preview :global(summary) { pointer-events: auto; position: relative; z-index: 2; }
+  .table-cell-editor.previewing { opacity: 0; }
 
   .table-cell-editor {
     position: absolute;

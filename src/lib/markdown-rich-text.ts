@@ -16,9 +16,8 @@ export interface MarkdownRichBlock {
   environment: Record<string, unknown>;
 }
 
-export function parseMarkdownRichBlocks(content: string, lineStarts: number[]): MarkdownRichBlock[] {
+export function parseMarkdownRichBlocks(content: string, lineStarts: number[], environment: Record<string, unknown> = {}): MarkdownRichBlock[] {
   if (!/[<!&\[*_~]|^ {0,3}[>\-]/mu.test(content)) return [];
-  const environment: Record<string, unknown> = {};
   const tokens = markdown.parse(content, environment);
   const ranges: Array<[number, number]> = [];
   const htmlParts = tokens.filter((token) => token.type === 'html_block' && token.map);
@@ -78,9 +77,9 @@ export function parseMarkdownRichBlocks(content: string, lineStarts: number[]): 
   }).filter((block) => block.source.length <= 128 * 1024);
 }
 
-export function renderMarkdownRichText(source: string, environment: Record<string, unknown> = {}): string {
+export function renderMarkdownRichText(source: string, environment: Record<string, unknown> = {}, inline = false): string {
   if (typeof window === 'undefined') return '';
-  const fragment = DOMPurify.sanitize(markdown.render(source, environment), {
+  const fragment = DOMPurify.sanitize(inline ? markdown.renderInline(source, environment) : markdown.render(source, environment), {
     ALLOWED_TAGS: tags,
     ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'width', 'height', 'align', 'dir', 'lang', 'open', 'start', 'reversed', 'value', 'colspan', 'rowspan', 'scope', 'datetime'],
     ALLOW_DATA_ATTR: false,

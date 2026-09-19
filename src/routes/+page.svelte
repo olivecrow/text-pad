@@ -2192,10 +2192,13 @@
   let isActiveDocumentEditEnabled = $derived(isDocumentFormatEditEnabled(activeDocumentFormat, documentFeatureSettings));
 
   let renderWrapContentWidth = $derived(getEditorWrapContentWidth());
-  let markdownRichBlocks = $derived(
-    isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown'
-      ? parseMarkdownRichBlocks(fileContent, lineStartOffsets) : []
-  );
+  let markdownPresentation = $derived.by(() => {
+    const environment: Record<string, unknown> = {};
+    const blocks = isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown'
+      ? parseMarkdownRichBlocks(fileContent, lineStartOffsets, environment) : [];
+    return { blocks, environment };
+  });
+  let markdownRichBlocks = $derived(markdownPresentation.blocks);
   let markdownRichByLine = $derived.by(() => {
     const lines = new Map<number, MarkdownRichBlock>();
     for (const block of markdownRichBlocks) {
@@ -6813,7 +6816,22 @@
                 onhistoryinput={(direction) => direction === 'undo' ? performUndo() : performRedo()}
                 onhighlightheaderchange={(enabled) => delimitedTableHighlightHeader = enabled}
                 onshowrowindiceschange={(enabled) => delimitedTableShowRowIndices = enabled}
-              />
+              >
+                {#snippet cellPreview(row: number, column: number)}
+                  {@const cell = block.cells[row]?.[column]}
+                  {@const source = cell ? fileContent.slice(cell.start, cell.end).replace(/\\\|/gu, '|') : ''}
+                  {#if /[*_~`<&\[!]/u.test(source)}
+                  <MarkdownRichBlockView
+                    {source}
+                    environment={markdownPresentation.environment} documentPath={filePath}
+                    editLabel={t('toolbar.switchToSource')} showEdit={false} inline
+                    onedit={() => { if (cell) focusMarkdownTableCell(block, cell.start); }} onlink={openMarkdownRichLink}
+                  />
+                  {:else}
+                    <span style:white-space="pre-wrap">{block.document.rows[row]?.[column] || '\u200b'}</span>
+                  {/if}
+                {/snippet}
+              </TableEditor>
             </div>
           {/each}
 

@@ -127,10 +127,10 @@ try {
     assert.deepEqual(block.document.rows, [['Name', 'Count'], ['A|B', '2']]);
     assert.deepEqual(block.document.columnAlignments, ['left', 'right']);
     assert.equal(block.lineEnding, newline);
-    for (const value of ['new | value', ' trailing ', '  ', '\tvalue\t', 'line\nnext', '\\|', '<br>', '<img src=x onerror=alert(1)>', '&amp;']) {
+    for (const value of ['new | value', ' trailing ', '  ', '\tvalue\t', 'line\nnext', '\\|', '<br>', '<img src=x onerror=alert(1)>', '&amp;', '&lt;kbd&gt;', '\\*literal\\*', '`<br>`', '**bold** <kbd>Ctrl</kbd>']) {
       const next = markdownTables.replaceMarkdownTable(source, block,
         tables.updateTableCell(block.document, 1, 0, value), { row: 1, column: 0 });
-      assert.equal(parseTables(next)[0].document.rows[1][0], value);
+      assert.equal(parseTables(next)[0].document.rows[1][0], value === '<br>' ? '\n' : value);
       assert.equal(next, source.slice(0, block.cells[1][0].start)
         + markdownTables.encodeMarkdownTableCell(value) + source.slice(block.cells[1][0].end));
     }

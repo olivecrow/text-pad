@@ -26,7 +26,7 @@ interface ParsedRow {
 }
 
 const cellEntities: Record<string, string> = {
-  '&amp;': '&', '&lt;': '<', '&gt;': '>', '&#32;': ' ', '&#9;': '\t'
+  '&#32;': ' ', '&#9;': '\t'
 };
 
 function parseRow(text: string, lineStart: number, maxColumns: number): ParsedRow | null {
@@ -64,13 +64,29 @@ function parseRow(text: string, lineStart: number, maxColumns: number): ParsedRo
     while (end > start && /[ \t]/u.test(text[end - 1])) end -= 1;
     let value = '';
     const offsets = [lineStart + start];
+    const codeEnds = new Map<number, number>();
+    const nextRun = new Map<number, { start: number; end: number }>();
+    const runs = [...text.slice(start, end).matchAll(/`+/gu)];
+    for (let run = runs.length - 1; run >= 0; run -= 1) {
+      const part = runs[run];
+      const next = nextRun.get(part[0].length);
+      if (next) codeEnds.set(start + part.index!, next.end);
+      nextRun.set(part[0].length, { start: start + part.index!, end: start + part.index! + part[0].length });
+    }
+    let codeUntil = start;
     for (let cursor = start; cursor < end;) {
-      if (text[cursor] === '\\' && /[\\|]/u.test(text[cursor + 1] ?? '')) {
+      if (cursor >= codeUntil && codeEnds.has(cursor)) {
+        let slashes = 0;
+        for (let before = cursor - 1; before >= start && text[before] === '\\'; before -= 1) slashes += 1;
+        if (slashes % 2 === 0) codeUntil = codeEnds.get(cursor)!;
+      }
+      if (text[cursor] === '\\' && (text[cursor + 1] === '|'
+        || (text[cursor + 1] === '\\' && /^\\+\|/u.test(text.slice(cursor, end))))) {
         value += text[cursor + 1];
         cursor += 2;
       } else {
-        const br = text.slice(cursor, cursor + 6).match(/^<br\s*\/?>/iu);
-        const entity = text.slice(cursor, cursor + 6).match(/^(?:&amp;|&lt;|&gt;|&#32;|&#9;)/u);
+        const br = cursor >= codeUntil && text.slice(cursor, cursor + 6).match(/^<br\s*\/?>/iu);
+        const entity = cursor >= codeUntil && text.slice(cursor, cursor + 6).match(/^(?:&#32;|&#9;)/u);
         if (br) {
           value += '\n';
           cursor += br[0].length;
@@ -181,8 +197,9 @@ export function parseMarkdownTables(
 }
 
 export function encodeMarkdownTableCell(value: string): string {
-  return value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;')
-    .replace(/\\/gu, '\\\\').replace(/\|/gu, '\\|').replace(/\r\n|\r|\n/gu, '<br>')
+  // 셀은 Markdown 원문이다. 태그·문자 참조·강조 이스케이프를 일반 문자로 바꾸지 않는다.
+  return value.replace(/(\\*)\|/gu, (_, slashes: string) => '\\'.repeat(slashes.length * 2 + 1) + '|')
+    .replace(/\r\n|\r|\n/gu, '<br>')
     .replace(/^[ \t]+|[ \t]+$/gu, (space) => space.replace(/ /gu, '&#32;').replace(/\t/gu, '&#9;'));
 }
 
