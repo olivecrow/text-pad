@@ -18,6 +18,20 @@ export function getRichTextRuns(root: HTMLElement): RichTextRun[] {
   });
 }
 
+/** 문자 참조·이모지를 나누지 않고 앞/뒤의 표시 문자 하나를 고른다. */
+export function getRichDeletionRange(root: HTMLElement, offset: number, direction: -1 | 1): { start: number; end: number } | null {
+  let best: { start: number; end: number } | null = null;
+  for (const run of getRichTextRuns(root)) {
+    for (const segment of graphemes.segment(run.node.data)) {
+      const start = run.offsets[segment.index];
+      const end = run.offsets[segment.index + segment.segment.length];
+      if (end <= start || (direction < 0 ? end > offset : start < offset)) continue;
+      if (!best || (direction < 0 ? end > best.end : start < best.start)) best = { start, end };
+    }
+  }
+  return best;
+}
+
 export function getRichTextBoundary(root: HTMLElement, offset: number, direction = 0): (RenderedTextBoundary & { source: number }) | null {
   let best: (RenderedTextBoundary & { source: number }) | null = null;
   let distance = Infinity;

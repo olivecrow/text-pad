@@ -31,6 +31,7 @@
 - `src/lib/markdown-settings.ts`: Markdown 제목 1~6단계의 공통 표시 설정.
 - `src/lib/markdown-rich-text.ts`, `src/lib/MarkdownRichBlock.svelte`: Markdown의 안전한 HTML·이미지·링크·접기 표시와 렌더 모드 직접 편집. [서식 지원 계약](features/markdown-rich-text.md)을 따른다.
 - `src/lib/markdown-source-renderer.ts`, `src/lib/markdown-rich-geometry.ts`: 해석기가 소비한 원문과 실제 표시 글자 경계를 연결한다. 기존 입력창·선택·실행 취소를 유지하며 복합 영역의 클릭·이동·삭제도 같은 원문 범위를 사용한다.
+- `src/lib/markdown-edit.ts`, `src/lib/markdown-presentation.ts`: 서식 경계의 선택 교체 계산과 활성 Markdown 문서의 부분 해석을 맡는다. 본문·표 입력의 실행 취소 병합 정책은 `src/lib/editor-input.ts`에서 공유한다.
 - `src/lib/markdown-inline.ts`: 공용 Markdown 해석기로 중첩 강조를 판정하고, 숨긴 표식을 포함한 원문 길이를 유지해 줄 편집 토큰에 연결한다. 여러 줄 강조와 인용문은 복합 표시의 배치와 글자 경계를 사용한다.
 - Markdown 표 셀은 `TableEditor.svelte`의 선택적 셀 미리보기 슬롯에 기존 `MarkdownRichBlock.svelte`를 연결한다. 비활성 셀은 인라인 서식, 포커스된 셀은 원문 입력으로 표시하고 문서 참조 정의와 이미지 경로를 공유한다. 공통 표 편집기는 Markdown 해석·주소 처리·HTML 정리를 직접 소유하지 않는다.
 - `src/lib/settings-transfer.ts`: 버전이 붙은 설정 JSON 생성, 이전·미래 버전 호환 가져오기와 값 정규화.

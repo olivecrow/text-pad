@@ -23,8 +23,11 @@
   import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatCategory, DocumentFormatId } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
   import MarkdownRichBlockView from '$lib/MarkdownRichBlock.svelte';
-  import { getRichTextBoundary, getRichTextOffsetAtPoint, getRichSelectionRanges, getRichTextRuns } from '$lib/markdown-rich-geometry';
-  import { parseMarkdownRichBlocks, findMarkdownAnchorLine, type MarkdownRichBlock } from '$lib/markdown-rich-text';
+  import { getRichTextBoundary, getRichTextOffsetAtPoint, getRichSelectionRanges, getRichDeletionRange } from '$lib/markdown-rich-geometry';
+  import { findMarkdownAnchorLine, type MarkdownRichBlock } from '$lib/markdown-rich-text';
+  import { MarkdownPresentationCache } from '$lib/markdown-presentation';
+  import { replaceMarkdownSelection, repairMarkdownInput } from '$lib/markdown-edit';
+  import { getEditorInputMergeKey } from '$lib/editor-input';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { getCheckboxEnterEdit } from "$lib/checkbox-markers";
   import {
@@ -556,6 +559,7 @@
   let isRenderWrapSettling = $state<boolean>(false);
   let pendingNativeInput: { before: EditorSnapshot; inputType: string; isComposing: boolean } | null = null;
   let isComposingEditorText = false;
+  let markdownComposition: { tabId: string; before: EditorSnapshot; regions: MarkdownRichBlock[]; showHeadingMarkers: boolean } | null = null;
 
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
   let editorViewportEl = $state<HTMLDivElement | null>(null);
@@ -2193,12 +2197,9 @@
   let isActiveDocumentEditEnabled = $derived(isDocumentFormatEditEnabled(activeDocumentFormat, documentFeatureSettings));
 
   let renderWrapContentWidth = $derived(getEditorWrapContentWidth());
-  let markdownPresentation = $derived.by(() => {
-    const environment: Record<string, unknown> = {};
-    const blocks = isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown'
-      ? parseMarkdownRichBlocks(fileContent, lineStartOffsets, environment) : [];
-    return { blocks, environment };
-  });
+  const markdownPresentationCache = new MarkdownPresentationCache();
+  let markdownPresentation = $derived(isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown'
+    ? markdownPresentationCache.get(fileContent, lineStartOffsets, latestContentChange) : markdownPresentationCache.clear());
   let markdownRichBlocks = $derived(markdownPresentation.blocks);
   let markdownRichByLine = $derived.by(() => {
     const lines = new Map<number, MarkdownRichBlock>();
@@ -2207,12 +2208,7 @@
     }
     return lines;
   });
-  let markdownTableBlocks = $derived(
-    isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown'
-      ? parseMarkdownTables(fileContent, lineStartOffsets, MAX_INTERACTIVE_TABLE_CELLS)
-        .filter((block) => !markdownRichBlocks.some((rich) => rich.startLine <= block.endLine && rich.endLine >= block.startLine))
-      : []
-  );
+  let markdownTableBlocks = $derived(markdownPresentation.tables);
   let markdownTableByLine = $derived.by(() => {
     const lines = new Map<number, MarkdownTableBlock>();
     for (const block of markdownTableBlocks) {
@@ -3468,7 +3464,7 @@
     let selection = getTextareaSelectionInContent();
     let pos = selection.start;
     const previousCaretOffset = caretOffset;
-    if (isRenderMode && isActiveDocumentRenderEnabled && isCollapsed) {
+    if (isRenderMode && isActiveDocumentRenderEnabled && isCollapsed && !isComposingEditorText) {
       const safePosition = getSafeRenderedCaretOffset(pos, pendingRenderCaretMovementDirection);
       if (safePosition !== pos) {
         setTextareaSelectionFromContent(safePosition, safePosition);
@@ -3542,14 +3538,19 @@
       return;
     }
 
-    requestAnimationFrame(() => {
+    // 수동 편집 직후의 다음 키 입력도 새 원문과 캐럿을 사용한다.
+    // 다음 프레임까지 선택 복원을 미루면 빠른 입력이 문서 끝에 적용될 수 있다.
+    if (textareaEl) {
+      textareaEl.value = getTextOffsetIndex(snapshot.content).textareaValue;
+      setTextareaSelectionFromContent(snapshot.selection.start, snapshot.selection.end, snapshot.content);
+      textareaEl.focus({ preventScroll: true });
+    }
+    void tick().then(() => {
       if (
         !textareaEl
         || activeTabId !== editedTabId
         || editorActivationGeneration !== activationGeneration
       ) return;
-      setTextareaSelectionFromContent(snapshot.selection.start, snapshot.selection.end, snapshot.content);
-      textareaEl.focus({ preventScroll: true });
       updateCursorPosition();
     });
   }
@@ -3699,7 +3700,7 @@
     const end = cell && options.cell
       ? cell.offsets[Math.min(options.cell.end, cell.offsets.length - 1)] : start;
     commitEditorEdit(before, { content: nextContent, selection: { start, end } }, {
-      mergeKey: options.mergeKey ? `markdown:${block.start}:${options.mergeKey}` : null,
+      mergeKey: options.mergeKey === 'composition' ? 'composition' : options.mergeKey ? `markdown:${block.start}:${options.mergeKey}` : null,
       selectionAlreadyApplied: true,
       syncRenderCaretAfterUpdate: true,
       offsetIndex
@@ -3726,12 +3727,15 @@
   }
 
   function getNativeInputMergeKey(inputType: string, before: EditorSnapshot, isComposing: boolean): string | null {
-    if (isComposing) return 'composition';
-    if (before.selection.start !== before.selection.end) return null;
-    if (inputType === 'insertText') return 'insert-text';
-    if (inputType === 'deleteContentBackward') return 'delete-backward';
-    if (inputType === 'deleteContentForward') return 'delete-forward';
-    return null;
+    return getEditorInputMergeKey(inputType, before.selection.start !== before.selection.end, isComposing);
+  }
+
+  function getRenderSelectionEdit(content: string, selection: EditorSelection, text: string): EditorSnapshot {
+    if (isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown') {
+      return replaceMarkdownSelection(content, selection, text, markdownPresentation.regions, !markdownRenderSettings.hideHeadingMarkers);
+    }
+    return { content: content.slice(0, selection.start) + text + content.slice(selection.end),
+      selection: { start: selection.start + text.length, end: selection.start + text.length } };
   }
 
   // 변경 감지
@@ -3741,13 +3745,24 @@
     pendingNativeInput = null;
 
     const before = pendingInput?.before ?? lastEditorSnapshot;
-    const inputResult = getSnapshotFromTextareaInput(
+    let inputResult = getSnapshotFromTextareaInput(
       before,
       getTextOffsetIndex(before.content),
       target.value,
       target.selectionStart,
       target.selectionEnd
     );
+    if (!isComposingEditorText && !pendingInput?.isComposing
+      && isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown') {
+      const safe = repairMarkdownInput(before, inputResult.snapshot, inputResult.change,
+        markdownPresentation.regions, !markdownRenderSettings.hideHeadingMarkers);
+      if (safe.content !== inputResult.snapshot.content) {
+        const offsetIndex = createTextOffsetIndex(safe.content);
+        target.value = offsetIndex.textareaValue;
+        setTextareaSelectionFromContent(safe.selection.start, safe.selection.end, safe.content);
+        inputResult = { ...inputResult, snapshot: safe, offsetIndex, change: getTextChange(before.content, safe.content) };
+      }
+    }
     const inputType = pendingInput?.inputType ?? 'input';
     const mergeKey = getNativeInputMergeKey(inputType, before, pendingInput?.isComposing ?? isComposingEditorText);
 
@@ -3802,10 +3817,22 @@
     closeActiveUndoGroup();
     isComposingEditorText = true;
     pendingNativeInput = null;
+    const before = getCurrentEditorSnapshot();
+    markdownComposition = isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown'
+      && before.selection.start !== before.selection.end
+      ? { tabId: activeTabId, before, regions: markdownPresentation.regions, showHeadingMarkers: !markdownRenderSettings.hideHeadingMarkers } : null;
   }
 
   function handleEditorCompositionEnd() {
     isComposingEditorText = false;
+    const composition = markdownComposition;
+    markdownComposition = null;
+    if (composition && composition.tabId === activeTabId) {
+      const after = getCurrentEditorSnapshot();
+      const safe = repairMarkdownInput(composition.before, after, getTextChange(composition.before.content, after.content),
+        composition.regions, composition.showHeadingMarkers);
+      if (safe.content !== after.content) commitEditorEdit(after, safe, { mergeKey: 'composition' });
+    }
     closeActiveUndoGroup();
   }
 
@@ -3860,8 +3887,8 @@
       const newline = fileContent.includes('\r\n') ? '\r\n' : '\n';
       const inserted = /^\s*</u.test(block.source) && !inCode ? '<br>' : (inCode ? '' : '  ') + newline + quote;
       event.preventDefault();
-      const next = selection.start + inserted.length;
-      commitRenderEditorEdit(fileContent.slice(0, selection.start) + inserted + fileContent.slice(selection.end), { start: next, end: next });
+      const edit = getRenderSelectionEdit(fileContent, selection, inserted);
+      commitRenderEditorEdit(edit.content, edit.selection);
       return true;
     }
     const direction = event.key === 'ArrowLeft' || event.key === 'Backspace' ? -1 : 1;
@@ -3870,16 +3897,7 @@
     if (deleting && selection.start !== selection.end) return false;
     if (deleting) {
       // 문자 참조와 태그 경계에서도 표시 문자 하나의 원문 범위만 지운다.
-      const candidates = getRichTextRuns(root).flatMap(run => {
-        const result: Array<{ start: number; end: number }> = [];
-        for (const segment of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(run.node.data)) {
-          const start = run.offsets[segment.index];
-          const end = run.offsets[segment.index + segment.segment.length];
-          if (end > start && (direction < 0 ? end <= local : start >= local)) result.push({ start, end });
-        }
-        return result;
-      }).sort((a, b) => direction < 0 ? b.end - a.end : a.start - b.start);
-      const range = candidates[0];
+      const range = getRichDeletionRange(root, local, direction);
       if (!range) { event.preventDefault(); return true; }
       event.preventDefault();
       const start = block.start + range.start;
@@ -4885,6 +4903,8 @@
     { id: 'fenced-code-selection-guard', priority: 10, execute: handleRenderFencedCodeSelectionEdit },
     { id: 'fenced-code-block-backspace', priority: 20, execute: handleRenderFencedCodeBlockBackspace },
     { id: 'fenced-code-boundary-deletion-guard', priority: 30, execute: handleRenderFencedCodeBoundaryDeletion },
+    { id: 'auto-pair-backspace', priority: 35, execute: handleRenderAutoPairBackspace },
+    { id: 'rich-text-edit', priority: 37, execute: handleRichTextKey },
     { id: 'list-boundary-arrow-left', priority: 40, execute: handleRenderListBoundaryArrowLeft },
     { id: 'list-soft-break-enter', priority: 50, execute: handleRenderListSoftBreakEnter },
     { id: 'checkbox-enter', priority: 55, execute: handleRenderCheckboxEnter },
@@ -4898,7 +4918,6 @@
     { id: 'empty-indented-line-backspace', priority: 120, execute: handleRenderEmptyIndentedLineBackspace },
     { id: 'tab-indent', priority: 130, execute: handleRenderTabIndent },
     { id: 'indent-backspace', priority: 140, execute: handleRenderIndentBackspace },
-    { id: 'auto-pair-backspace', priority: 150, execute: handleRenderAutoPairBackspace },
     { id: 'markdown-heading-space', priority: 160, execute: handleRenderMarkdownHeadingSpace },
     { id: 'auto-substitution-space', priority: 170, execute: handleRenderAutoSubstitutionSpace },
     { id: 'auto-pair-input', priority: 180, execute: handleRenderAutoPairInput }
@@ -4922,7 +4941,6 @@
       markdownHeadingReplacementCaret = null;
       return;
     }
-    if (handleRichTextKey(event)) return;
     if (handlePrettyPrintNavigation(event)) return;
     prepareRenderMarkdownHeadingReplacementMarker(event);
     renderEditorCommandPipeline.execute(event);
@@ -5164,12 +5182,8 @@
     const selectedText = fileContent.substring(start, end);
     await navigator.clipboard.writeText(selectedText);
 
-    const before = fileContent.substring(0, start);
-    const after = fileContent.substring(end);
-    commitManualEditorEdit(before + after, {
-      start,
-      end: start
-    });
+    const edit = getRenderSelectionEdit(fileContent, { start, end }, '');
+    commitManualEditorEdit(edit.content, edit.selection);
 
     closeAllDropdown();
   }
@@ -5194,12 +5208,8 @@
         return;
       }
 
-      const before = fileContent.substring(0, start);
-      const after = fileContent.substring(end);
-      commitManualEditorEdit(before + text + after, {
-        start: start + text.length,
-        end: start + text.length
-      });
+      const edit = getRenderSelectionEdit(fileContent, { start, end }, text);
+      commitManualEditorEdit(edit.content, edit.selection);
 
       closeAllDropdown();
     } catch (err) {
@@ -5221,22 +5231,17 @@
       }
     }
 
-    let newCursorPos = start;
-
     if (start === end) {
-      const before = fileContent.substring(0, start);
-      const after = fileContent.substring(start + 1);
-      commitManualEditorEdit(before + after, {
-        start: newCursorPos,
-        end: newCursorPos
-      });
+      const block = isRenderMode && isActiveDocumentRenderEnabled ? markdownRichByLine.get(findLineIndexForOffset(start)) : undefined;
+      const root = block && getRichRoot(start);
+      const range = root && block ? getRichDeletionRange(root, start - block.start, 1) : null;
+      if (root && block && !range) { closeAllDropdown(); return; }
+      const from = range && block ? block.start + range.start : start;
+      const to = range && block ? block.start + range.end : start + 1;
+      commitManualEditorEdit(fileContent.slice(0, from) + fileContent.slice(to), { start: from, end: from });
     } else {
-      const before = fileContent.substring(0, start);
-      const after = fileContent.substring(end);
-      commitManualEditorEdit(before + after, {
-        start: newCursorPos,
-        end: newCursorPos
-      });
+      const edit = getRenderSelectionEdit(fileContent, { start, end }, '');
+      commitManualEditorEdit(edit.content, edit.selection);
     }
 
     closeAllDropdown();
@@ -6763,6 +6768,7 @@
             reorderDurationMs={delimitedTableReorderDurationMs}
             ondocumentchange={commitDelimitedTableEdit}
             onhistoryinput={(direction) => direction === 'undo' ? performUndo() : performRedo()}
+            onundogroupend={closeActiveUndoGroup}
             onhighlightheaderchange={(enabled) => delimitedTableHighlightHeader = enabled}
             onshowrowindiceschange={(enabled) => delimitedTableShowRowIndices = enabled}
           />
@@ -6886,8 +6892,9 @@
               onpointerdown={handleRichPointerDown} ondblclick={handleRichDoubleClick}
               data-rich-source={block.source}
               use:observeRenderedLine data-line-index={block.startLine} data-markdown-rich={block.startLine}
-              style:top={`${getRenderLineTop(block.startLine) + editorTopPadding}px`}>
-              <MarkdownRichBlockView editable source={block.source} environment={block.environment} documentPath={filePath} editLabel={t('toolbar.switchToSource')}
+              style:top={`${getRenderLineTop(block.startLine) + editorTopPadding}px`}
+              style:font-size={`${currentFontSize}pt`} style:line-height={`${measuredLineHeight}px`} style:tab-size={tabSize}>
+              <MarkdownRichBlockView settings={markdownRenderSettings} editable source={block.source} environment={block.environment} documentPath={filePath} editLabel={t('toolbar.switchToSource')}
                 onedit={() => editMarkdownRichBlock(block)} onlink={openMarkdownRichLink} />
             </div>
           {/each}
@@ -6915,6 +6922,7 @@
                 oncellselection={(selection) => updateMarkdownTableSelection(block, selection)}
                 onleave={(direction) => leaveMarkdownTable(block, direction)}
                 onhistoryinput={(direction) => direction === 'undo' ? performUndo() : performRedo()}
+                onundogroupend={closeActiveUndoGroup}
                 onhighlightheaderchange={(enabled) => delimitedTableHighlightHeader = enabled}
                 onshowrowindiceschange={(enabled) => delimitedTableShowRowIndices = enabled}
               >
@@ -6925,7 +6933,7 @@
                   <MarkdownRichBlockView
                     {source}
                     environment={markdownPresentation.environment} documentPath={filePath}
-                    editLabel={t('toolbar.switchToSource')} showEdit={false} inline
+                    settings={markdownRenderSettings} editLabel={t('toolbar.switchToSource')} showEdit={false} inline
                     onedit={() => { if (cell) focusMarkdownTableCell(block, cell.start); }} onlink={openMarkdownRichLink}
                   />
                   {:else}
@@ -8312,5 +8320,3 @@
     border-left: none;
   }
 </style>
-
-

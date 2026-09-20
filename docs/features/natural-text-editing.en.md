@@ -110,6 +110,7 @@ The behavioral contract is:
 - When three backticks are typed after optional indentation at the start of a line and the right-side context allows a new automatic pair, the third input expands them into an opening fence, an empty code line, a closing fence, and a following line with the same indentation, while leaving the caret inside the empty code line. A collapsed caret immediately after the closing fence maps to the first editable position on the following line instead of the hidden fence line. Preserve the existing newline convention and indentation.
 - With an active selection, the current implementation does not wrap the selection and instead uses default input behavior. Selection wrapping requires a separate behavioral contract and validation before it can be added.
 - Pressing Backspace between an empty automatic pair removes both the opening and closing characters.
+- Inside rich formatting such as HTML or blockquotes, handle empty automatic pair deletion before deleting a general displayed character.
 - In repeated-character contexts such as `"""` or `(()`, do not guess that surrounding characters belong to the same pair when an outer closing character cannot be confirmed.
 - Automatic insertion, paired deletion, and backtick code-block expansion are each one Undo action. Skipping over a closing character does not change source text and therefore creates no Undo record.
 - In render mode, hidden inline backticks and fenced-code delimiter lines are not collapsed-caret stops. Pointer and arrow-key movement skips to a visible inline-code boundary or to an adjacent editable line inside or outside the fenced block.
@@ -134,6 +135,7 @@ In render mode, the editor shows the other end of the paired character touching 
 - While replacing an existing heading level, keep the caret before the hidden old marker so the user can type up to six consecutive hashes. Release this temporary replacement position when an edit other than Space or a caret movement begins.
 - The default setting hides the leading heading marker, but keeps the same source range as hidden syntax so source text and selections remain stable. Do not hide or reinterpret the same markers inside a fenced code block.
 - Per-level size and weight, marker visibility, and level 1 and 2 dividers are shared display settings for every Markdown document. Changing them alters neither source text nor Undo history.
+- Headings containing links or HTML use the same size, weight, marker visibility, and divider settings as plain headings. Rich prose shares the editor's font size, line height, and tab size.
 - Typing `#` itself remains ordinary character input. Applying a heading or replacing an existing level with Space keeps the new heading marker and space as Markdown source, and records the complete Space input and old-marker replacement as one Undo action.
 - Do not intercept heading application when there is an active selection, IME composition is in progress, Ctrl, Alt, or Meta is pressed, the marker is not after no more than three leading spaces at line start, there are seven or more hashes, the line is inside a fenced code block, or the editor is in source mode.
 - Pointer placement, arrow movement, and selection on a heading map the actual rendered glyph widths back to source positions. Do not leave a collapsed caret trapped inside a hidden marker range.
@@ -145,6 +147,7 @@ In render mode, the editor shows the other end of the paired character touching 
 - Render body tables with consecutive header and pipe-delimiter rows using the same cell, row, and column editor as CSV/TSV. Place the table directly in the document without a separate format label, toolbar, or enclosing border. Rendering and mode changes do not modify source text. Keep tables inside code, comments, or lists, and tables exceeding the budget, as source text; display tables inside blockquotes as part of their preview.
 - Map cell selection and caret boundaries to actual source positions, including escaped pipes, character references, and `<br>` line breaks. Editing an existing cell changes only its content range, preserving surrounding prose and other cells' whitespace and delimiters. Row and column operations normalize only that table range while preserving its newline style and column alignment.
 - Merge consecutive input only within the same table and cell; record each row or column operation independently. Undo and redo restore both source text and cell selection. Do not intercept cell-navigation keys during IME composition.
+- Cell paste, cut, and selection replacement form separate Undo actions from surrounding ordinary input. Keep one Korean composition atomic from start to confirmation even across a pause longer than one second or intermediate character replacement. End ordinary input groups at composition start/end and when leaving a cell. Apply the same rule to CSV/TSV.
 - `Tab`/`Shift+Tab` move between cells and leave the last/first cell for the following/preceding prose. `Escape` leaves for the following prose; ArrowUp at the start of the first row and ArrowDown at the end of the last row leave in their respective directions. `Ctrl+Home`/`Ctrl+End` also leave for the preceding/following prose. If no prose line exists at the document boundary, create one empty line and record it as an independent undo step.
 - Tables fill the available body width with a minimum of 500 pixels; narrower regions scroll horizontally within the table. Cells wrap to their width without internal scrolling, including breaks within long words. Each row and its inputs grow or shrink to fit the tallest cell. Window or column resizing and visual wrapping alone add neither source newlines nor Undo records. Apply this layout to the shared CSV/TSV editor as well.
 - Allocate column widths in proportion to the square root of each column's total character count, including headers but excluding newlines. Soften a 1:16 character-count ratio to a 1:4 width ratio so shorter columns do not become excessively narrow. Keep each column at least 100 pixels wide and distribute the remaining space among the other columns using their adjusted proportions. Use equal widths for an entirely empty table; if there are too many columns to fit their minimum widths, widen the table and scroll horizontally. Recalculate after content edits until the user adjusts widths manually, then prioritize the manual proportions and minimum width without applying the square-root adjustment. Width changes affect neither source text nor Undo history.
@@ -160,6 +163,10 @@ In render mode, the editor shows the other end of the paired character touching 
 - Consecutive `>` lines form one quote area with a left border; a bare `>` separates internal paragraphs and `> >` creates a nested quote. Render emphasis, lists, tables, and code within the quote; use Markdown paragraph boundaries for lazy continuation lines and the end of the area. Edit quotes and multiline emphasis directly in render mode, preserving existing source newlines.
 - Render paragraphs containing HTML, images, links, or character references, and horizontal rules, as safe rich previews. Example: `<p align="center"><strong>Title</strong><br><sub>Description</sub></p>`.
 - Click, Shift-click, drag, and double-click rich text to place the caret or select text, then type, paste, and undo without leaving render mode. Connect display boundaries to source ranges consumed by the parser; repeated words, tags, character references, and CRLF must not shift editing positions. Keep IME composition on the existing input path. Show only blocks with unverifiable boundaries as editable source.
+- Deleting, cutting, or replacing a partial selection across formatting boundaries changes the selected displayed characters while preserving hidden wrapping syntax. Deleting `bcde` from `<b>abc</b><i>def</i>` produces `<b>a</b><i>f</i>`. Selecting an entire block or document removes its tags as well. Do not protect ordinary source line breaks as formatting tags.
+- Show wrapping HTML tags literally and allow direct editing when they contain no text, including no whitespace. Display `<b></b>` as written; apply formatting to `<b>text</b>` and `<b> </b>`. Also reveal outer tags containing only nested empty tags and tags whose pair is not yet complete. Elements with displayed content, such as images and line breaks, do not count as empty.
+- Show the entire syntax of a Markdown link with an empty label, such as `[](https://example.com)`, so users can type inside `[]`. Apply link formatting once a label exists.
+- During a Korean composition replacing text across formatting boundaries, do not force changes to the input value or selection. Restore wrapping syntax at composition confirmation and record it in the same Undo action as the composition. Apply a manual edit's source and selection together before the next key input.
 - Arrow keys and Home/End follow displayed text. Backspace/Delete remove one displayed character, including its entire character reference, without deleting individual hidden tag characters. Enter inserts `<br>` in HTML prose, a hard break with the current quote prefix in Markdown prose, and a source newline inside code. Use the existing Undo history for each edit.
 - Edit link labels and disclosure summaries with a normal click; use Ctrl-click (or Command-click) to open links or toggle disclosures. Keep disclosures open while editing their contents. The `‹/›` button switches to source mode and selects the block for editing syntax such as tags and destinations. Table preview links and disclosures retain their existing behavior.
 - Apply the actual height of `<details><summary>More</summary>…</details>` disclosure changes, image loading, and width changes to following paragraphs and scroll extent. Disclosure state and source-mode switching change neither source text nor Undo history.
@@ -490,24 +497,25 @@ Each editing-assistance command registers a unique identifier and a non-duplicat
 1. Block deletion selections that include only part of a fenced-code delimiter
 2. Disable fenced-block syntax on Backspace from the immediately following line
 3. Block single-character deletion across a newline adjacent to a fenced-code delimiter
-4. Move to the previous line end with ArrowLeft from the body start of a list continuation line
-5. Create a marker-free list continuation line with Shift+Enter
-6. Continue a checkbox item or end an empty checkbox item with Enter
-7. End the list with Enter on an empty marker item
-8. Continue a list marker and renumber following items on Enter
-9. Create the next item and renumber following items from a list continuation line on Enter
-10. Expand a structural JSON or JSONC delimiter pair with Enter
-11. Preserve indentation on Enter for a general line
-12. Remove the marker-tail character with Backspace at a list body start
-13. Join a list continuation line with Backspace at its body start
-14. Join an otherwise empty automatically indented line on Backspace
-15. Indent or outdent lines with Tab or Shift+Tab
-16. Delete leading indentation with Backspace
-17. Delete an empty automatic pair with Backspace
-18. Apply a Markdown heading or replace its existing level when confirmed by Space
-19. Apply a context-aware substitution confirmed by Space
-20. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
-21. Fall back to default `textarea` input when none of the conditions match
+4. Delete an empty automatic pair with Backspace
+5. Move, delete, or insert Enter at rich-formatting display boundaries
+6. Move to the previous line end with ArrowLeft from the body start of a list continuation line
+7. Create a marker-free list continuation line with Shift+Enter
+8. Continue a checkbox item or end an empty checkbox item with Enter
+9. End the list with Enter on an empty marker item
+10. Continue a list marker and renumber following items on Enter
+11. Create the next item and renumber following items from a list continuation line on Enter
+12. Expand a structural JSON or JSONC delimiter pair with Enter
+13. Preserve indentation on Enter for a general line
+14. Remove the marker-tail character with Backspace at a list body start
+15. Join a list continuation line with Backspace at its body start
+16. Join an otherwise empty automatically indented line on Backspace
+17. Indent or outdent lines with Tab or Shift+Tab
+18. Delete leading indentation with Backspace
+19. Apply a Markdown heading or replace its existing level when confirmed by Space
+20. Apply a context-aware substitution confirmed by Space
+21. Insert an automatic pair, skip over a matching closing character, or expand the third backtick into a code block
+22. Fall back to default `textarea` input when none of the conditions match
 
 Do not chain one editing-assistance helper from inside another. The top-level input path selects exactly one feature by priority, and that feature records the final source text and selection only once.
 

@@ -1,12 +1,12 @@
 import MarkdownIt from 'markdown-it';
 import DOMPurify from 'dompurify';
-import { renderMappedMarkdown, type MappedMarkdown } from './markdown-source-renderer';
+import { renderMappedMarkdown, markdownHtmlTags, markdownContainerTags, type MappedMarkdown } from './markdown-source-renderer';
 
 // Markdown 문법은 공용 해석기에 맡기고, 문서가 앱 DOM에 넣을 수 있는 것은
 // 아래 표시 전용 태그와 속성으로 제한한다. 원문은 절대로 직렬화하지 않는다.
 const markdown = new MarkdownIt({ html: true, linkify: true, maxNesting: 32 });
-const tags = 'a abbr b bdi bdo blockquote br caption center cite code col colgroup dd del details dfn div dl dt em figcaption figure h1 h2 h3 h4 h5 h6 hr i img ins kbd li mark ol p pre q rp rt ruby s samp small span strong sub summary sup table tbody td th thead tfoot time tr u ul var wbr'.split(' ');
-const containers = new Set(tags.filter((tag) => !['br', 'hr', 'img', 'wbr', 'col'].includes(tag)));
+const tags = markdownHtmlTags;
+const containers = markdownContainerTags;
 
 export interface MarkdownRichBlock {
   startLine: number;
@@ -17,7 +17,7 @@ export interface MarkdownRichBlock {
   environment: Record<string, unknown>;
 }
 
-export function parseMarkdownRichBlocks(content: string, lineStarts: number[], environment: Record<string, unknown> = {}): MarkdownRichBlock[] {
+export function parseMarkdownRichBlocks(content: string, lineStarts: number[], environment: Record<string, unknown> = {}, regions?: MarkdownRichBlock[]): MarkdownRichBlock[] {
   if (!/[<!&\[*_~]|^ {0,3}[>\-]/mu.test(content)) return [];
   const tokens = markdown.parse(content, environment);
   const ranges: Array<[number, number]> = [];
@@ -69,20 +69,33 @@ export function parseMarkdownRichBlocks(content: string, lineStarts: number[], e
     if (previous && range[0] < previous[1]) previous[1] = Math.max(previous[1], range[1]);
     else merged.push([...range]);
   }
-  return merged.slice(0, 500).map(([startLine, endLine]) => {
+  const toBlock = ([startLine, endLine]: [number, number]): MarkdownRichBlock => {
     const start = lineStarts[startLine];
     // The final newline belongs to the following source line, not the preview.
     let end = lineStarts[endLine] ?? content.length;
     if (content[end - 1] === '\n') end -= content[end - 2] === '\r' ? 2 : 1;
     return { startLine, endLine: endLine - 1, start, end, source: content.slice(start, end), environment };
-  }).filter((block) => block.source.length <= 128 * 1024);
+  };
+  const blocks = merged.slice(0, 500).map(toBlock).filter((block) => block.source.length <= 128 * 1024);
+  if (regions) {
+    regions.push(...blocks);
+    let rangeIndex = 0;
+    for (const token of tokens) {
+      if (token.level !== 0 || !token.map || !['paragraph_open', 'heading_open'].includes(token.type)) continue;
+      while (rangeIndex < merged.length && merged[rangeIndex][1] <= token.map[0]) rangeIndex++;
+      if (rangeIndex < merged.length && merged[rangeIndex][0] < token.map[1]) continue;
+      regions.push(toBlock([token.map[0], token.map[1]]));
+    }
+    regions.sort((a, b) => a.start - b.start);
+  }
+  return blocks;
 }
 
-export function renderMarkdownRichText(source: string, environment: Record<string, unknown> = {}, inline = false, editable = false): string {
+export function renderMarkdownRichText(source: string, environment: Record<string, unknown> = {}, inline = false, editable = false, showHeadingMarkers = false): string {
   if (typeof window === 'undefined') return '';
   let mapped: MappedMarkdown | undefined;
-  if (editable) {
-    try { mapped = renderMappedMarkdown(source, environment); }
+  if (editable || inline) {
+    try { mapped = renderMappedMarkdown(source, environment, { inline, showHeadingMarkers }); }
     catch {
       // 해석기가 제공하지 못한 경계를 추측하지 않는다. 이 블록만 편집 가능한 원문으로 표시한다.
       mapped = { html: '', attribute: `data-rich-${crypto.randomUUID()}`, maps: [Array.from({ length: source.length + 1 }, (_, i) => i)] };

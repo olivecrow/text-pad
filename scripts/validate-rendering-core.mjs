@@ -224,6 +224,56 @@ try {
   const markdownHeadingEdit = await server.ssrLoadModule('/src/lib/markdown-heading-edit.ts');
   const tokenizer = await server.ssrLoadModule('/src/lib/render-tokenizer.ts');
   const markdownRich = await server.ssrLoadModule('/src/lib/markdown-rich-text.ts');
+  const { MarkdownPresentationCache } = await server.ssrLoadModule('/src/lib/markdown-presentation.ts');
+  const { replaceMarkdownSelection } = await server.ssrLoadModule('/src/lib/markdown-edit.ts');
+  const { renderMappedMarkdown } = await server.ssrLoadModule('/src/lib/markdown-source-renderer.ts');
+  {
+    const source = '<p><b>abc</b><i>def</i></p>';
+    const model = new MarkdownPresentationCache().get(source, getSlowLineStarts(source));
+    assert.equal(replaceMarkdownSelection(source, { start: 7, end: 18 }, '', model.regions).content, '<p><b>a</b><i>f</i></p>');
+    assert.equal(replaceMarkdownSelection(source, { start: 6, end: 19 }, '', model.regions).content, '<p><b></b><i></i></p>');
+    assert.equal(replaceMarkdownSelection(source, { start: 0, end: source.length }, '', model.regions).content, '');
+    const empty = renderMappedMarkdown('<b></b>', {});
+    assert.ok(empty.html.includes('&lt;b&gt;'));
+    assert.ok(empty.html.includes('&lt;/b&gt;'));
+    assert.ok(renderMappedMarkdown('<b> </b>', {}).html.includes('<b>'));
+    assert.ok(!renderMappedMarkdown('`<b></b>`', {}).html.includes('<b>'));
+    assert.ok(renderMappedMarkdown('[](https://example.com)', {}).html.includes('[](https://example.com)'));
+    assert.equal(editorInput.getEditorInputMergeKey('insertFromPaste', false, false), null);
+    assert.equal(editorInput.getEditorInputMergeKey('insertText', false, false), 'insert-text');
+    assert.equal(editorInput.getEditorInputMergeKey('insertCompositionText', true, true), 'composition');
+  }
+  {
+    const cache = new MarkdownPresentationCache();
+    let source = '<p>hello</p>\r\n\r\nplain **bold** text\r\n\r\n| a | b |\r\n|---|---|\r\n| x | y |\r\n\r\n[label][ref]\r\n\r\n[ref]: https://example.com';
+    let previous = cache.get(source, getSlowLineStarts(source));
+    for (const [before, after] of [['hello', 'helloo'], ['bold', 'bolded'], ['helloo', 'h'], ['[ref]: https://example.com', '[ref]: https://example.org'], ['h</p>', 'h<br>new</p>']]) {
+      const next = source.replace(before, after);
+      const value = cache.get(next, getSlowLineStarts(next), textChanges.getTextChange(source, next));
+      const fresh = new MarkdownPresentationCache().get(next, getSlowLineStarts(next));
+      assert.deepEqual(value, fresh, `incremental Markdown parity: ${before}`);
+      if (before === 'hello') assert.equal(value.environment, previous.environment);
+      previous = value; source = next;
+    }
+    for (const [before, after] of [
+      ['<p>text</p>\n\n[link](https://example.com)', '<script>text</p>\n\n[link](https://example.com)'],
+      ['first **bold**\nsecond\n\nlast', 'first **bold**\n\nsecond\n\nlast'],
+      ['[label][ref]\n\n[ref]: https://example.com', '[label][new]\n\n[ref]: https://example.com']
+    ]) {
+      cache.get(before, getSlowLineStarts(before));
+      assert.deepEqual(cache.get(after, getSlowLineStarts(after), textChanges.getTextChange(before, after)),
+        new MarkdownPresentationCache().get(after, getSlowLineStarts(after)), 'structural edit must match a fresh parse');
+    }
+    const large = Array.from({ length: 15000 }, (_, i) => `Paragraph ${i}: **bold** and [label](https://example.com) with repeated text.\n\n`).join('');
+    cache.get(large, getSlowLineStarts(large));
+    const next = large.replace('Paragraph 0:', 'Paragraph 0x:');
+    const start = performance.now();
+    const value = cache.get(next, getSlowLineStarts(next), textChanges.getTextChange(large, next));
+    const elapsed = performance.now() - start;
+    assert.ok(cache.inspectedCharacters < 200, `local typing reparsed ${cache.inspectedCharacters} characters`);
+    assert.deepEqual(value, new MarkdownPresentationCache().get(next, getSlowLineStarts(next)));
+    console.log(`Markdown local edit: ${large.length} chars, ${cache.inspectedCharacters} reparsed, ${elapsed.toFixed(1)} ms`);
+  }
   const emphasisCases = [
     ['*italic* **bold**', ['emphasis', 'strong']],
     ['**bold *nested* end**', ['strong', 'emphasis']],

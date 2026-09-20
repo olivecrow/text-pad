@@ -3,6 +3,8 @@ import MarkdownIt, { type Token } from 'markdown-it';
 // 표시 문자열을 원문에서 재검색하지 않고 해석기가 소비한 범위를 기록한다.
 // 이 해석기는 편집 가능한 복합 블록에만 사용한다. 원문은 재직렬화하지 않는다.
 const parser = new MarkdownIt({ html: true, linkify: true, maxNesting: 32 });
+export const markdownHtmlTags = 'a abbr b bdi bdo blockquote br caption center cite code col colgroup dd del details dfn div dl dt em figcaption figure h1 h2 h3 h4 h5 h6 hr i img ins kbd li mark ol p pre q rp rt ruby s samp small span strong sub summary sup table tbody td th thead tfoot time tr u ul var wbr'.split(' ');
+export const markdownContainerTags = new Set(markdownHtmlTags.filter(tag => !['br', 'hr', 'img', 'wbr', 'col'].includes(tag)));
 type Position = { start: number; end: number };
 const positions = new WeakMap<Token, Position>();
 const pendingStarts = new WeakMap<object, number>();
@@ -89,7 +91,7 @@ export interface MappedMarkdown {
   maps: number[][];
 }
 
-export function renderMappedMarkdown(source: string, environment: Record<string, unknown>): MappedMarkdown {
+export function renderMappedMarkdown(source: string, environment: Record<string, unknown>, options: { inline?: boolean; showHeadingMarkers?: boolean } = {}): MappedMarkdown {
   const normalized = source.replace(/\r\n?/gu, '\n');
   const originalOffsets: number[] = [];
   for (let pos = 0; pos < source.length; pos += 1) {
@@ -141,6 +143,9 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     const chunks = /<!--[\s\S]*?-->|<(script|style|textarea)\b[^>]*>[\s\S]*?<\/\1\s*>|<\/?[a-z!][^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*>|[^<]+|</giu;
     return html.replace(chunks, (chunk: string, _raw: string, offset: number) => {
       if (chunk.startsWith('<') && chunk !== '<') {
+        if (literalTags.has(offsets[offset])) {
+          return mapped(chunk, offsets.slice(offset, offset + chunk.length + 1));
+        }
         // 글자가 없는 줄과 이미지 양옆에도 원문 경계를 둔다.
         if (/^<(?:br|hr|img)\b/iu.test(chunk)) {
           return mapped('\u200b', [offsets[offset], offsets[offset]]) + chunk
@@ -164,7 +169,40 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
       return mapped(value, bounds);
     });
   }
-  const tokens = parser.parse(normalized, { ...environment });
+  const tokens = options.inline ? parser.parseInline(normalized, { ...environment }) : parser.parse(normalized, { ...environment });
+  if (options.inline && tokens[0]) tokens[0].map = [0, lines.length];
+  // 실제 HTML 토큰만 검사한다. 코드/이스케이프 안의 태그는 후보가 아니다.
+  // 비어 있는 쌍과 아직 닫지 않은 태그를 원문으로 보여 입력 위치를 유지한다.
+  const htmlTags: Array<{ name: string; start: number; end: number; closing: boolean }> = [];
+  for (const token of tokens) {
+    const parts = token.type === 'html_block' ? [token] : (token.children ?? []).filter(child => child.type === 'html_inline');
+    const base = token.type === 'html_block' || token.type === 'inline' && token.map ? blockOffsets(token) : null;
+    if (!base) continue;
+    for (const part of parts) {
+      const pos = part === token ? 0 : positions.get(part)?.start;
+      if (pos === undefined) continue;
+      for (const match of part.content.matchAll(/<!--[\s\S]*?-->|<\/?([a-z][a-z\d]*)\b(?:[^>"']|"[^"]*"|'[^']*')*>/giu)) {
+        const name = match[1]?.toLowerCase();
+        if (!name || !markdownContainerTags.has(name) || /\/\s*>$/u.test(match[0])) continue;
+        htmlTags.push({ name, start: base[pos + match.index!], end: base[pos + match.index! + match[0].length], closing: match[0].startsWith('</') });
+      }
+    }
+  }
+  const literalTags = new Set<number>();
+  const stack: typeof htmlTags = [];
+  for (const tag of htmlTags) {
+    if (!tag.closing) { stack.push(tag); continue; }
+    const opening = stack.at(-1);
+    if (!opening || opening.name !== tag.name) { literalTags.add(tag.start); continue; }
+    stack.pop();
+    const inside = normalized.slice(opening.end, tag.start);
+    // 공백도 내용이다. 중첩된 빈 태그만 있는 경우에는 바깥 태그도 드러낸다.
+    if (inside.replace(/<\/?[a-z][a-z\d]*\b(?:[^>"']|"[^"]*"|'[^']*')*>/giu, '') === ''
+      && !/<(?:img|br|hr|wbr)\b/iu.test(inside)) {
+      literalTags.add(opening.start); literalTags.add(tag.start);
+    }
+  }
+  for (const tag of stack) literalTags.add(tag.start);
   // 렌더 함수는 호출별로 구성해 다른 블록의 환경이나 지도에 의존하지 않는다.
   const Renderer = parser.renderer.constructor as new () => typeof parser.renderer;
   const renderer = new Renderer();
@@ -181,6 +219,15 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     return token.type === 'code_inline' ? `<code>${text}</code>` : text;
   };
   for (const type of ['text', 'text_special', 'code_inline']) renderer.rules[type] = textRule;
+  renderer.rules.link_open = (items, index, options) => {
+    if (items[index + 1]?.type !== 'link_close') return renderer.renderToken(items, index, options);
+    const pos = positions.get(items[index]);
+    if (!pos) throw new Error('Missing empty link source position');
+    const offsets = inlineOffsets.slice(pos.start, pos.end + 1);
+    return mapped(normalized.slice(offsets[0], offsets.at(-1)), offsets);
+  };
+  renderer.rules.link_close = (items, index, options) => items[index - 1]?.type === 'link_open'
+    ? '' : renderer.renderToken(items, index, options);
   const imageRule = renderer.rules.image;
   renderer.rules.image = (items, index, options, env, self) => {
     const position = positions.get(items[index]);
@@ -195,6 +242,10 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     const before = inlineOffsets[pos.start];
     const after = inlineOffsets[pos.end];
     return mapped('\u200b', [before, before]) + '<br>' + mapped('\u200b', [before, after]);
+  };
+  renderer.rules.softbreak = (items, index) => {
+    const pos = positions.get(items[index])!;
+    return mapped('\n', [inlineOffsets[pos.start], inlineOffsets[pos.end]]);
   };
   renderer.rules.html_inline = (items, index) => {
     const token = items[index];
@@ -241,7 +292,17 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
       const start = starts[token.map[0]];
       html += mapped('\u200b', [start, start]) + renderer.renderToken(tokens, i, parser.options);
     } else if (renderer.rules[token.type]) html += renderer.rules[token.type](tokens, i, parser.options, environment, renderer);
-    else html += renderer.renderToken(tokens, i, parser.options);
+    else {
+      html += renderer.renderToken(tokens, i, parser.options);
+      if (token.type === 'heading_open' && token.map && options.showHeadingMarkers && token.markup.startsWith('#')) {
+        const line = lines[token.map[0]];
+        const marker = line.match(/^(?: {0,3}>[ \t]?)* {0,3}(#{1,6}[ \t]+)/u);
+        if (marker) {
+          const start = starts[token.map[0]] + marker[0].length - marker[1].length;
+          html += mapped(marker[1], Array.from({ length: marker[1].length + 1 }, (_, n) => start + n));
+        }
+      }
+    }
   }
   return { html, attribute, maps };
 }

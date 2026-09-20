@@ -1,6 +1,7 @@
 <script lang="ts" generics="T extends TableDocument">
   import { GripHorizontal, GripVertical, Minus, Plus } from '@lucide/svelte';
   import { flushSync, onDestroy } from 'svelte';
+  import { getEditorInputMergeKey } from './editor-input';
   import type { Snippet } from 'svelte';
   import {
     getTableColumnCount,
@@ -51,6 +52,7 @@
     oncellselection?: (selection: TableCellSelection) => void;
     onleave?: (direction: -1 | 1) => void;
     onhistoryinput?: (direction: 'undo' | 'redo') => void;
+    onundogroupend?: () => void;
     onhighlightheaderchange: (enabled: boolean) => void;
     onshowrowindiceschange: (enabled: boolean) => void;
   }
@@ -70,6 +72,7 @@
     oncellselection,
     onleave,
     onhistoryinput,
+    onundogroupend,
     onhighlightheaderchange,
     onshowrowindiceschange
   }: Props = $props();
@@ -232,13 +235,25 @@
     event.stopPropagation();
   }
 
+  let composingCell = false;
+  let pendingCellInput: { type: string; hasSelection: boolean } | null = null;
+  function handleCellComposition(active: boolean) {
+    onundogroupend?.();
+    composingCell = active;
+    pendingCellInput = null;
+  }
+
   function handleCellInput(event: Event, rowIndex: number, columnIndex: number) {
     if (!editable) return;
     const target = event.currentTarget as HTMLTextAreaElement;
+    const input = event as InputEvent;
+    const kind = getEditorInputMergeKey(pendingCellInput?.type ?? input.inputType,
+      pendingCellInput?.hasSelection ?? false, composingCell || input.isComposing);
+    pendingCellInput = null;
     ondocumentchange(
       updateTableCell(document, rowIndex, columnIndex, target.value),
       {
-        mergeKey: `table-cell:${rowIndex}:${columnIndex}`,
+        mergeKey: kind === 'composition' ? kind : kind ? `table-cell:${rowIndex}:${columnIndex}:${kind}` : null,
         cell: { row: rowIndex, column: columnIndex, start: target.selectionStart, end: target.selectionEnd }
       }
     );
@@ -255,6 +270,8 @@
       onhistoryinput?.(event.inputType === 'historyUndo' ? 'undo' : 'redo');
       return;
     }
+    const target = event.currentTarget as HTMLTextAreaElement;
+    pendingCellInput = { type: event.inputType, hasSelection: target.selectionStart !== target.selectionEnd };
     reportCellSelection(event, row, column);
   }
 
@@ -1213,7 +1230,7 @@
       : t('table.cell', { row: rowIndex + 1, column: getColumnName(columnIndex) })}
     spellcheck="false"
     onfocus={(event) => { focusedCell = `${rowIndex}:${columnIndex}`; selectCell(rowIndex, columnIndex); reportCellSelection(event, rowIndex, columnIndex); }}
-    onblur={() => { focusedCell = null; }}
+    onblur={() => { focusedCell = null; handleCellComposition(false); }}
     onpointerdown={(event) => {
       selectCell(rowIndex, columnIndex);
       if (previewing) {
@@ -1226,6 +1243,8 @@
     onselect={(event) => reportCellSelection(event, rowIndex, columnIndex)}
     onbeforeinput={(event) => handleCellBeforeInput(event, rowIndex, columnIndex)}
     oninput={(event) => handleCellInput(event, rowIndex, columnIndex)}
+    oncompositionstart={() => handleCellComposition(true)}
+    oncompositionend={() => handleCellComposition(false)}
     onkeydown={(event) => handleCellKeydown(event, rowIndex, columnIndex)}
   ></textarea>
 {/snippet}
