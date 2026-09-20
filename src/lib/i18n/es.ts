@@ -1,6 +1,11 @@
 import type { TranslationKey } from './en';
 
 export const spanishTranslations: Record<TranslationKey, string> = {
+  'search.find': 'Buscar en el documento',
+  'search.previous': 'Resultado anterior (Shift+Enter)',
+  'search.next': 'Resultado siguiente (Enter)',
+  'search.close': 'Cerrar búsqueda (Esc)',
+  'search.showSource': 'Mostrar contenido oculto en el texto fuente',
   "app.tagline": "Un editor de texto local ligero y legible",
   "app.untitled": "Sin título",
   "app.windowTitle": "{fileName} - text-pad",
@@ -87,6 +92,8 @@ export const spanishTranslations: Record<TranslationKey, string> = {
   "settings.weightSemiBold": "Seminegrita",
   "settings.weightBold": "Negrita",
   "settings.color.selection": "Fondo de selección",
+  "settings.color.searchHighlight": "Resaltado de resultados de búsqueda",
+  "settings.color.searchCurrentHighlight": "Resaltado del resultado de búsqueda actual",
   "settings.color.caret": "Cursor de texto",
   "settings.color.gutterText": "Números de línea",
   "settings.color.gutterBorder": "Separador de números de línea",

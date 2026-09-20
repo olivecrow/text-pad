@@ -1,6 +1,11 @@
 import type { TranslationKey } from './en';
 
 export const brazilianPortugueseTranslations: Record<TranslationKey, string> = {
+  'search.find': 'Localizar no documento',
+  'search.previous': 'Resultado anterior (Shift+Enter)',
+  'search.next': 'Próximo resultado (Enter)',
+  'search.close': 'Fechar pesquisa (Esc)',
+  'search.showSource': 'Mostrar conteúdo oculto no texto fonte',
   "app.tagline": "Um editor de texto local leve e legível",
   "app.untitled": "Sem título",
   "app.windowTitle": "{fileName} - text-pad",
@@ -87,6 +92,8 @@ export const brazilianPortugueseTranslations: Record<TranslationKey, string> = {
   "settings.weightSemiBold": "Seminegrito",
   "settings.weightBold": "Negrito",
   "settings.color.selection": "Fundo da seleção",
+  "settings.color.searchHighlight": "Destaque dos resultados da pesquisa",
+  "settings.color.searchCurrentHighlight": "Destaque do resultado atual da pesquisa",
   "settings.color.caret": "Cursor de texto",
   "settings.color.gutterText": "Números de linha",
   "settings.color.gutterBorder": "Divisor dos números de linha",

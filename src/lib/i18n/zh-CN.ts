@@ -1,6 +1,11 @@
 import type { TranslationKey } from './en';
 
 export const simplifiedChineseTranslations: Record<TranslationKey, string> = {
+  'search.find': '在文档中查找',
+  'search.previous': '上一个结果 (Shift+Enter)',
+  'search.next': '下一个结果 (Enter)',
+  'search.close': '关闭查找 (Esc)',
+  'search.showSource': '在源文本中显示隐藏内容',
   "app.tagline": "轻量且易读的本地文本编辑器",
   "app.untitled": "无标题",
   "app.windowTitle": "{fileName} - text-pad",
@@ -87,6 +92,8 @@ export const simplifiedChineseTranslations: Record<TranslationKey, string> = {
   "settings.weightSemiBold": "半粗体",
   "settings.weightBold": "粗体",
   "settings.color.selection": "选区背景色",
+  "settings.color.searchHighlight": "搜索结果高亮颜色",
+  "settings.color.searchCurrentHighlight": "当前搜索结果高亮颜色",
   "settings.color.caret": "光标颜色",
   "settings.color.gutterText": "行号颜色",
   "settings.color.gutterBorder": "行号分隔线",

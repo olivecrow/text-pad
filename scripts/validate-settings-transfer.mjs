@@ -110,6 +110,11 @@ try {
   assert.equal(oldPaletteFile.settings.render.colors.light.comment, '#102030');
   assert.equal(oldPaletteFile.settings.render.colors.light.selection, '#123456');
   assert.equal(oldPaletteFile.settings.render.colors.dark.caret, '#ABCDEF');
+  for (const theme of ['light', 'dark']) {
+    for (const field of ['searchHighlight', 'searchCurrentHighlight']) {
+      assert.equal(oldPaletteFile.settings.render.colors[theme][field], customized.render.colors[theme][field]);
+    }
+  }
 
   const serialized = transfer.serializeSettingsFile(
     current,
@@ -251,11 +256,19 @@ try {
   changed.source.fontSize = -100;
   changed.render.indentWidth = 3;
   changed.render.colors.light.renderBg = '#aabbcc';
+  changed.render.colors.light.searchHighlight = '#12abcd';
+  changed.render.colors.dark.searchCurrentHighlight = '#de3456';
   assert.equal(legacyRepository.save(changed), true);
   const normalizedSaved = JSON.parse(legacyStorage.getItem(settingsRepositoryModule.settingsStorageKey));
   assert.equal(normalizedSaved.settings.source.fontSize, 6);
   assert.equal(normalizedSaved.settings.render.indentWidth, current.render.indentWidth);
   assert.equal(normalizedSaved.settings.render.colors.light.renderBg, '#AABBCC');
+  assert.equal(normalizedSaved.settings.render.colors.light.searchHighlight, '#12ABCD');
+  assert.equal(normalizedSaved.settings.render.colors.dark.searchCurrentHighlight, '#DE3456');
+  const reloadedRepository = new settingsRepositoryModule.SettingsRepository(legacyStorage);
+  const reloaded = reloadedRepository.load(current);
+  assert.equal(reloaded.render.colors.light.searchHighlight, '#12ABCD');
+  assert.equal(reloaded.render.colors.dark.searchCurrentHighlight, '#DE3456');
   const writeCountAfterChange = legacyStorage.setCalls.length;
   assert.equal(legacyRepository.save(changed), true);
   assert.equal(legacyStorage.setCalls.length, writeCountAfterChange);

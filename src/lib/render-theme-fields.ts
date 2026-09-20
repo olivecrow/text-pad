@@ -3,6 +3,8 @@ import type { TranslationKey } from './i18n/en';
 // 추가 색상의 설정 화면, 기본값, 저장 필드와 CSS 연결을 한 목록에서 관리한다.
 export const additionalRenderThemeFields = [
   { field: 'selection', variable: '--color-selection', label: 'settings.color.selection', light: '#60A5FA', dark: '#60A5FA' },
+  { field: 'searchHighlight', variable: '--color-search-highlight', label: 'settings.color.searchHighlight', light: '#FACC15', dark: '#FACC15' },
+  { field: 'searchCurrentHighlight', variable: '--color-search-current-highlight', label: 'settings.color.searchCurrentHighlight', light: '#EAB308', dark: '#FDE047' },
   { field: 'caret', variable: '--color-caret', label: 'settings.color.caret', light: '#0F172A', dark: '#D6EAF0' },
   { field: 'gutterText', variable: '--color-gutter-text', label: 'settings.color.gutterText', light: '#8D8D8D', dark: '#858585' },
   { field: 'gutterBorder', variable: '--color-gutter-border', label: 'settings.color.gutterBorder', light: '#E5E5E5', dark: '#2C2C2C' },

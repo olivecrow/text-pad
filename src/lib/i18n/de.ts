@@ -1,6 +1,11 @@
 import type { TranslationKey } from './en';
 
 export const germanTranslations: Record<TranslationKey, string> = {
+  'search.find': 'Im Dokument suchen',
+  'search.previous': 'Vorheriger Treffer (Shift+Enter)',
+  'search.next': 'Nächster Treffer (Enter)',
+  'search.close': 'Suche schließen (Esc)',
+  'search.showSource': 'Verborgenen Inhalt im Quelltext anzeigen',
   "app.tagline": "Ein leichter, gut lesbarer lokaler Texteditor",
   "app.untitled": "Unbenannt",
   "app.windowTitle": "{fileName} - text-pad",
@@ -87,6 +92,8 @@ export const germanTranslations: Record<TranslationKey, string> = {
   "settings.weightSemiBold": "Halbfett",
   "settings.weightBold": "Fett",
   "settings.color.selection": "Auswahlhintergrund",
+  "settings.color.searchHighlight": "Hervorhebung der Suchergebnisse",
+  "settings.color.searchCurrentHighlight": "Hervorhebung des aktuellen Suchergebnisses",
   "settings.color.caret": "Textcursor",
   "settings.color.gutterText": "Zeilennummern",
   "settings.color.gutterBorder": "Trennlinie der Zeilennummern",

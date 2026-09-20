@@ -1,6 +1,11 @@
 import type { TranslationKey } from './en';
 
 export const arabicTranslations: Record<TranslationKey, string> = {
+  'search.find': 'بحث في المستند',
+  'search.previous': 'النتيجة السابقة (Shift+Enter)',
+  'search.next': 'النتيجة التالية (Enter)',
+  'search.close': 'إغلاق البحث (Esc)',
+  'search.showSource': 'عرض المحتوى المخفي في النص الأصلي',
   "app.tagline": "محرر نصوص محلي خفيف وسهل القراءة",
   "app.untitled": "بلا عنوان",
   "app.windowTitle": "{fileName} - text-pad",
@@ -87,6 +92,8 @@ export const arabicTranslations: Record<TranslationKey, string> = {
   "settings.weightSemiBold": "شبه عريض",
   "settings.weightBold": "عريض",
   "settings.color.selection": "خلفية التحديد",
+  "settings.color.searchHighlight": "تمييز نتائج البحث",
+  "settings.color.searchCurrentHighlight": "تمييز نتيجة البحث الحالية",
   "settings.color.caret": "مؤشر النص",
   "settings.color.gutterText": "أرقام الأسطر",
   "settings.color.gutterBorder": "فاصل أرقام الأسطر",

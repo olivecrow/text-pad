@@ -31,6 +31,7 @@
     paste: () => void | Promise<void>;
     deleteSelection: () => void;
     selectAll: () => void;
+    find: () => void;
     insertDateTime: () => void;
     checkForUpdates: () => void;
     installUpdate: () => void;
@@ -179,6 +180,10 @@
           <button type="button" class="dropdown-item" onclick={() => commands.selectAll()}>
             <span class="item-label">{t('menu.selectAll')}</span>
             <span class="shortcut-label">Ctrl+A</span>
+          </button>
+          <button type="button" class="dropdown-item" onclick={() => commands.find()}>
+            <span class="item-label">{t('search.find')}</span>
+            <span class="shortcut-label">Ctrl+F</span>
           </button>
           <button type="button" class="dropdown-item" onclick={() => commands.insertDateTime()}>
             <span class="item-label">{t('menu.dateTime')}</span>

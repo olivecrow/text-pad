@@ -30,6 +30,15 @@ Natural editing is not editing with the most features. It is editing that does n
 - Show the selection background throughout a drag, before the pointer button is released. Update the endpoint from pointer movement events, and do not repeatedly cancel a pending paint. Use the current theme’s selection background color.
 - Clicking and dragging do not change source text or undo history. Subsequent typing and undo use the existing source-offset conversion and edit history paths.
 
+## Document search
+
+- Ctrl+F or Find in the Edit menu searches only the active tab's source text. Tab titles, file paths, menus, and other tabs are excluded. Search is literal and case insensitive; the source input and rendered layer never count the same content twice.
+- The search bar shows the current result and total count. Enter/F3 moves forward, Shift+Enter/Shift+F3 moves backward, and navigation wraps at either end. Escape closes search and returns to the editor. Enter used to confirm an IME composition does not navigate results.
+- In render mode, highlights use the source boundaries and rectangles of the actual displayed glyphs, including code, bold text, quotes, tables, and soft wrapping. They never use the transparent source input's geometry. Source mode and table inputs use their own actual font, padding, and scroll position.
+- Search results use yellow highlights independent of code backgrounds and text selections, with a stronger background and border for the current result. Settings → Render mode → Appearance provides separate colors for all results and the current result in each theme; both source and render modes use these colors.
+- Result navigation changes only the source selection. It does not alter content, dirty state, or Undo history; Undo while editing the query stays within the search input. Switching tabs or editing content recomputes the active document's results. Scrolling and resizing update highlight positions.
+- Matches without displayed glyphs, such as hidden formatting markers or collapsed content, offer a button to view the source. The display mode stays unchanged until the user chooses it.
+
 ## Soft wrapping of keys and values
 
 - In render mode, lines recognized by the syntax parser as a key, separator, and value align subsequent display rows with the value start. This also applies to ENV `export API_URL = value`, INI, Properties, TOML, and JSON/YAML key/value rows. Do not reinterpret `=` or `:` inside strings or comments as separators.

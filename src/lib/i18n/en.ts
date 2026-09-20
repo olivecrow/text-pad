@@ -1,4 +1,9 @@
 export const englishTranslations = {
+  'search.find': 'Find in document',
+  'search.previous': 'Previous match (Shift+Enter)',
+  'search.next': 'Next match (Enter)',
+  'search.close': 'Close search (Esc)',
+  'search.showSource': 'Show hidden match in source',
   'app.tagline': 'A lightweight, readable local text editor',
   'app.untitled': 'Untitled',
   'app.windowTitle': '{fileName} - text-pad',
@@ -90,6 +95,8 @@ export const englishTranslations = {
   'settings.weightSemiBold': 'Semi Bold',
   'settings.weightBold': 'Bold',
   "settings.color.selection": "Selection background",
+  "settings.color.searchHighlight": "Search result highlight",
+  "settings.color.searchCurrentHighlight": "Current search result highlight",
   "settings.color.caret": "Caret",
   "settings.color.gutterText": "Line numbers",
   "settings.color.gutterBorder": "Line number divider",

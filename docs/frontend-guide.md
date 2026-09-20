@@ -40,6 +40,7 @@
 - `src/lib/TableEditor.svelte`: CSV/TSV와 Markdown이 함께 사용하는 셀 입력, 행·열 조작, 열 너비와 표 표시 설정.
 - `src/lib/delimited-table.ts`: CSV/TSV 파싱과 직렬화. 공통 표 연산의 기존 내보내기 이름은 호환성을 위해 유지한다.
 - `src/lib/markdown-table.ts`: Markdown 표 범위·셀 원문 위치·열 정렬 파싱, 셀 교체와 표 범위 직렬화.
+- `src/lib/DocumentSearch.svelte`, `src/lib/document-search.ts`: 활성 문서 검색창, 일반 문자열 일치 위치 계산, 원문 입력칸과 표의 검색 좌표 변환. 페이지는 결과 선택·스크롤과 기존 렌더 글자 범위 연결을 소유한다. 탭 제목·파일 경로를 검색하지 않으며 검색 중 원문이나 실행 취소 기록을 바꾸지 않는다.
 - `src/lib/EditorMenuBar.svelte`: 파일·편집·도움말 메뉴와 오른쪽 도구 모음의 표현 및 메뉴 전환을 소유하고, 실제 편집·파일·창 명령은 명시적인 콜백 계약으로 호출하는 컴포넌트.
 - `src/lib/tab-drag.ts`: 탭 드래그 메타데이터, 드롭 삽입 위치와 같은 창 안 재정렬 계산.
 - `src/lib/app-updater.ts`: 설치 버전 조회, 업데이트 확인·설치·재시작 연결.

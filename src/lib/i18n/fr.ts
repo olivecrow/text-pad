@@ -1,6 +1,11 @@
 import type { TranslationKey } from './en';
 
 export const frenchTranslations: Record<TranslationKey, string> = {
+  'search.find': 'Rechercher dans le document',
+  'search.previous': 'Résultat précédent (Shift+Enter)',
+  'search.next': 'Résultat suivant (Enter)',
+  'search.close': 'Fermer la recherche (Esc)',
+  'search.showSource': 'Afficher le contenu masqué dans la source',
   "app.tagline": "Un éditeur de texte local léger et lisible",
   "app.untitled": "Sans titre",
   "app.windowTitle": "{fileName} - text-pad",
@@ -87,6 +92,8 @@ export const frenchTranslations: Record<TranslationKey, string> = {
   "settings.weightSemiBold": "Demi-gras",
   "settings.weightBold": "Gras",
   "settings.color.selection": "Fond de sélection",
+  "settings.color.searchHighlight": "Surlignage des résultats de recherche",
+  "settings.color.searchCurrentHighlight": "Surlignage du résultat de recherche actuel",
   "settings.color.caret": "Curseur de texte",
   "settings.color.gutterText": "Numéros de ligne",
   "settings.color.gutterBorder": "Séparateur des numéros de ligne",

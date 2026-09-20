@@ -1,6 +1,11 @@
 import type { TranslationKey } from './en';
 
 export const japaneseTranslations: Record<TranslationKey, string> = {
+  'search.find': '文書内を検索',
+  'search.previous': '前の結果 (Shift+Enter)',
+  'search.next': '次の結果 (Enter)',
+  'search.close': '検索を閉じる (Esc)',
+  'search.showSource': '非表示の内容をソースで表示',
   "app.tagline": "軽量で読みやすいローカルテキストエディタ",
   "app.untitled": "無題",
   "app.windowTitle": "{fileName} - text-pad",
@@ -87,6 +92,8 @@ export const japaneseTranslations: Record<TranslationKey, string> = {
   "settings.weightSemiBold": "セミボールド",
   "settings.weightBold": "ボールド",
   "settings.color.selection": "選択範囲の背景色",
+  "settings.color.searchHighlight": "検索結果の強調色",
+  "settings.color.searchCurrentHighlight": "現在の検索結果の強調色",
   "settings.color.caret": "キャレットの色",
   "settings.color.gutterText": "行番号の色",
   "settings.color.gutterBorder": "行番号の区切り線",

@@ -91,6 +91,24 @@ function createFakeRenderViewportScheduler() {
 }
 
 try {
+  const search = await server.ssrLoadModule('/src/lib/document-search.ts');
+  assert.deepEqual(search.findDocumentMatches('Ouroboros\r\n**ouroboros**', 'ouroboros'), [
+    { start: 0, end: 9 }, { start: 13, end: 22 }
+  ]);
+  assert.deepEqual(search.findDocumentMatches('a.* aXx a.*', 'a.*'), [{ start: 0, end: 3 }, { start: 8, end: 11 }]);
+  assert.deepEqual(search.findDocumentMatches('İ 😀 TEST test', 'test'), [{ start: 5, end: 9 }, { start: 10, end: 14 }]);
+  assert.deepEqual(search.findDocumentMatches('aaaa', 'aa'), [{ start: 0, end: 2 }, { start: 2, end: 4 }]);
+  assert.deepEqual(search.findDocumentMatches('hello', ''), []);
+  assert.equal(search.findMatchFromOffset([{ start: 2 }, { start: 8 }, { start: 12 }], 8), 1);
+  assert.equal(search.findMatchFromOffset([{ start: 2 }, { start: 8 }, { start: 12 }], 13), 3);
+  assert.deepEqual(search.clipSearchRect({ left: 5, top: 5, width: 20, height: 20 },
+    { left: 10, top: 10, width: 10, height: 10 }), { left: 10, top: 10, width: 10, height: 10 });
+  assert.equal(search.clipSearchRect({ left: 0, top: 0, width: 5, height: 5 },
+    { left: 10, top: 10, width: 10, height: 10 }), null);
+  assert.deepEqual(search.getDelimitedSearchCells('"a""b",c\r\n"d\r\ne",f', ','), [
+    { row: 0, column: 0, offsets: [1, 2, 4, 5] }, { row: 0, column: 1, offsets: [7, 8] },
+    { row: 1, column: 0, offsets: [11, 12, 14, 15] }, { row: 1, column: 1, offsets: [17, 18] }
+  ]);
   const offsets = await server.ssrLoadModule('/src/lib/text-offset-index.ts');
   const geometry = await server.ssrLoadModule('/src/lib/rendered-text-geometry.ts');
   const documentFormats = await server.ssrLoadModule('/src/lib/document-formats.ts');

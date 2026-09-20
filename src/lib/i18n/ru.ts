@@ -1,6 +1,11 @@
 import type { TranslationKey } from './en';
 
 export const russianTranslations: Record<TranslationKey, string> = {
+  'search.find': 'Найти в документе',
+  'search.previous': 'Предыдущее совпадение (Shift+Enter)',
+  'search.next': 'Следующее совпадение (Enter)',
+  'search.close': 'Закрыть поиск (Esc)',
+  'search.showSource': 'Показать скрытое содержимое в исходном тексте',
   "app.tagline": "Легковесный и удобочитаемый локальный текстовый редактор",
   "app.untitled": "Безымянный",
   "app.windowTitle": "{fileName} - text-pad",
@@ -87,6 +92,8 @@ export const russianTranslations: Record<TranslationKey, string> = {
   "settings.weightSemiBold": "Полужирный",
   "settings.weightBold": "Жирный",
   "settings.color.selection": "Фон выделения",
+  "settings.color.searchHighlight": "Подсветка результатов поиска",
+  "settings.color.searchCurrentHighlight": "Подсветка текущего результата поиска",
   "settings.color.caret": "Текстовый курсор",
   "settings.color.gutterText": "Номера строк",
   "settings.color.gutterBorder": "Разделитель номеров строк",

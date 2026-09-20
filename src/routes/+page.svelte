@@ -72,6 +72,9 @@
   import { flushSync, onDestroy, tick, untrack } from "svelte";
   import AboutDialog from "$lib/AboutDialog.svelte";
   import EditorMenuBar from "$lib/EditorMenuBar.svelte";
+  import DocumentSearch from '$lib/DocumentSearch.svelte';
+  import { findDocumentMatches, findMatchFromOffset, clipSearchRect, getSearchClipRect, measureTextareaMatches, getDelimitedSearchCells, getSearchRangeRects,
+    type SearchMatch, type SearchRect } from '$lib/document-search';
   import SettingsWindow from "$lib/SettingsWindow.svelte";
   import {
     getLanguageNativeName,
@@ -532,6 +535,16 @@
     && !!CSS.highlights;
   let renderedHighlightFrame: number | null = null;
   let renderedSelectionDecorations = $state<Array<{left: number; top: number; width: number; height: number}>>([]);
+  let searchPanel = $state<{ focus: () => void }>();
+  let isSearchOpen = $state(false);
+  let searchQuery = $state('');
+  let searchOffset = $state(0);
+  let searchHiddenMatch = $state(false);
+  let searchDecorations = $state<Array<SearchRect & { start: number; active: boolean }>>([]);
+  let searchMatches = $derived(isSearchOpen ? findDocumentMatches(fileContent, searchQuery) : []);
+  let searchIndex = $derived(searchMatches.length ? findMatchFromOffset(searchMatches, searchOffset) % searchMatches.length : -1);
+  let currentSearchMatch = $derived(searchMatches[searchIndex]);
+  let searchRevealGeneration = 0;
 
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | 'help' | null>(null);
@@ -3341,8 +3354,182 @@
       renderedHighlightFrame = null;
       syncRenderedSelectionHighlight();
       syncRenderedPairHighlight();
+      syncDocumentSearchHighlights();
     });
   }
+
+  async function openDocumentSearch() {
+    closeAllDropdown();
+    const selection = getCurrentEditorSelection();
+    const selected = fileContent.slice(selection.start, selection.end);
+    if (selected && !/[\r\n]/.test(selected)) searchQuery = selected;
+    searchOffset = selection.start;
+    isSearchOpen = true;
+    await tick();
+    searchPanel?.focus();
+  }
+
+  function closeDocumentSearch() {
+    isSearchOpen = false;
+    searchRevealGeneration++;
+    searchDecorations = [];
+    textareaEl?.focus({ preventScroll: true });
+  }
+
+  function moveDocumentSearch(direction: -1 | 1) {
+    if (!searchMatches.length) return;
+    const index = (searchIndex + direction + searchMatches.length) % searchMatches.length;
+    searchOffset = searchMatches[index].start;
+    // 한 결과만 있을 때도 사용자가 스크롤한 뒤 다시 결과로 이동할 수 있다.
+    void revealDocumentSearchMatch();
+  }
+
+  function getSearchTableInputs() {
+    if (shouldShowDelimitedTableEditor) {
+      return delimitedSearchCells.map(cell => ({ ...cell,
+        input: document.querySelector<HTMLTextAreaElement>(`.editor-area [data-table-row="${cell.row}"][data-table-column="${cell.column}"]`)
+      }));
+    }
+    return markdownTableBlocks.flatMap(block => block.cells.flatMap((row, rowIndex) => row.map((cell, column) => ({
+      offsets: cell.offsets,
+      input: editorViewportEl?.querySelector<HTMLTextAreaElement>(`[data-markdown-table="${block.startLine}"] [data-table-row="${rowIndex}"][data-table-column="${column}"]`) ?? null
+    }))));
+  }
+
+  let delimitedSearchCells = $derived(isSearchOpen && shouldShowDelimitedTableEditor && activeDelimitedTableDocument
+    ? getDelimitedSearchCells(fileContent, activeDelimitedTableDocument.separator) : []);
+
+  function getSearchTableRects(match: SearchMatch, cells = getSearchTableInputs()): SearchRect[] {
+    return cells.flatMap(({ offsets, input }) => {
+      if (!input || match.end <= offsets[0] || match.start >= offsets[offsets.length - 1]) return [];
+      const start = offsets.findIndex(offset => offset >= match.start);
+      let end = offsets.length - 1;
+      while (end >= 0 && offsets[end] > match.end) end--;
+      if (start < 0 || end <= start) return [];
+      const preview = input.parentElement?.querySelector<HTMLElement>('.table-cell-preview');
+      let rects: SearchRect[];
+      if (preview) {
+        const rich = preview.querySelector<HTMLElement>('.rich-content');
+        if (rich) rects = getRichSelectionRanges(rich, start, end).flatMap(getSearchRangeRects);
+        else {
+          const text = preview.querySelector<HTMLElement>('span');
+          if (!text?.firstChild) return [];
+          const range = document.createRange();
+          range.setStart(text.firstChild, start); range.setEnd(text.firstChild, end);
+          rects = getSearchRangeRects(range);
+        }
+      } else rects = measureTextareaMatches(input, [{ start, end }])[0];
+      const scroller = input.closest('.table-scroll-region');
+      const clip = scroller ? getSearchClipRect(scroller) : null;
+      return clip ? rects.flatMap(rect => clipSearchRect(rect, clip) ?? []) : rects;
+    });
+  }
+
+  function getDocumentSearchRects(match: SearchMatch, cells = getSearchTableInputs()): SearchRect[] {
+    if (shouldShowDelimitedTableEditor) return getSearchTableRects(match, cells);
+    if (!textareaEl) return [];
+    if (!shouldRenderHighlightLayer) {
+      const index = getTextOffsetIndex(fileContent);
+      return measureTextareaMatches(textareaEl, [{
+        start: contentOffsetToTextareaOffset(index, match.start), end: contentOffsetToTextareaOffset(index, match.end)
+      }])[0];
+    }
+    return [
+      ...getVisibleRenderedSelectionRanges(match).flatMap(getSearchRangeRects),
+      ...getSearchTableRects(match, cells)
+    ].filter(rect => rect.width > 0 && rect.height > 0);
+  }
+
+  function syncDocumentSearchHighlights() {
+    if (!isSearchOpen || !searchMatches.length) { searchDecorations = []; return; }
+    const surface = shouldShowDelimitedTableEditor ? document.querySelector('.editor-area .table-scroll-region')
+      : shouldRenderHighlightLayer ? editorViewportEl : textareaEl;
+    if (!surface) return;
+    const clip = getSearchClipRect(surface);
+    let matches = searchMatches;
+    if (!shouldShowDelimitedTableEditor) {
+      const firstLine = shouldRenderHighlightLayer ? startLine : Math.max(0, Math.floor((textareaEl?.scrollTop ?? 0) / measuredLineHeight) - 1);
+      const lastLine = shouldRenderHighlightLayer ? endLine : Math.min(lineCount - 1, firstLine + Math.ceil(clip.height / measuredLineHeight) + 2);
+      let start = lineStartOffsets[firstLine] ?? 0;
+      let end = lineStartOffsets[lastLine + 1] ?? fileContent.length;
+      // 표·복합 서식은 첫 원문 줄에 전체 표시 높이를 모으므로 내부의 높이 0인 줄도 검색한다.
+      if (shouldRenderHighlightLayer) {
+        for (const block of [...markdownTableBlocks, ...markdownRichBlocks]) {
+          if (block.startLine <= lastLine && block.endLine >= firstLine) {
+            start = Math.min(start, block.start);
+            end = Math.max(end, block.end);
+          }
+        }
+      }
+      const first = Math.max(0, findMatchFromOffset(matches, start) - 1);
+      matches = matches.slice(first, findMatchFromOffset(matches, end));
+    }
+    const cells = getSearchTableInputs();
+    const nativeIndex = getTextOffsetIndex(fileContent);
+    const nativeRects = !shouldShowDelimitedTableEditor && !shouldRenderHighlightLayer && textareaEl
+      ? measureTextareaMatches(textareaEl, matches.map(match => ({
+        start: contentOffsetToTextareaOffset(nativeIndex, match.start), end: contentOffsetToTextareaOffset(nativeIndex, match.end)
+      }))) : null;
+    const seen = new Set<string>();
+    searchDecorations = matches.flatMap((match, index) => (nativeRects?.[index] ?? getDocumentSearchRects(match, cells)).flatMap(rect => {
+      const clipped = clipSearchRect(rect, clip);
+      if (!clipped) return [];
+      const key = `${match.start}:${clipped.left}:${clipped.top}:${clipped.width}:${clipped.height}`;
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [{ ...clipped, start: match.start, active: match.start === currentSearchMatch?.start }];
+    }));
+  }
+
+  async function revealDocumentSearchMatch() {
+    const generation = ++searchRevealGeneration;
+    await tick();
+    if (generation !== searchRevealGeneration || !isSearchOpen) return;
+    const match = currentSearchMatch;
+    searchHiddenMatch = false;
+    if (!match) { scheduleRenderedHighlights(); return; }
+    setTextareaSelectionFromContent(match.start, match.end);
+    updateActiveTab({ selectionStart: match.start, selectionEnd: match.end });
+    updateEditorSelectionState();
+    renderViewportController?.cancelCaretReveal();
+    if (shouldRenderHighlightLayer && !shouldShowDelimitedTableEditor) {
+      ensureRenderedCaretLineVisible(match.start);
+    }
+    await tick();
+    if (generation !== searchRevealGeneration || !isSearchOpen) return;
+    // 가상화된 Markdown 표를 먼저 표시한 다음 표 자체의 가로 스크롤도 이동한다.
+    getSearchTableInputs().find(cell => match.start >= cell.offsets[0] && match.start < cell.offsets.at(-1)!)
+      ?.input?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    await tick();
+    if (generation !== searchRevealGeneration || !isSearchOpen) return;
+    const rect = getDocumentSearchRects(match).find(rect => rect.width > 0 && rect.height > 0);
+    searchHiddenMatch = !rect;
+    const scroller = shouldRenderHighlightLayer ? editorViewportEl : textareaEl;
+    if (rect && scroller && !shouldShowDelimitedTableEditor) {
+      const bounds = scroller.getBoundingClientRect();
+      if (rect.top < bounds.top + 8 || rect.top + rect.height > bounds.bottom - 8) {
+        scroller.scrollTop += rect.top - bounds.top - Math.max(8, (scroller.clientHeight - rect.height) / 2);
+      }
+      if (!shouldRenderHighlightLayer && (rect.left < bounds.left + 12 || rect.left + rect.width > bounds.right - 12)) {
+        scroller.scrollLeft += rect.left - bounds.left - 12;
+      }
+      updateActiveTab({ scrollTop: scroller.scrollTop, scrollLeft: scroller.scrollLeft });
+    }
+    scheduleRenderedHighlights();
+  }
+
+  $effect(() => {
+    // 본문 입력 때 검색 결과를 다시 계산하되 사용자의 새 캐럿 위치를 빼앗지 않는다.
+    void [searchQuery, searchOffset, activeTabId, isSearchOpen, isRenderMode];
+    untrack(() => { void revealDocumentSearchMatch(); });
+  });
+
+  $effect(() => {
+    if (!isSearchOpen) return;
+    const repaint = () => scheduleRenderedHighlights();
+    window.addEventListener('scroll', repaint, true);
+    return () => window.removeEventListener('scroll', repaint, true);
+  });
 
   function getFencedCodeLineCaret(lineStart: number): number {
     const lineEnd = getLineEndOffset(fileContent, lineStart);
@@ -5384,7 +5571,20 @@
 
     const key = e.key.toLowerCase();
 
-    if (e.key === 'Escape') {
+    if (!isSettingsWindow && !e.altKey && !e.isComposing && (e.ctrlKey || e.metaKey) && key === 'f') {
+      e.preventDefault();
+      void openDocumentSearch();
+    } else if (!isSettingsWindow && e.key === 'F3' && !e.isComposing) {
+      e.preventDefault();
+      if (!isSearchOpen) void openDocumentSearch();
+      else moveDocumentSearch(e.shiftKey ? -1 : 1);
+    } else if (e.key === 'Escape' && isSearchOpen) {
+      e.preventDefault();
+      closeDocumentSearch();
+    } else if (e.target instanceof HTMLElement && e.target.closest('.document-search')) {
+      // Svelte 위임 이벤트와 window 리스너의 순서와 관계없이 검색어 편집을 본문 명령에서 분리한다.
+      return;
+    } else if (e.key === 'Escape') {
       closeAllDropdown();
       const transfer = getActiveOutgoingTabTransfer();
       if (pendingPointerTabDrag || transfer) e.preventDefault();
@@ -6434,6 +6634,7 @@
     paste: handlePaste,
     deleteSelection: handleDelete,
     selectAll: handleSelectAll,
+    find: () => { void openDocumentSearch(); },
     insertDateTime,
     checkForUpdates: handleManualUpdateCheck,
     installUpdate: handleAvailableUpdateInstall,
@@ -6705,6 +6906,18 @@
       {isRenderMode}
       commands={editorMenuCommands}
     />
+    {#if isSearchOpen}
+      <DocumentSearch bind:this={searchPanel} {locale} query={searchQuery}
+        current={searchIndex + 1} total={searchMatches.length} hiddenMatch={searchHiddenMatch}
+        onquery={query => { searchQuery = query; searchOffset = 0; }}
+        onmove={moveDocumentSearch} onclose={closeDocumentSearch}
+        onsource={() => { isRenderMode = false; }} />
+      {#each searchDecorations as decoration}
+        <span class="document-search-highlight" class:current={decoration.active} data-search-start={decoration.start}
+          style="left: {decoration.left}px; top: {decoration.top}px; width: {decoration.width}px; height: {decoration.height}px;"
+          aria-hidden="true"></span>
+      {/each}
+    {/if}
     <!-- 편집 공간 -->
     <main
       class="editor-area"
@@ -8177,6 +8390,19 @@
 
   :global(::highlight(render-selection)) {
     background-color: color-mix(in srgb, var(--color-selection) 28%, transparent);
+  }
+
+  .document-search-highlight {
+    position: fixed;
+    z-index: 5;
+    pointer-events: none;
+    background: color-mix(in srgb, var(--color-search-highlight) 35%, transparent);
+    border-radius: 2px;
+  }
+
+  .document-search-highlight.current {
+    background: color-mix(in srgb, var(--color-search-current-highlight) 50%, transparent);
+    box-shadow: inset 0 0 0 1px var(--color-search-current-highlight);
   }
 
   .render-selection-decoration {

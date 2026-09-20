@@ -1,6 +1,11 @@
 import type { TranslationKey } from './en';
 
 export const koreanTranslations: Record<TranslationKey, string> = {
+  'search.find': '문서에서 찾기',
+  'search.previous': '이전 결과 (Shift+Enter)',
+  'search.next': '다음 결과 (Enter)',
+  'search.close': '검색 닫기 (Esc)',
+  'search.showSource': '숨긴 내용을 원문에서 보기',
   "app.tagline": "가볍고 읽기 편한 로컬 텍스트 편집기",
   "app.untitled": "제목 없음",
   "app.windowTitle": "{fileName} - text-pad",
@@ -87,6 +92,8 @@ export const koreanTranslations: Record<TranslationKey, string> = {
   "settings.weightSemiBold": "세미 볼드",
   "settings.weightBold": "굵게",
   "settings.color.selection": "선택 영역 배경색",
+  "settings.color.searchHighlight": "검색 결과 강조색",
+  "settings.color.searchCurrentHighlight": "현재 검색 결과 강조색",
   "settings.color.caret": "캐럿 색상",
   "settings.color.gutterText": "줄 번호 색상",
   "settings.color.gutterBorder": "줄 번호 구분선 색상",

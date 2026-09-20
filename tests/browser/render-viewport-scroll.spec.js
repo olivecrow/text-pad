@@ -553,33 +553,49 @@ test('render theme settings expose comments and added colors for both themes', a
   await page.waitForLoadState('networkidle');
   await page.setContent(await readFile(new URL('./fixtures/settings-preview.html', import.meta.url), 'utf8'));
   await page.getByRole('button', { name: '모양', exact: true }).nth(1).click();
-  await expect(page.locator('input[type="color"]')).toHaveCount(32);
+  await expect(page.locator('input[type="color"]')).toHaveCount(34);
   await expect(page.locator('#color-hl-comment-window-light')).toHaveValue('#475569');
   const selection = page.locator('#color-selection-window-light');
   await expect(selection).toHaveValue('#60A5FA');
+  await expect(page.getByLabel('검색 결과 강조색', { exact: true })).toHaveValue('#FACC15');
+  await expect(page.getByLabel('현재 검색 결과 강조색', { exact: true })).toHaveValue('#EAB308');
   await page.locator('#color-selection-window-light-picker').evaluate(element => {
     const input = /** @type {HTMLInputElement} */ (element);
     input.value = '#ff0000';
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
   await expect(selection).toHaveValue('#FF0000');
+  for (const [field, color] of [['searchHighlight', '#ff0000'], ['searchCurrentHighlight', '#00ff00']]) {
+    await page.locator(`#color-${field}-window-light-picker`).evaluate((element, value) => {
+      const input = /** @type {HTMLInputElement} */ (element);
+      input.value = value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }, color);
+  }
   await page.getByRole('button', { name: '다크', exact: true }).click();
   await expect(page.locator('#color-selection-window-dark')).toHaveValue('#60A5FA');
+  await expect(page.getByLabel('검색 결과 강조색', { exact: true })).toHaveValue('#FACC15');
+  await expect(page.getByLabel('현재 검색 결과 강조색', { exact: true })).toHaveValue('#FDE047');
   await expect(page.locator('#color-hl-comment-window-dark')).toHaveValue('#64748B');
   await page.getByRole('button', { name: '라이트', exact: true }).click();
   await expect(selection).toHaveValue('#FF0000');
+  await expect(page.getByLabel('검색 결과 강조색', { exact: true })).toHaveValue('#FF0000');
+  await expect(page.getByLabel('현재 검색 결과 강조색', { exact: true })).toHaveValue('#00FF00');
   await page.getByRole('button', { name: '기본 색상 복원', exact: true }).click();
   await expect(selection).toHaveValue('#60A5FA');
+  await expect(page.getByLabel('검색 결과 강조색', { exact: true })).toHaveValue('#FACC15');
+  await expect(page.getByLabel('현재 검색 결과 강조색', { exact: true })).toHaveValue('#EAB308');
 });
 
-test('stored render colors reach comments, booleans, punctuation and selection', async ({ page }) => {
+test('stored render colors reach comments, booleans, punctuation, selection and search', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('text-pad.settings', JSON.stringify({
     format: 'text-pad-settings', schemaVersion: 1,
     settings: {
-      general: { theme: 'light' },
+      general: { theme: 'light', language: 'ko' },
       render: { colors: { light: {
         comment: '#123456', booleanTrueText: '#654321', booleanTrueBg: '#abcdef',
-        mutedSyntax: '#112233', selection: '#ff0000', gutterText: '#445566'
+        mutedSyntax: '#112233', selection: '#ff0000', gutterText: '#445566',
+        searchHighlight: '#ff0000', searchCurrentHighlight: '#00ff00'
       } } }
     }
   })));
@@ -599,4 +615,14 @@ test('stored render colors reach comments, booleans, punctuation and selection',
   await expect(page.locator('.app-container')).toHaveCSS('--color-selection', '#FF0000');
   await page.reload();
   await expect(page.locator('.app-container')).toHaveCSS('--color-selection', '#FF0000');
+  await textarea.fill('// word word');
+  await textarea.press('Control+f');
+  await page.getByRole('textbox', { name: '문서에서 찾기', exact: true }).fill('word');
+  const currentResult = page.locator('.document-search-highlight.current');
+  const otherResult = page.locator('.document-search-highlight:not(.current)');
+  await expect(currentResult).toHaveCSS('background-color', 'color(srgb 0 1 0 / 0.5)');
+  await expect(otherResult).toHaveCSS('background-color', 'color(srgb 1 0 0 / 0.35)');
+  await page.getByRole('button', { name: '원문 모드로 전환', exact: true }).click();
+  await expect(currentResult).toHaveCSS('background-color', 'color(srgb 0 1 0 / 0.5)');
+  await expect(otherResult).toHaveCSS('background-color', 'color(srgb 1 0 0 / 0.35)');
 });
