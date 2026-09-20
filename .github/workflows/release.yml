@@ -41,11 +41,16 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Install browser test runtime
+        run: npx playwright install chromium
+
       - name: Verify source and dependencies
         shell: pwsh
         run: |
           npm audit --omit=dev --audit-level=high
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked --manifest-path src-tauri/Cargo.toml
 
       - name: Prepare release metadata and notices
