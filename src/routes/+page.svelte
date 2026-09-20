@@ -323,12 +323,17 @@
   }
 
   function getFirstLineTitle(content: string): string {
-    const lfIndex = content.indexOf('\n');
-    const firstLineEnd = lfIndex === -1
-      ? content.length
-      : (lfIndex > 0 && content[lfIndex - 1] === '\r' ? lfIndex - 1 : lfIndex);
+    const lineBreakIndex = content.search(/[\r\n]/);
+    const firstLineEnd = lineBreakIndex === -1 ? content.length : lineBreakIndex;
     const firstLine = content.slice(0, firstLineEnd).trim();
-    return firstLine || untitledFileName;
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    let title = '';
+    let characterCount = 0;
+    for (const { segment } of segmenter.segment(firstLine)) {
+      title += segment;
+      if (++characterCount === 20) break;
+    }
+    return title || untitledFileName;
   }
 
   function getUnsavedDocumentTitle(
@@ -432,6 +437,7 @@
   undoWindowBudget.touch(initialTab.id);
   let editorSession = $state(createEditorSession(initialTab));
   let tabs = $derived(editorSession.tabs);
+  let tabOrderKey = $derived(tabs.map((tab) => tab.id).join(','));
   let activeTabId = $derived(editorSession.activeTabId);
   let activeTab = $derived(getActiveEditorTab(editorSession));
   const minimumTabWidth = 128;
@@ -928,7 +934,7 @@
 
     const rawDelta = event.deltaX !== 0
       ? event.deltaX
-      : (event.shiftKey ? event.deltaY : 0);
+      : event.deltaY;
     if (rawDelta === 0) return;
 
     event.preventDefault();
@@ -1635,17 +1641,20 @@
     const tabList = tabListEl;
     const resizeObserver = new ResizeObserver(updateTabStripMetrics);
     resizeObserver.observe(tabList);
+    tabList.addEventListener('wheel', handleTabListWheel, { passive: false });
     const frame = requestAnimationFrame(updateTabStripMetrics);
 
     return () => {
       cancelAnimationFrame(frame);
       resizeObserver.disconnect();
+      tabList.removeEventListener('wheel', handleTabListWheel);
     };
   });
 
   $effect(() => {
     if (!isBrowser) return;
-    void tabs.length;
+    // 본문·선택 영역 갱신으로 바뀐 탭 배열은 수동 스크롤을 되돌리지 않는다.
+    void tabOrderKey;
     const nextActiveTabId = activeTabId;
     const frame = requestAnimationFrame(() => {
       scrollTabIntoView(nextActiveTabId);
@@ -6516,7 +6525,6 @@
             aria-label={t('window.openTabs')}
             bind:this={tabListEl}
             onscroll={updateTabStripMetrics}
-            onwheel={handleTabListWheel}
           >
             {#each tabs as tab (tab.id)}
               <div
