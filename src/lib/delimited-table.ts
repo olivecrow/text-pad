@@ -1,7 +1,18 @@
+import type { TableDocument } from './table-document';
+export {
+  getTableColumnCount as getDelimitedTableColumnCount,
+  updateTableCell as updateDelimitedTableCell,
+  insertTableRow as insertDelimitedTableRow,
+  removeTableRow as removeDelimitedTableRow,
+  moveTableRow as moveDelimitedTableRow,
+  insertTableColumn as insertDelimitedTableColumn,
+  removeTableColumn as removeDelimitedTableColumn,
+  moveTableColumn as moveDelimitedTableColumn
+} from './table-document';
+
 export type DelimitedTableSeparator = ',' | '\t';
 
-export interface DelimitedTableDocument {
-  rows: string[][];
+export interface DelimitedTableDocument extends TableDocument {
   separator: DelimitedTableSeparator;
   lineEnding: '\r\n' | '\n' | '\r';
   hasTrailingLineEnding: boolean;
@@ -117,10 +128,6 @@ function detectLineEnding(content: string): DelimitedTableDocument['lineEnding']
   return '\r\n';
 }
 
-export function getDelimitedTableColumnCount(document: Pick<DelimitedTableDocument, 'rows'>): number {
-  return Math.max(1, ...document.rows.map((row) => row.length));
-}
-
 export function parseDelimitedTable(
   content: string,
   separator: DelimitedTableSeparator
@@ -227,125 +234,4 @@ export function serializeDelimitedTable(document: DelimitedTableDocument): strin
     .join(document.lineEnding);
 
   return document.hasTrailingLineEnding ? `${content}${document.lineEnding}` : content;
-}
-
-function cloneRows(document: DelimitedTableDocument): string[][] {
-  return document.rows.map((row) => [...row]);
-}
-
-function withRows(document: DelimitedTableDocument, rows: string[][]): DelimitedTableDocument {
-  return { ...document, rows: rows.length > 0 ? rows : [['']] };
-}
-
-function padRow(row: string[], columnCount: number): string[] {
-  const nextRow = [...row];
-  while (nextRow.length < columnCount) nextRow.push('');
-  return nextRow;
-}
-
-export function updateDelimitedTableCell(
-  document: DelimitedTableDocument,
-  rowIndex: number,
-  columnIndex: number,
-  value: string
-): DelimitedTableDocument {
-  const rows = [...document.rows];
-  const columnCount = Math.max(getDelimitedTableColumnCount(document), columnIndex + 1);
-  const updatedRow = padRow(rows[rowIndex] ?? [], columnCount);
-  updatedRow[columnIndex] = value;
-  rows[rowIndex] = updatedRow;
-  return withRows(document, rows);
-}
-
-export function insertDelimitedTableRow(
-  document: DelimitedTableDocument,
-  rowIndex: number
-): DelimitedTableDocument {
-  const rows = cloneRows(document);
-  const insertAt = Math.max(0, Math.min(rowIndex, rows.length));
-  rows.splice(insertAt, 0, Array(getDelimitedTableColumnCount(document)).fill(''));
-  return withRows(document, rows);
-}
-
-export function removeDelimitedTableRow(
-  document: DelimitedTableDocument,
-  rowIndex: number
-): DelimitedTableDocument {
-  const rows = cloneRows(document);
-  if (rows.length <= 1) {
-    return withRows(document, [Array(getDelimitedTableColumnCount(document)).fill('')]);
-  }
-  rows.splice(Math.max(0, Math.min(rowIndex, rows.length - 1)), 1);
-  return withRows(document, rows);
-}
-
-export function moveDelimitedTableRow(
-  document: DelimitedTableDocument,
-  fromIndex: number,
-  toIndex: number
-): DelimitedTableDocument {
-  const rows = cloneRows(document);
-  if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= rows.length || toIndex >= rows.length) {
-    return document;
-  }
-  const [movedRow] = rows.splice(fromIndex, 1);
-  rows.splice(toIndex, 0, movedRow);
-  return withRows(document, rows);
-}
-
-export function insertDelimitedTableColumn(
-  document: DelimitedTableDocument,
-  columnIndex: number
-): DelimitedTableDocument {
-  const columnCount = getDelimitedTableColumnCount(document);
-  const insertAt = Math.max(0, Math.min(columnIndex, columnCount));
-  const rows = document.rows.map((row) => {
-    const nextRow = padRow(row, columnCount);
-    nextRow.splice(insertAt, 0, '');
-    return nextRow;
-  });
-  return withRows(document, rows);
-}
-
-export function removeDelimitedTableColumn(
-  document: DelimitedTableDocument,
-  columnIndex: number
-): DelimitedTableDocument {
-  const columnCount = getDelimitedTableColumnCount(document);
-  if (columnCount <= 1) {
-    return withRows(document, document.rows.map(() => ['']));
-  }
-
-  const removeAt = Math.max(0, Math.min(columnIndex, columnCount - 1));
-  const rows = document.rows.map((row) => {
-    const nextRow = padRow(row, columnCount);
-    nextRow.splice(removeAt, 1);
-    return nextRow;
-  });
-  return withRows(document, rows);
-}
-
-export function moveDelimitedTableColumn(
-  document: DelimitedTableDocument,
-  fromIndex: number,
-  toIndex: number
-): DelimitedTableDocument {
-  const columnCount = getDelimitedTableColumnCount(document);
-  if (
-    fromIndex === toIndex
-    || fromIndex < 0
-    || toIndex < 0
-    || fromIndex >= columnCount
-    || toIndex >= columnCount
-  ) {
-    return document;
-  }
-
-  const rows = document.rows.map((row) => {
-    const nextRow = padRow(row, columnCount);
-    const [movedCell] = nextRow.splice(fromIndex, 1);
-    nextRow.splice(toIndex, 0, movedCell);
-    return nextRow;
-  });
-  return withRows(document, rows);
 }

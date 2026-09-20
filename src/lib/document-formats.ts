@@ -1,11 +1,9 @@
 import supportedTextFormatManifest from '../../supported-text-formats.json';
 import {
-  tokenizeLineWithState,
   type BlockCommentRule,
   type CommentSyntax,
   type LineCommentRule,
-  type Token,
-  type TokenizeState
+  type Token
 } from './render-tokenizer';
 import { parseAllDocuments as parseYamlDocuments, type YAMLParseError } from 'yaml';
 import { parse as parseJsonc, type ParseError as JsoncParseError } from 'jsonc-parser';
@@ -55,6 +53,7 @@ import {
   type LineStateCheckpointCache
 } from './line-state-checkpoints';
 import type { TextChange } from './text-change';
+import { applyStructuredPrettyPrint, createPrettyPrintCache, type PrettyPrintCache } from './structured-pretty-print';
 
 
 export type ParsedLine = StructuredParsedLine;
@@ -143,16 +142,16 @@ interface JsonCommentState {
 }
 
 export interface DocumentRenderCache {
+  prettyPrint: PrettyPrintCache;
   xml: XmlRenderCache;
-  plain: LineStateCheckpointCache<TokenizeState | null>;
   lineOriented: LineOrientedRenderCache;
   jsonc: LineStateCheckpointCache<JsonCommentState>;
   yaml: LineStateCheckpointCache<YamlBlockScalarState | null>;
 }
 export function createDocumentRenderCache(): DocumentRenderCache {
   return {
+    prettyPrint: createPrettyPrintCache(),
     xml: createXmlRenderCache(),
-    plain: createLineStateCheckpointCache<TokenizeState | null>(),
     lineOriented: createLineOrientedRenderCache(),
     jsonc: createLineStateCheckpointCache<JsonCommentState>(),
     yaml: createLineStateCheckpointCache<YamlBlockScalarState | null>()
@@ -161,6 +160,7 @@ export function createDocumentRenderCache(): DocumentRenderCache {
 
 interface ParseDocumentOptions {
   pathOrName: string | null | undefined;
+  formatId?: DocumentFormatId | null;
   tabSize: number;
   lineStartOffsets: number[];
   lineRange?: DocumentLineRange;
@@ -607,6 +607,23 @@ export const configurableDocumentFormats = [
   lrcFormat
 ];
 
+export const defaultNewDocumentFormatId: DocumentFormatId = 'markdown';
+
+export function isConfigurableDocumentFormatId(value: unknown): value is DocumentFormatId {
+  return typeof value === 'string'
+    && configurableDocumentFormats.some((format) => format.id === value);
+}
+
+export function getDocumentFormatById(formatId: DocumentFormatId | null | undefined): DocumentFormat | null {
+  return configurableDocumentFormats.find((format) => format.id === formatId) ?? null;
+}
+
+export function getNewDocumentInitialContent(formatId: DocumentFormatId): string {
+  if (formatId === 'csv') return ',\n,';
+  if (formatId === 'tsv') return '\t\n\t';
+  return '';
+}
+
 export const configurableDocumentFormatCategories: DocumentFormatCategory[] = [
   {
     id: 'document',
@@ -825,6 +842,7 @@ export function getDocumentFormatForContent(
 ): DocumentFormat {
   const namedFormat = getDocumentFormatForPath(pathOrName);
   if (namedFormat.id !== 'plain') return namedFormat;
+  if (plainTextFormat.extensions.includes(getFileExtension(pathOrName))) return namedFormat;
   if (looksLikeJsonContent(content)) return jsonFormat;
   if (looksLikeYamlContent(content)) return yamlFormat;
   if (looksLikeXmlContent(content)) return xmlFormat;
@@ -840,116 +858,6 @@ export function getSuggestedFileExtensionForContent(content: string): string {
   if (looksLikeGettextContent(content)) return gettextFormat.defaultExtension;
   if (looksLikeRegistryContent(content)) return registryFormat.defaultExtension;
   return plainTextFormat.defaultExtension;
-}
-
-function annotateTokenOffsets(tokens: Token[], lineStartOffset: number) {
-  let cursorOffset = 0;
-
-  const visit = (token: Token) => {
-    if (token.children && token.children.length > 0) {
-      token.children.forEach(visit);
-      return;
-    }
-
-    const text = token.text || '';
-    if (token.type === 'color') {
-      token.start = lineStartOffset + cursorOffset;
-      token.end = token.start + text.length;
-    }
-    cursorOffset += text.length;
-  };
-
-  tokens.forEach(visit);
-}
-
-function parsePlainLine(
-  lineText: string,
-  id: number,
-  tabSize: number,
-  comments: CommentSyntax | null,
-  state: TokenizeState | null,
-  lineStartOffset: number
-): { line: ParsedLine; state: TokenizeState | null } {
-  const indentInfo = getIndentInfo(lineText, tabSize);
-  const tokenized = tokenizeLineWithState(lineText, { comments, state });
-  annotateTokenOffsets(tokenized.tokens, lineStartOffset);
-
-  return {
-    line: {
-      id,
-      ...indentInfo,
-      tokens: tokenized.tokens,
-      fencedCodePosition: tokenized.fencedCodePosition
-    },
-    state: tokenized.state
-  };
-}
-
-function cloneTokenizeState(state: TokenizeState | null): TokenizeState | null {
-  return state ? { ...state } : null;
-}
-
-function parsePlainLines(
-  content: string,
-  tabSize: number,
-  comments: CommentSyntax | null,
-  lineStartOffsets: number[],
-  lineRange: DocumentLineRange,
-  cache?: LineStateCheckpointCache<TokenizeState | null>,
-  contentChange?: TextChange | null
-): ParsedLine[] {
-  let state: TokenizeState | null = null;
-  const parsedLines: ParsedLine[] = [];
-
-  if (cache) {
-    prepareLineStateCheckpointCache(
-      cache,
-      content,
-      JSON.stringify(comments ?? null),
-      lineStartOffsets,
-      null,
-      cloneTokenizeState,
-      contentChange
-    );
-    state = getLineStateAt(
-      cache,
-      lineRange.startLine,
-      null,
-      cloneTokenizeState,
-      (lineIndex, lineState) => parsePlainLine(
-        getLineText(content, lineStartOffsets, lineIndex),
-        lineIndex,
-        tabSize,
-        comments,
-        lineState,
-        lineStartOffsets[lineIndex] ?? 0
-      ).state
-    );
-  } else {
-    for (let lineIndex = 0; lineIndex < lineRange.startLine; lineIndex += 1) {
-      state = parsePlainLine(
-        getLineText(content, lineStartOffsets, lineIndex),
-        lineIndex,
-        tabSize,
-        comments,
-        state,
-        lineStartOffsets[lineIndex] ?? 0
-      ).state;
-    }
-  }
-
-  for (let idx = lineRange.startLine; idx <= lineRange.endLine; idx++) {
-    const lineText = getLineText(content, lineStartOffsets, idx);
-    const parsed = parsePlainLine(lineText, idx, tabSize, comments, state, lineStartOffsets[idx] ?? 0);
-    state = parsed.state;
-    parsedLines.push(parsed.line);
-    if (cache) {
-      cache.visitedLineCount += 1;
-      storeLineStateCheckpoint(cache, idx + 1, state, cloneTokenizeState);
-    }
-  }
-
-  return parsedLines;
 }
 
 function parseBasicLines(
@@ -2014,7 +1922,16 @@ export function getDocumentDiagnostic(
 }
 
 export function parseDocumentForRender(content: string, options: ParseDocumentOptions): DocumentRenderResult {
-  const format = getDocumentFormatForContent(content, options.pathOrName);
+  const result = parseDocumentSourceLines(content, options);
+  const enabled = options.renderEnabled ?? isDocumentFormatRenderEnabled(result.format, options.featureSettings);
+  return enabled ? { ...result, lines: applyStructuredPrettyPrint(
+    content, result.format.id, result.lines, options.tabSize, options.renderCache?.prettyPrint
+  ) } : result;
+}
+
+function parseDocumentSourceLines(content: string, options: ParseDocumentOptions): DocumentRenderResult {
+  const format = getDocumentFormatById(options.formatId)
+    ?? getDocumentFormatForContent(content, options.pathOrName);
   const lineRange = normalizeLineRange(options.lineStartOffsets.length, options.lineRange);
   const lineRangeOffsets = getLineRangeOffsets(content, options.lineStartOffsets, lineRange);
   const renderEnabled = options.renderEnabled
@@ -2110,7 +2027,7 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
     };
   }
 
-  if (['markdown', 'ini', 'conf', 'properties', 'dotenv', 'log', 'srt', 'webvtt', 'lrc'].includes(format.id)) {
+  if (['plain', 'markdown', 'csv', 'tsv', 'ini', 'conf', 'properties', 'dotenv', 'log', 'srt', 'webvtt', 'lrc'].includes(format.id)) {
     return {
       format,
       lines: parseLineOrientedFormat(content, format.id as LineOrientedFormatId, {
@@ -2128,15 +2045,7 @@ export function parseDocumentForRender(content: string, options: ParseDocumentOp
 
   return {
     format,
-    lines: parsePlainLines(
-      content,
-      options.tabSize,
-      format.commentSyntax || null,
-      options.lineStartOffsets,
-      lineRange,
-      options.renderCache?.plain,
-      options.contentChange
-    ),
+    lines: parseBasicLines(content, options.tabSize, options.lineStartOffsets, lineRange),
     diagnostic: null
   };
 }

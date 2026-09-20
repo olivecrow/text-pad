@@ -208,6 +208,87 @@ impl ApprovedFilePaths {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentImage {
+    mime_type: String,
+    bytes: Vec<u8>,
+}
+
+fn read_image_beside_document(
+    document: &Path,
+    relative: &str,
+) -> Result<DocumentImage, FileCommandError> {
+    let parent = document
+        .parent()
+        .ok_or_else(|| FileCommandError::new("invalid_path", "문서 폴더가 없습니다"))?;
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute() || relative.contains(':') || relative.contains('\\') {
+        return Err(FileCommandError::new(
+            "invalid_path",
+            "문서 기준 상대 이미지 경로만 허용합니다",
+        ));
+    }
+    let target = fs::canonicalize(parent.join(relative_path)).map_err(FileCommandError::from_io)?;
+    if !target.starts_with(parent) {
+        return Err(FileCommandError::new(
+            "path_not_approved",
+            "문서 폴더 밖의 이미지는 읽을 수 없습니다",
+        ));
+    }
+    let extension = target
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mime_type = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        _ => {
+            return Err(FileCommandError::new(
+                "invalid_data",
+                "지원하지 않는 이미지 형식입니다",
+            ))
+        }
+    };
+    const LIMIT: usize = 4 * 1024 * 1024;
+    let file = File::open(&target).map_err(FileCommandError::from_io)?;
+    let mut bytes = Vec::new();
+    file.take((LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(FileCommandError::from_io)?;
+    if bytes.len() > LIMIT {
+        return Err(FileCommandError::new(
+            "file_too_large",
+            "이미지는 4 MiB 이하만 표시합니다",
+        ));
+    }
+    Ok(DocumentImage {
+        mime_type: mime_type.to_string(),
+        bytes,
+    })
+}
+
+#[tauri::command]
+pub async fn read_document_image(
+    document_path: String,
+    relative_path: String,
+    approved_paths: State<'_, ApprovedFilePaths>,
+) -> Result<DocumentImage, FileCommandError> {
+    let document = approved_paths.resolve_approved(Path::new(&document_path))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        read_image_beside_document(&document, &relative_path)
+    })
+    .await
+    .map_err(|error| FileCommandError::new("io_error", error.to_string()))?
+}
+
 fn file_error_code(kind: io::ErrorKind) -> &'static str {
     match kind {
         io::ErrorKind::NotFound => "not_found",
@@ -764,6 +845,34 @@ mod tests {
         write_file_content_to_path(&target, "새 내용", TextEncoding::Utf8)?;
 
         assert_eq!(fs::read_to_string(&target)?, "새 내용");
+        Ok(())
+    }
+
+    #[test]
+    fn document_images_are_bounded_to_the_document_folder() -> io::Result<()> {
+        let dir = create_test_dir("document-images")?;
+        let folder = dir.path.join("docs");
+        fs::create_dir(&folder)?;
+        let document = folder.join("README.md");
+        fs::write(&document, "# Images")?;
+        fs::write(
+            folder.join("image.svg"),
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+        )?;
+        fs::write(dir.path.join("outside.png"), b"outside")?;
+        fs::write(folder.join("secret.txt"), b"private")?;
+        let document = fs::canonicalize(document)?;
+        let image = read_image_beside_document(&document, "./image.svg")
+            .map_err(|error| io::Error::other(error.message))?;
+        assert_eq!(image.mime_type, "image/svg+xml");
+        assert!(!image.bytes.is_empty());
+        assert!(read_image_beside_document(&document, "../outside.png").is_err());
+        assert!(read_image_beside_document(&document, "secret.txt").is_err());
+        assert!(read_image_beside_document(&document, "C:/secret.png").is_err());
+        assert!(read_image_beside_document(&document, "missing.png").is_err());
+        let large = File::create(folder.join("large.png"))?;
+        large.set_len(4 * 1024 * 1024 + 1)?;
+        assert!(read_image_beside_document(&document, "large.png").is_err());
         Ok(())
     }
 

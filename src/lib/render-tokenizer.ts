@@ -1,4 +1,7 @@
 import { getListMarkerAtStart } from './list-markers';
+import { getCheckboxMarkerAtStart } from './checkbox-markers';
+import type { MarkdownHeadingLevel } from './markdown-settings';
+import { getMarkdownInlineSpans } from './markdown-inline';
 
 export interface Token {
   type:
@@ -7,10 +10,12 @@ export interface Token {
     | 'code'
     | 'number'
     | 'list-marker'
+    | 'checkbox'
     | 'heading-marker'
     | 'quote-marker'
     | 'strong'
     | 'emphasis'
+    | 'strike'
     | 'comment'
     | 'color'
     | 'paren'
@@ -71,6 +76,7 @@ export interface TokenizeLineResult {
   tokens: Token[];
   state: TokenizeState | null;
   fencedCodePosition?: FencedCodeLinePosition;
+  headingLevel?: MarkdownHeadingLevel;
 }
 
 const hexColorAtStartRegex = /^#[0-9a-fA-F]{6}$/;
@@ -96,7 +102,7 @@ function getHexColorAt(text: string, index: number): string | null {
 function parseInlineText(text: string, includeNumbers = true): Token[] {
   const tokens: Token[] = [];
   const inlineRegex = includeNumbers
-    ? /#[0-9a-fA-F]{6}(?![0-9a-zA-Z_])|\b\d+(?:\.\d+)?\b/g
+    ? /#[0-9a-fA-F]{6}(?![0-9a-zA-Z_])|\d+(?:\.\d+)?/g
     : /#[0-9a-fA-F]{6}(?![0-9a-zA-Z_])/g;
   let lastIndex = 0;
   let match;
@@ -106,6 +112,8 @@ function parseInlineText(text: string, includeNumbers = true): Token[] {
     const matchText = match[0];
     const isColorMatch = matchText.startsWith('#');
     if (isColorMatch && !hasWhitespaceWordBoundary(text, matchIndex, matchIndex + matchText.length)) {
+      // 색상 코드가 아니면 # 다음의 숫자도 일반 텍스트 규칙으로 다시 확인한다.
+      inlineRegex.lastIndex = matchIndex + 1;
       continue;
     }
 
@@ -303,12 +311,24 @@ function finalizeTokens(root: Token): Token[] {
   return finalTokens;
 }
 
+function getMarkdownInlineTokenAt(line: string, index: number): Token | null {
+  if (isEscapedAt(line, index)) return null;
+  const firstChar = line[index];
+  if (firstChar === '[') {
+    const link = line.slice(index).match(/^\[[^\]\r\n]+\]\([^)\r\n]+\)/u)?.[0];
+    return link ? { type: 'link', text: link } : null;
+  }
+
+  return null;
+}
+
 export function tokenizeLineWithState(line: string, options: TokenizeLineOptions = {}): TokenizeLineResult {
   const root: Token = { type: 'text', children: [] };
   const stack: { token: Token; openChar?: string; closeIndex?: number; hideSyntax?: boolean }[] = [{ token: root }];
   const commentSyntax = options.comments || null;
   const firstNonWhitespaceIndex = getNextNonWhitespaceIndex(line, 0);
   let nextState: TokenizeState | null = options.state || null;
+  let headingLevel: MarkdownHeadingLevel | undefined;
   let i = 0;
   const len = line.length;
 
@@ -403,7 +423,6 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
     return -1;
   }
 
-  const listMarker = nextState ? null : getListMarkerAtStart(line);
   if (nextState?.codeFenceLength) {
     const closesCodeFence = isClosingCodeFence(line, nextState.codeFenceLength);
     if (closesCodeFence) {
@@ -438,6 +457,47 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
     }
   }
 
+  if (!nextState && options.lineCheckboxes) {
+    const checkbox = getCheckboxMarkerAtStart(line);
+    if (checkbox) {
+      if (checkbox.indent) appendChild(root, { type: 'text', text: checkbox.indent });
+      appendChild(root, { type: 'checkbox', text: checkbox.marker });
+      i = checkbox.indent.length + checkbox.marker.length;
+    }
+  }
+
+  if (!nextState && options.markdown) {
+    const headingMatch = line.match(/^([ \t]{0,3})(#{1,6})([ \t]+)/u);
+    const hashes = headingMatch?.[2];
+    if (headingMatch && hashes) {
+      const indent = headingMatch[1] || '';
+      const spacing = headingMatch[3] || '';
+      if (indent) appendChild(root, { type: 'text', text: indent });
+      appendChild(root, {
+        type: 'heading-marker',
+        text: `${hashes}${spacing}`,
+        hiddenSyntax: options.markdown.hideHeadingMarkers || undefined
+      });
+      headingLevel = hashes.length as MarkdownHeadingLevel;
+      i = indent.length + hashes.length + spacing.length;
+    }
+  }
+
+  if (!nextState && options.markdown && headingLevel === undefined) {
+    const quoteMatch = line.match(/^([ \t]{0,3})(>[ \t]?)/u);
+    if (quoteMatch) {
+      const indent = quoteMatch[1] || '';
+      const marker = quoteMatch[2] || '';
+      if (indent) appendChild(root, { type: 'text', text: indent });
+      appendChild(root, { type: 'quote-marker', text: marker });
+      i = indent.length + marker.length;
+    }
+  }
+
+  const listMarker = nextState || headingLevel !== undefined || i > 0
+    ? null
+    : getListMarkerAtStart(line);
+
   if (listMarker) {
     if (listMarker.indent) {
       appendChild(getTop().token, { type: 'text', text: listMarker.indent });
@@ -446,6 +506,7 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
     i = listMarker.indent.length + listMarker.marker.length;
   }
 
+  const markdownSpans = options.markdown ? getMarkdownInlineSpans(line) : null;
   while (i < len) {
     if (nextState?.blockCommentEnd) {
       const endIndex = indexOfMarker(line, nextState.blockCommentEnd, i, nextState.blockCommentCaseInsensitive);
@@ -467,6 +528,13 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
     const top = getTop();
     const quoteFrameIndex = getActiveQuoteFrameIndex();
     const activeQuoteFrame = quoteFrameIndex === -1 ? null : stack[quoteFrameIndex];
+
+    const markdownSpan = markdownSpans?.get(i);
+    if (markdownSpan && activeQuoteFrame?.openChar !== '`') {
+      appendChild(top.token, markdownSpan.token);
+      i = markdownSpan.end;
+      continue;
+    }
 
     if (activeQuoteFrame && char === '\\') {
       addChar(char);
@@ -498,6 +566,15 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
     }
 
     if (!activeQuoteFrame) {
+      const markdownInlineToken = options.markdown
+        ? getMarkdownInlineTokenAt(line, i)
+        : null;
+      if (markdownInlineToken) {
+        appendChild(top.token, markdownInlineToken);
+        i += markdownInlineToken.text?.length ?? 0;
+        continue;
+      }
+
       const blockRule = findBlockCommentRule(line, i, commentSyntax?.block);
       if (blockRule) {
         const endSearchIndex = i + blockRule.start.length;
@@ -585,14 +662,21 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
 
   return {
     tokens: finalizeTokens(root),
-    state: nextState
+    state: nextState,
+    headingLevel
   };
+}
+
+export interface MarkdownTokenizeOptions {
+  hideHeadingMarkers: boolean;
 }
 
 export interface TokenizeLineOptions {
   comments?: CommentSyntax | null;
   state?: TokenizeState | null;
   suppressCodeFence?: boolean;
+  lineCheckboxes?: boolean;
+  markdown?: MarkdownTokenizeOptions;
 }
 
 export function tokenizeLine(line: string, options: TokenizeLineOptions = {}): Token[] {

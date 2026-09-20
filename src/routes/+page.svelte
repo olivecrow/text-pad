@@ -1,18 +1,17 @@
 <script lang="ts">
+  import { getAdditionalRenderThemeStyle } from '$lib/render-theme-fields';
   import { ask, message } from "@tauri-apps/plugin-dialog";
-  import { invoke } from "@tauri-apps/api/core";
-  import { PhysicalPosition } from "@tauri-apps/api/dpi";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { emit, emitTo, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
-  import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { Braces, ChevronDown, Code2, Copy, Download, FileCode2, FileText, Minus, PaintRoller, PenLine, Settings, Square, Sun, Moon, Plus, Table2, Upload, X } from "@lucide/svelte";
+  import { ChevronDown, Copy, Minus, Square, Plus, X } from "@lucide/svelte";
   import {
     configurableDocumentFormatCategories,
     configurableDocumentFormats,
     createDefaultDocumentFeatureSettings,
     createDocumentRenderCache,
+    defaultNewDocumentFormatId,
     getDocumentDiagnostic,
+    getDocumentFormatById,
     getDocumentFormatForContent,
+    getNewDocumentInitialContent,
     getSuggestedFileExtensionForContent,
     isDocumentFormatEditEnabled,
     isDocumentFormatRenderEnabled,
@@ -21,8 +20,16 @@
     parseDocumentForRender,
     getSaveFileDialogFilters
   } from "$lib/document-formats";
-  import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatCategory, DocumentFormatCategoryId, DocumentFormatId } from "$lib/document-formats";
+  import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatCategory, DocumentFormatId } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
+  import MarkdownRichBlockView from '$lib/MarkdownRichBlock.svelte';
+  import { getRichTextBoundary, getRichTextOffsetAtPoint, getRichSelectionRanges, getRichDeletionRange } from '$lib/markdown-rich-geometry';
+  import { findMarkdownAnchorLine, type MarkdownRichBlock } from '$lib/markdown-rich-text';
+  import { MarkdownPresentationCache } from '$lib/markdown-presentation';
+  import { replaceMarkdownSelection, repairMarkdownInput } from '$lib/markdown-edit';
+  import { getEditorInputMergeKey } from '$lib/editor-input';
+  import { openUrl } from '@tauri-apps/plugin-opener';
+  import { getCheckboxEnterEdit } from "$lib/checkbox-markers";
   import {
     formatListMarker,
     getListContinuationIndent,
@@ -34,6 +41,17 @@
     type ListMarker
   } from "$lib/list-markers";
   import { EditorUndoHistory, EditorUndoWindowBudget, type EditorSelection, type EditorSnapshot, type EditorUndoHistoryState } from "$lib/editor-undo";
+  import {
+    activateEditorTab as activateEditorSessionTab,
+    createEditorSession,
+    getActiveEditorTab,
+    getActiveEditorTabIndex,
+    setEditorSessionTabs,
+    updateEditorTab,
+    type EditorTab,
+    type EditorTabUpdates,
+    type TextEncoding
+  } from "$lib/editor-session";
   import {
     getTabDragPreviewPosition,
     getTabDropIndex,
@@ -49,14 +67,14 @@
     markdownHeadingLevels,
     normalizeMarkdownRenderSettings,
     type MarkdownHeadingLevel,
-    type MarkdownHeadingStyle,
     type MarkdownRenderSettings
   } from "$lib/markdown-settings";
-  import { onDestroy, tick, untrack } from "svelte";
+  import { flushSync, onDestroy, tick, untrack } from "svelte";
   import AboutDialog from "$lib/AboutDialog.svelte";
+  import EditorMenuBar from "$lib/EditorMenuBar.svelte";
+  import SettingsWindow from "$lib/SettingsWindow.svelte";
   import {
     getLanguageNativeName,
-    isAppLocale,
     isRtlLocale,
     resolveSystemLocale,
     supportedLanguages,
@@ -66,7 +84,12 @@
     type TranslationKey,
     type TranslationValues
   } from "$lib/i18n";
-  import DelimitedTableEditor from "$lib/DelimitedTableEditor.svelte";
+  import TableEditor from "$lib/TableEditor.svelte";
+  import {
+    parseMarkdownTables, replaceMarkdownTable, getMarkdownTableCellAtOffset,
+    type MarkdownTableBlock
+  } from "$lib/markdown-table";
+  import type { TableDocument, TableCellSelection, TableDocumentChangeOptions } from "$lib/table-document";
   import { APP_VERSION_FALLBACK } from "$lib/app-metadata";
   import {
     checkForAppUpdate,
@@ -94,15 +117,24 @@
     type TextOffsetIndex
   } from "$lib/text-offset-index";
   import { getPreferredNewline, getSnapshotFromTextareaInput } from "$lib/editor-input";
+  import { EditorCommandPipeline } from "$lib/editor-command-pipeline";
   import { getEditorDuplicationEdit } from "$lib/editor-duplication";
+  import { getArrowSubstitutionSpaceEdit } from "$lib/arrow-substitution";
+  import { getJsonPairEnterEdit } from "$lib/json-pair-enter";
+  import { alignKeyValue, getKeyValueStart } from "$lib/key-value-wrapping";
+  import {
+    createPairedDelimiterIndex,
+    getPairedDelimiterHighlightAtCaret
+  } from "$lib/paired-delimiter-highlighting";
+  import {
+    canInsertMarkdownHeadingReplacementMarker,
+    getMarkdownHeadingSpaceEdit
+  } from "$lib/markdown-heading-edit";
+  import { findOpenFileTab } from "$lib/file-tabs";
   import { BoundedLruCache, BoundedRecentSet } from "$lib/bounded-collections";
   import {
     canInsertAutoPairAt,
-    createDefaultAutoPairAllowedFollowingStrings,
-    maximumAutoPairAllowedFollowingStringCount,
-    maximumAutoPairAllowedFollowingStringLength,
-    normalizeAutoPairAllowedFollowingString,
-    parseAutoPairAllowedFollowingStrings
+    createDefaultAutoPairAllowedFollowingStrings
   } from "$lib/auto-pair";
   import { getTextChange, type TextChange } from "$lib/text-change";
   import {
@@ -110,11 +142,26 @@
     createFencedCodeBlockCache,
     getEditorLineLayout,
     getFencedCodeBlockRanges,
-    getRenderListIndentGuideCount,
     type FencedCodeBlockRange,
     type RenderedLineHeightMeasurements,
     type RenderListLineLayout
   } from "$lib/editor-layout";
+  import { getEditorScrollHeight, getRenderWheelScrollDelta } from "$lib/editor-scroll-extent";
+  import {
+    desktopFiles,
+    type OpenedTextFile as OpenedFile,
+    type SavedTextFile as SavedFile
+  } from "$lib/desktop-file-service";
+  import {
+    desktopWindows,
+    type DesktopEvent as TauriEvent,
+    type DesktopUnlisten as UnlistenFn,
+    type DesktopWindowHandle
+  } from "$lib/desktop-window-service";
+  import {
+    createBrowserRenderViewportScheduler,
+    RenderViewportController
+  } from "$lib/render-viewport-controller";
   import {
     createBrowserDocumentDiagnosticWorkerClient,
     DocumentDiagnosticCancelledError
@@ -123,32 +170,23 @@
     parseSettingsFile,
     serializeSettingsFile,
     type AppSettingsSnapshot,
-    type SettingsImportErrorReason
+    type SettingsImportErrorReason,
+    type SettingsThemePalette
   } from "$lib/settings-transfer";
+  import { SettingsRepository } from "$lib/settings-repository";
+  import {
+    getColorCodeStyle,
+    getColorInputValue,
+    getReadableTextColor,
+    normalizeHexColor,
+    getSystemDefaultColors
+  } from "$lib/theme-colors";
   import {
     createRenderedTextBoundaryIndex,
     findClosestRenderedTextOffset,
     getNativeCaretTextOffsetAtPoint,
     type RenderedTextBoundary
   } from "$lib/rendered-text-geometry";
-
-  type TextEncoding = 'utf8' | 'utf8Bom' | 'utf16Le' | 'utf16Be';
-
-  interface EditorTab {
-    id: string;
-    filePath: string | null;
-    fileName: string;
-    fileContent: string;
-    encoding: TextEncoding;
-    isDirty: boolean;
-    scrollTop: number;
-    scrollLeft: number;
-    selectionStart: number;
-    selectionEnd: number;
-    cursorLine: number;
-    cursorCol: number;
-    caretOffset: number;
-  }
 
   interface TabTransferPayload {
     transferId: string;
@@ -214,22 +252,19 @@
   }
 
 
-  interface OpenedFile {
-    path: string;
-    content: string;
-    encoding: TextEncoding;
-  }
-
-  interface SavedFile {
-    path: string;
-    encoding: TextEncoding;
-  }
-
   let nextTabId = 1;
   let nextUntitledNumber = 1;
   const invalidFileNameCharsPattern = /[<>:"/\\|?*\x00-\x1F]/g;
   const isBrowser = typeof window !== 'undefined';
-  const languagePreferenceKey = 'pref_language';
+  function createBrowserSettingsRepository(): SettingsRepository | null {
+    if (!isBrowser) return null;
+    try {
+      return new SettingsRepository(window.localStorage);
+    } catch {
+      return null;
+    }
+  }
+  const settingsRepository = createBrowserSettingsRepository();
   const documentRenderCache = createDocumentRenderCache();
   const editorLineLayoutCache = createEditorLineLayoutCache();
   const fencedCodeBlockCache = createFencedCodeBlockCache();
@@ -247,14 +282,9 @@
   const openFilesRequestedEvent = 'text-pad-open-files-requested';
   const tabTransferIdQueryKey = 'tabTransferId';
   const tabTransferSourceQueryKey = 'tabTransferSource';
-  function getInitialLanguagePreference(): LanguagePreference {
-    if (!isBrowser) return 'system';
-    const savedPreference = localStorage.getItem(languagePreferenceKey);
-    return savedPreference === 'system' || isAppLocale(savedPreference) ? savedPreference : 'system';
-  }
-
   let systemLocale = $state<AppLocale>(resolveSystemLocale(isBrowser ? navigator.languages : []));
-  let languagePreference = $state<LanguagePreference>(getInitialLanguagePreference());
+  let languagePreference = $state<LanguagePreference>('system');
+  let defaultNewDocumentFormat = $state<DocumentFormatId>(defaultNewDocumentFormatId);
   let locale = $derived<AppLocale>(languagePreference === 'system' ? systemLocale : languagePreference);
   let untitledFileName = $derived(translate(locale, 'app.untitled'));
 
@@ -263,9 +293,7 @@
   }
 
   function hasTauriRuntime(): boolean {
-    if (!isBrowser) return false;
-    const runtimeWindow = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown };
-    return '__TAURI_INTERNALS__' in runtimeWindow || '__TAURI__' in runtimeWindow;
+    return isBrowser && desktopWindows.isAvailable();
   }
 
   function getStartupTabTransferMetadata(): TabDragMetadata | null {
@@ -277,21 +305,10 @@
   }
 
   function getCurrentEditorWindowLabel(): string {
-    if (!hasTauriRuntime()) return 'browser';
-    try {
-      return getCurrentWindow().label;
-    } catch {
-      return 'browser';
-    }
+    return desktopWindows.currentLabel();
   }
   function getInitialIsSettingsWindow(): boolean {
-    if (!hasTauriRuntime()) return false;
-
-    try {
-      return getCurrentWindow().label === 'settings';
-    } catch {
-      return false;
-    }
+    return desktopWindows.currentLabel() === 'settings';
   }
 
   function getFileNameFromPath(path: string): string {
@@ -306,27 +323,55 @@
   }
 
   function getFirstLineTitle(content: string): string {
-    const lfIndex = content.indexOf('\n');
-    const firstLineEnd = lfIndex === -1
-      ? content.length
-      : (lfIndex > 0 && content[lfIndex - 1] === '\r' ? lfIndex - 1 : lfIndex);
+    const lineBreakIndex = content.search(/[\r\n]/);
+    const firstLineEnd = lineBreakIndex === -1 ? content.length : lineBreakIndex;
     const firstLine = content.slice(0, firstLineEnd).trim();
-    return firstLine || untitledFileName;
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    let title = '';
+    let characterCount = 0;
+    for (const { segment } of segmenter.segment(firstLine)) {
+      title += segment;
+      if (++characterCount === 20) break;
+    }
+    return title || untitledFileName;
   }
 
-  function getDisplayFileName(tab: Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent'>): string {
-    return tab.filePath ? tab.fileName : getFirstLineTitle(tab.fileContent);
+  function getUnsavedDocumentTitle(
+    content: string,
+    selectedFormatId: DocumentFormatId | null
+  ): string {
+    return selectedFormatId !== null && content === getNewDocumentInitialContent(selectedFormatId)
+      ? untitledFileName
+      : getFirstLineTitle(content);
+  }
+
+  function getDisplayFileName(
+    tab: Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent' | 'selectedDocumentFormatId'>
+  ): string {
+    return tab.filePath
+      ? tab.fileName
+      : getUnsavedDocumentTitle(tab.fileContent, tab.selectedDocumentFormatId);
   }
 
   function getCurrentWindowTitle(): string {
     if (isSettingsWindow) return t('settings.windowTitle');
-    const displayName = getDisplayFileName({ filePath, fileName, fileContent });
+    const displayName = getDisplayFileName({
+      filePath,
+      fileName,
+      fileContent,
+      selectedDocumentFormatId
+    });
     return `${isDirty ? '*' : ''}${t('app.windowTitle', { fileName: displayName })}`;
   }
 
-  function getUnsavedFileNameFromContent(content: string): string {
-    const suggestedExtension = getSuggestedFileExtensionForContent(content);
-    const firstLineTitle = getFirstLineTitle(content);
+  function getUnsavedFileNameFromContent(
+    content: string,
+    selectedFormatId: DocumentFormatId | null
+  ): string {
+    const selectedFormat = getDocumentFormatById(selectedFormatId);
+    const suggestedExtension = selectedFormat?.defaultExtension
+      ?? getSuggestedFileExtensionForContent(content);
+    const firstLineTitle = getUnsavedDocumentTitle(content, selectedFormatId);
     const suggestedTitle = suggestedExtension === "json" && /^[{\[]\s*$/.test(firstLineTitle)
       ? untitledFileName
       : firstLineTitle;
@@ -340,17 +385,26 @@
   }
 
   function getSuggestedSaveFileName(tab: EditorTab): string {
-    return tab.filePath ? tab.fileName : getUnsavedFileNameFromContent(tab.fileContent);
+    return tab.filePath
+      ? tab.fileName
+      : getUnsavedFileNameFromContent(tab.fileContent, tab.selectedDocumentFormatId);
   }
 
-  function createEditorTab(options: Partial<Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent' | 'encoding' | 'isDirty'>> = {}): EditorTab {
-    const nextFileContent = options.fileContent ?? "";
+  function createEditorTab(options: Partial<Pick<EditorTab, 'filePath' | 'fileName' | 'fileContent' | 'selectedDocumentFormatId' | 'encoding' | 'isDirty'>> = {}): EditorTab {
     const nextFilePath = options.filePath ?? null;
+    const nextSelectedDocumentFormatId = nextFilePath
+      ? null
+      : options.selectedDocumentFormatId === undefined
+        ? defaultNewDocumentFormat
+        : options.selectedDocumentFormatId;
+    const nextFileContent = options.fileContent
+      ?? (nextSelectedDocumentFormatId ? getNewDocumentInitialContent(nextSelectedDocumentFormatId) : '');
     return {
       id: `tab-${nextTabId++}`,
       filePath: nextFilePath,
       fileName: options.fileName ?? (nextFilePath ? getFileNameFromPath(nextFilePath) : getNextUntitledFileName()),
       fileContent: nextFileContent,
+      selectedDocumentFormatId: nextSelectedDocumentFormatId,
       encoding: options.encoding ?? 'utf8',
       isDirty: options.isDirty ?? false,
       scrollTop: 0,
@@ -378,10 +432,14 @@
     [initialTab.id, new EditorUndoHistory(getTabSnapshot(initialTab))]
   ]);
   let lastEditorSnapshot: EditorSnapshot = getTabSnapshot(initialTab);
+  let editorActivationGeneration = 0;
   const undoWindowBudget = new EditorUndoWindowBudget(128 * 1024 * 1024);
   undoWindowBudget.touch(initialTab.id);
-  let tabs = $state<EditorTab[]>([initialTab]);
-  let activeTabId = $state<string>(initialTab.id);
+  let editorSession = $state(createEditorSession(initialTab));
+  let tabs = $derived(editorSession.tabs);
+  let tabOrderKey = $derived(tabs.map((tab) => tab.id).join(','));
+  let activeTabId = $derived(editorSession.activeTabId);
+  let activeTab = $derived(getActiveEditorTab(editorSession));
   const minimumTabWidth = 128;
   const preferredTabWidth = 150;
   const tabItemGap = 2;
@@ -410,13 +468,17 @@
   const pendingIncomingTransferResolvers = new Map<string, (received: boolean) => void>();
   let tabTransferListenersPromise: Promise<UnlistenFn[]> | null = null;
   const startupTabTransferMetadata = getStartupTabTransferMetadata();
-  let filePath = $state<string | null>(initialTab.filePath);
-  let fileName = $state<string>(initialTab.fileName);
-  let fileContent = $state<string>(initialTab.fileContent);
+  let filePath = $derived(activeTab?.filePath ?? null);
+  let fileName = $derived(activeTab ? getDisplayFileName(activeTab) : untitledFileName);
+  let fileContent = $derived(activeTab?.fileContent ?? '');
+  let selectedDocumentFormatId = $derived(activeTab?.selectedDocumentFormatId ?? null);
   let textOffsetIndex = $state.raw<TextOffsetIndex>(createTextOffsetIndex(initialTab.fileContent));
   let latestContentChange = $state.raw<TextChange | null>(null);
-  let fileEncoding = $state<TextEncoding>(initialTab.encoding);
-  let isDirty = $state<boolean>(initialTab.isDirty);
+  let fileEncoding = $derived<TextEncoding>(activeTab?.encoding ?? 'utf8');
+  let isDirty = $derived(activeTab?.isDirty ?? false);
+  let isNewDocumentFormatPickerOpen = $state(false);
+  let newDocumentFormatTriggerEl = $state<HTMLButtonElement | null>(null);
+  let newDocumentFormatPickerEl = $state<HTMLDivElement | null>(null);
   let isLoading = $state<boolean>(false);
   let errorMsg = $state<string | null>(null);
   let isHandlingCloseRequest = false;
@@ -436,10 +498,10 @@
   let installedAppVersion = $state<string>(APP_VERSION_FALLBACK);
 
   // 커서 상태 추적
-  let cursorLine = $state<number>(1);
-  let cursorCol = $state<number>(1);
-  let caretOffset = $state<number>(0);
-  let editorCaretColor = $state<string>('var(--color-render-text, var(--text-color))');
+  let cursorLine = $derived(activeTab?.cursorLine ?? 1);
+  let cursorCol = $derived(activeTab?.cursorCol ?? 1);
+  let caretOffset = $derived(activeTab?.caretOffset ?? 0);
+  let editorCaretColor = $state<string>('var(--color-caret, var(--color-render-text))');
   let editorCursorStyle = $state<string>('text');
   let hasEditorSelection = $state<boolean>(false);
   let hasRenderedSelectionHighlight = $state<boolean>(false);
@@ -448,6 +510,14 @@
   let steadyEditorCaretLeft = $state<number>(12);
   let steadyEditorCaretTop = $state<number>(8);
   let steadyEditorCaretHeight = $state<number>(22);
+  interface RenderPairDecoration {
+    offset: number;
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  }
+  let renderedPairDecorations = $state<RenderPairDecoration[]>([]);
   let steadyEditorCaretTimer: ReturnType<typeof setTimeout> | null = null;
   let steadyEditorCaretBlinkKey = $state<number>(0);
   let isEditorFocused = $state<boolean>(false);
@@ -456,30 +526,18 @@
   let editorTextMeasureFont = '';
   let editorTextWidthCache = new BoundedLruCache<string, number>(12000);
   const renderedSelectionHighlightName = 'render-selection';
-  const supportsRenderedSelectionHighlight = isBrowser
+  const supportsRenderedHighlights = isBrowser
     && typeof Highlight === 'function'
     && typeof CSS !== 'undefined'
     && !!CSS.highlights;
-  let renderedSelectionHighlightFrame: number | null = null;
+  let renderedHighlightFrame: number | null = null;
+  let renderedSelectionDecorations = $state<Array<{left: number; top: number; width: number; height: number}>>([]);
 
   // 메뉴 및 설정 상태 추적
   let openDropdown = $state<'file' | 'edit' | 'help' | null>(null);
-  type FormatSettingsView = `format:${DocumentFormatId}`;
-  type FormatCategorySettingsView = `category:${DocumentFormatCategoryId}`;
-  type SettingsView = 'general' | 'sourceAppearance' | 'renderAppearance' | 'renderEditing' | FormatCategorySettingsView | FormatSettingsView;
   type SettingsTransferStatus = { kind: 'success' | 'warning' | 'error'; message: string };
   let settingsTransferStatus = $state<SettingsTransferStatus | null>(null);
   let isSettingsTransferBusy = $state<boolean>(false);
-  let activeSettingsView = $state<SettingsView>('general');
-  let isSourceSettingsExpanded = $state<boolean>(true);
-  let isRenderSettingsExpanded = $state<boolean>(true);
-  let expandedFormatCategories = $state<Record<DocumentFormatCategoryId, boolean>>({
-    document: true,
-    structured: true,
-    project: true,
-    table: true,
-    subtitle: true
-  });
   let hasCenteredSettingsWindowThisSession = false;
 
   // 폰트 크기 이원화
@@ -490,15 +548,6 @@
   let isRenderMode = $state<boolean>(true); // 기본값은 렌더 모드
   let renderAutoPairEditing = $state<boolean>(true);
   let renderAutoPairAllowedFollowingStrings = $state<string[]>(createDefaultAutoPairAllowedFollowingStrings());
-  let renderAutoPairAllowedFollowingStringDraft = $state<string>('');
-  let normalizedRenderAutoPairAllowedFollowingStringDraft = $derived(
-    normalizeAutoPairAllowedFollowingString(renderAutoPairAllowedFollowingStringDraft)
-  );
-  let canAddRenderAutoPairAllowedFollowingString = $derived(
-    normalizedRenderAutoPairAllowedFollowingStringDraft !== null
-    && !renderAutoPairAllowedFollowingStrings.includes(normalizedRenderAutoPairAllowedFollowingStringDraft)
-    && renderAutoPairAllowedFollowingStrings.length < maximumAutoPairAllowedFollowingStringCount
-  );
   let renderAutoSymbolSubstitution = $state<boolean>(true);
   let renderPreserveIndentOnEnter = $state<boolean>(true);
   let delimitedTableHighlightHeader = $state<boolean>(true);
@@ -507,26 +556,16 @@
   let delimitedTableReorderDurationMs = $state<number>(150);
   let documentFeatureSettings = $state<DocumentFeatureSettings>(createDefaultDocumentFeatureSettings());
   let markdownRenderSettings = $state<MarkdownRenderSettings>(createDefaultMarkdownRenderSettings());
-  let activeSettingsCategory = $derived(
-    configurableDocumentFormatCategories.find(
-      (category) => activeSettingsView === getDocumentFormatCategorySettingsView(category.id)
-    ) ?? null
-  );
-  let activeSettingsFormat = $derived(
-    configurableDocumentFormats.find((format) => activeSettingsView === getDocumentFormatSettingsView(format.id)) ?? null
-  );
   let currentFontSize = $derived(isRenderMode ? renderFontSize : sourceFontSize);
   let tabSize = $state<number>(4);          // 기본 들여쓰기 탭 4칸
-  let scrollTop = $state<number>(0);
-  let scrollLeft = $state<number>(0);
+  let scrollTop = $derived(activeTab?.scrollTop ?? 0);
+  let scrollLeft = $derived(activeTab?.scrollLeft ?? 0);
   let measuredLineHeight = $state<number>(22);
   let clientHeight = $state<number>(500);
-  let editorViewportResizeTimer: ReturnType<typeof setTimeout> | null = null;
-  let pendingEditorViewportWidth = 500;
   let isRenderWrapSettling = $state<boolean>(false);
-  let renderWrapSettleGeneration = 0;
   let pendingNativeInput: { before: EditorSnapshot; inputType: string; isComposing: boolean } | null = null;
   let isComposingEditorText = false;
+  let markdownComposition: { tabId: string; before: EditorSnapshot; regions: MarkdownRichBlock[]; showHeadingMarkers: boolean } | null = null;
 
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
   let editorViewportEl = $state<HTMLDivElement | null>(null);
@@ -544,71 +583,7 @@
   let systemIsDark = $state<boolean>(false);
   let currentTheme = $derived(themeMode === 'system' ? (systemIsDark ? 'dark' : 'light') : themeMode);
 
-  // 설정창에서 편집 중인 테마
-  let editingTheme = $state<'light' | 'dark'>('light');
-
-  interface ThemeColors {
-    codeBg: string;
-    codeText: string;
-    keyStrong: string;
-    keyMedium: string;
-    keyLight: string;
-    string: string;
-    number: string;
-    listMarker: string;
-    comment: string;
-    guide: string;
-    renderBg: string;
-    renderText: string;
-    renderFontWeight: string;
-    paren: string;
-    bracket: string;
-    brace: string;
-  }
-
-  type ColorField = Exclude<keyof ThemeColors, 'renderFontWeight'>;
-  const hexColorRegex = /^#[0-9a-fA-F]{6}$/;
-  const previousLightCodeBgDefault = '#f1f5f9';
-  const previousDarkCodeTextDefaults = new Set(['#38bdf8', '#4fc1ff']);
-
-  // 시스템 테마별 기본 강조 색상
-  function getSystemDefaultColors(isDark: boolean): ThemeColors {
-    return isDark ? {
-      renderBg: '#0a0a0b',
-      renderText: '#d6eaf0',
-      renderFontWeight: '400',
-      codeBg: '#1e293b',
-      codeText: '#94a3b8',
-      keyStrong: '#0284c7',
-      keyMedium: '#38bdf8',
-      keyLight: '#7dd3fc',
-      string: '#F3AF82',
-      number: '#dffe8b',
-      listMarker: '#A5B4FC',
-      comment: '#64748b',
-      guide: '#334155',
-      paren: '#ECA7BC',
-      bracket: '#C87EBA',
-      brace: '#CD81E9'
-    } : {
-      renderBg: '#f8fafc',
-      renderText: '#0f172a',
-      renderFontWeight: '500',
-      codeBg: '#e2e8f0',
-      codeText: '#0284c7',
-      keyStrong: '#0369a1',
-      keyMedium: '#0284c7',
-      keyLight: '#38bdf8',
-      string: '#b91c1c',
-      number: '#d97706',
-      listMarker: '#4F46E5',
-      comment: '#475569',
-      guide: '#cbd5e1',
-      paren: '#a57800',
-      bracket: '#b31c62',
-      brace: '#097a70'
-    };
-  }
+  type ThemeColors = SettingsThemePalette;
 
   let lightColors = $state<ThemeColors>(getSystemDefaultColors(false));
   let darkColors = $state<ThemeColors>(getSystemDefaultColors(true));
@@ -635,8 +610,6 @@
   );
 
   let canPersistPreferences = $state<boolean>(false);
-  const documentFeaturePreferenceKey = 'pref_document_format_features';
-  const markdownRenderPreferenceKey = 'pref_markdown_render_settings';
   function getCloseSaveButtons() {
     return {
       yes: t('dialog.saveChanges.save'),
@@ -688,144 +661,46 @@
     "'": "'",
     '`': '`'
   };
-  const renderAutoPairAllowedFollowingStringsPreferenceKey = 'pref_render_auto_pair_allowed_following_strings';
   const renderAutoClosingCharacters = new Set(Object.values(renderAutoClosingPairs));
 
-  function addRenderAutoPairAllowedFollowingString() {
-    const value = normalizedRenderAutoPairAllowedFollowingStringDraft;
-    if (
-      !value
-      || renderAutoPairAllowedFollowingStrings.includes(value)
-      || renderAutoPairAllowedFollowingStrings.length >= maximumAutoPairAllowedFollowingStringCount
-    ) {
-      return;
-    }
-
-    renderAutoPairAllowedFollowingStrings = [...renderAutoPairAllowedFollowingStrings, value];
-    renderAutoPairAllowedFollowingStringDraft = '';
-  }
-
-  function removeRenderAutoPairAllowedFollowingString(value: string) {
-    renderAutoPairAllowedFollowingStrings = renderAutoPairAllowedFollowingStrings.filter(
-      (candidate) => candidate !== value
-    );
-  }
-
-  function handleRenderAutoPairAllowedFollowingStringKeydown(event: KeyboardEvent) {
-    if (event.key !== 'Enter' || event.isComposing) return;
-    event.preventDefault();
-    if (canAddRenderAutoPairAllowedFollowingString) {
-      addRenderAutoPairAllowedFollowingString();
-    }
-  }
-
-  const renderAutoSubstitutions: Record<string, string> = {
-    '-->': '→',
-    '<--': '←',
-    '<->': '↔',
-    '==>': '⇒',
-    '<==': '⇐',
-    '<=>': '⇔'
-  };
-  const renderAutoSubstitutionTriggers = Object.keys(renderAutoSubstitutions).sort((a, b) => b.length - a.length);
   const editorIndentUnit = '    ';
   const editorHorizontalPadding = 24;
   const fencedCodeHorizontalPadding = 12;
   const editorTopPadding = 8;
+  const editorBottomPadding = 8;
   const virtualLineOverscan = 8;
   const editorResizeDebounceMs = 80;
+  const renderCaretRevealSettleDelayMs = 200;
   const delimitedTableReorderDurationMinMs = 50;
   const delimitedTableReorderDurationMaxMs = 2000;
   const delimitedTableReorderDurationStepMs = 50;
   const editorMovementKeys = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
   let pendingRenderCaretMovementDirection: -1 | 0 | 1 = 0;
-
-  function parseDocumentFeatureSettingsValue(value: string | null): DocumentFeatureSettings {
-    if (!value) return createDefaultDocumentFeatureSettings();
-
-    try {
-      return normalizeDocumentFeatureSettings(JSON.parse(value));
-    } catch {
-      return createDefaultDocumentFeatureSettings();
-    }
-  }
-
-  function parseMarkdownRenderSettingsValue(value: string | null): MarkdownRenderSettings {
-    if (!value) return createDefaultMarkdownRenderSettings();
-    try {
-      return normalizeMarkdownRenderSettings(JSON.parse(value));
-    } catch {
-      return createDefaultMarkdownRenderSettings();
-    }
-  }
-
-  function getDocumentFormatSettingsView(formatId: DocumentFormatId): FormatSettingsView {
-    return `format:${formatId}`;
-  }
-
-  function getDocumentFormatCategorySettingsView(
-    categoryId: DocumentFormatCategoryId
-  ): FormatCategorySettingsView {
-    return `category:${categoryId}`;
-  }
+  let markdownHeadingReplacementCaret: number | null = null;
 
   function getDocumentFormatsForCategory(category: DocumentFormatCategory) {
     return configurableDocumentFormats.filter((format) => category.formatIds.includes(format.id));
   }
 
-  function selectDocumentFormatCategory(categoryId: DocumentFormatCategoryId) {
-    const categoryView = getDocumentFormatCategorySettingsView(categoryId);
-    const wasActive = activeSettingsView === categoryView;
-    activeSettingsView = categoryView;
-    expandedFormatCategories = {
-      ...expandedFormatCategories,
-      [categoryId]: wasActive ? !expandedFormatCategories[categoryId] : true
-    };
-  }
-
-  function setDocumentFormatFeature(
-    formatId: DocumentFormatId,
-    feature: keyof DocumentFeatureSettings[DocumentFormatId],
-    enabled: boolean
-  ) {
-    documentFeatureSettings = {
-      ...documentFeatureSettings,
-      [formatId]: {
-        ...documentFeatureSettings[formatId],
-        [feature]: enabled
-      }
-    };
-  }
-
-  function setMarkdownHeadingStyle(
-    level: MarkdownHeadingLevel,
-    field: keyof MarkdownHeadingStyle,
-    value: number | MarkdownHeadingStyle['fontWeight']
-  ) {
-    markdownRenderSettings = {
-      ...markdownRenderSettings,
-      headings: {
-        ...markdownRenderSettings.headings,
-        [level]: {
-          ...markdownRenderSettings.headings[level],
-          [field]: value
-        }
-      }
-    };
-  }
-
 
   function getActiveTabIndex(): number {
-    return tabs.findIndex((tab) => tab.id === activeTabId);
+    return getActiveEditorTabIndex(editorSession);
   }
 
   function getActiveTab(): EditorTab | null {
-    const activeIndex = getActiveTabIndex();
-    return activeIndex === -1 ? null : tabs[activeIndex];
+    return activeTab;
   }
 
-  function updateTabById(tabId: string, updates: Partial<EditorTab>) {
-    tabs = tabs.map((tab) => tab.id === tabId ? { ...tab, ...updates } : tab);
+  function updateTabById(tabId: string, updates: EditorTabUpdates) {
+    editorSession = updateEditorTab(editorSession, tabId, updates);
+  }
+
+  function updateActiveTab(updates: EditorTabUpdates) {
+    updateTabById(activeTabId, updates);
+  }
+
+  function replaceSessionTabs(nextTabs: EditorTab[], preferredActiveTabId = activeTabId) {
+    editorSession = setEditorSessionTabs(editorSession, nextTabs, preferredActiveTabId);
   }
 
   function getUndoHistoryForTab(tab: EditorTab): EditorUndoHistory {
@@ -879,12 +754,6 @@
     );
   }
 
-  function formatDelimitedTableReorderDuration(durationMs: number): string {
-    return t('common.seconds', {
-      seconds: (durationMs / 1000).toFixed(durationMs % 1000 === 0 ? 0 : 2)
-    });
-  }
-
   function getTextOffsetIndex(content: string): TextOffsetIndex {
     return textOffsetIndex.content === content ? textOffsetIndex : createTextOffsetIndex(content);
   }
@@ -929,72 +798,76 @@
     getActiveUndoHistory().closeGroup();
   }
 
-  function syncActiveTabState() {
+  function captureActiveEditorView() {
     if (pendingInlineColorEditBefore) {
       finishInlineColorPickerEdit();
     }
 
-    const activeTab = getActiveTab();
-    if (!activeTab) return;
+    const tab = getActiveTab();
+    if (!tab) return;
 
-    const nextFileName = filePath ? fileName : getFirstLineTitle(fileContent);
-    const nextIsDirty = getUndoHistoryForTab(activeTab).isDirty();
-    fileName = nextFileName;
-    isDirty = nextIsDirty;
+    const nextFileName = filePath
+      ? fileName
+      : getUnsavedDocumentTitle(fileContent, selectedDocumentFormatId);
+    const nextIsDirty = getUndoHistoryForTab(tab).isDirty();
     const selection = getCurrentEditorSelection();
+    const scrollElement = isRenderMode && isEnhancedDocumentWithinBudget
+      ? editorViewportEl
+      : textareaEl;
 
-    updateTabById(activeTab.id, {
-      filePath,
+    updateActiveTab({
       fileName: nextFileName,
-      fileContent,
-      encoding: fileEncoding,
       isDirty: nextIsDirty,
-      scrollTop,
-      scrollLeft,
+      scrollTop: scrollElement?.scrollTop ?? tab.scrollTop,
+      scrollLeft: scrollElement?.scrollLeft ?? tab.scrollLeft,
       selectionStart: selection.start,
-      selectionEnd: selection.end,
-      cursorLine,
-      cursorCol,
-      caretOffset
+      selectionEnd: selection.end
     });
   }
 
-  function restoreEditorView(tab: EditorTab) {
-    scrollTop = tab.scrollTop;
-    scrollLeft = tab.scrollLeft;
-    cursorLine = tab.cursorLine;
-    cursorCol = tab.cursorCol;
-    caretOffset = tab.caretOffset;
+  function restoreEditorView(tab: EditorTab, activationGeneration: number) {
     editorCursorStyle = 'text';
     clearInlineColorPickerState();
 
     requestAnimationFrame(() => {
-      if (!textareaEl) return;
+      if (
+        !textareaEl
+        || editorActivationGeneration !== activationGeneration
+        || activeTabId !== tab.id
+      ) return;
       const selectionStart = Math.min(tab.selectionStart, fileContent.length);
       const selectionEnd = Math.min(tab.selectionEnd, fileContent.length);
 
       textareaEl.focus({ preventScroll: true });
       setTextareaSelectionFromContent(selectionStart, selectionEnd);
-      textareaEl.scrollTop = tab.scrollTop;
+      if (isRenderMode && isEnhancedDocumentWithinBudget) {
+        textareaEl.scrollTop = 0;
+        if (editorViewportEl) editorViewportEl.scrollTop = tab.scrollTop;
+      } else {
+        textareaEl.scrollTop = tab.scrollTop;
+      }
       textareaEl.scrollLeft = tab.scrollLeft;
-      updateCursorPosition();
+      syncCursorState(false);
     });
   }
 
   function loadTabIntoEditor(tab: EditorTab) {
     const history = getUndoHistoryForTab(tab);
-    setLastEditorSnapshot(getTabSnapshot(tab));
-    activeTabId = tab.id;
-    filePath = tab.filePath;
-    fileName = getDisplayFileName(tab);
+    const nextIsDirty = history.isDirty();
+    const nextTab = nextIsDirty === tab.isDirty
+      ? tab
+      : { ...tab, isDirty: nextIsDirty };
+    if (nextTab !== tab) updateTabById(tab.id, { isDirty: nextTab.isDirty });
+    editorSession = activateEditorSessionTab(editorSession, tab.id);
+    editorActivationGeneration += 1;
+    const activationGeneration = editorActivationGeneration;
+    setLastEditorSnapshot(getTabSnapshot(nextTab));
     latestContentChange = null;
-    textOffsetIndex = createTextOffsetIndex(tab.fileContent);
-    fileContent = tab.fileContent;
+    textOffsetIndex = createTextOffsetIndex(nextTab.fileContent);
+    isNewDocumentFormatPickerOpen = false;
     enforceUndoWindowBudget();
-    fileEncoding = tab.encoding;
-    isDirty = history.isDirty();
     errorMsg = null;
-    restoreEditorView(tab);
+    restoreEditorView(nextTab, activationGeneration);
   }
 
   function updateTabStripMetrics() {
@@ -1061,7 +934,7 @@
 
     const rawDelta = event.deltaX !== 0
       ? event.deltaX
-      : (event.shiftKey ? event.deltaY : 0);
+      : event.deltaY;
     if (rawDelta === 0) return;
 
     event.preventDefault();
@@ -1153,7 +1026,7 @@
     previewOffsetX: number,
     previewOffsetY: number
   ): OutgoingTabTransfer | null {
-    syncActiveTabState();
+    captureActiveEditorView();
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab) return null;
 
@@ -1237,7 +1110,7 @@
     transfer: OutgoingTabTransfer
   ) {
     if (!hasTauriRuntime()) return;
-    void emit(eventName, getTabPointerPayload(transfer)).catch((error) => {
+    void desktopWindows.emit(eventName, getTabPointerPayload(transfer)).catch((error) => {
       console.error('Failed to broadcast tab pointer event:', error);
     });
   }
@@ -1307,20 +1180,20 @@
   }
 
   function reorderTabWithinCurrentWindow(tabId: string, dropIndex: number) {
-    syncActiveTabState();
+    captureActiveEditorView();
     const sourceIndex = tabs.findIndex((tab) => tab.id === tabId);
     if (sourceIndex === -1) return;
 
     const nextTabs = reorderTabItems(tabs, sourceIndex, dropIndex);
     if (nextTabs.every((tab, index) => tab.id === tabs[index]?.id)) return;
-    tabs = nextTabs;
+    replaceSessionTabs(nextTabs);
     requestAnimationFrame(() => scrollTabIntoView(tabId));
   }
 
   function insertTransferredTab(delivery: TabTransferDelivery): boolean {
     if (receivedTabTransferIds.has(delivery.transferId)) return true;
 
-    syncActiveTabState();
+    captureActiveEditorView();
     const hasSingleCleanUntitledTab = tabs.length === 1 && isCleanUntitledTab(tabs[0]);
     const shouldReplaceBlank = shouldReplaceDetachedWindowPlaceholder(
       startupTabTransferMetadata?.transferId ?? null,
@@ -1340,9 +1213,9 @@
     if (shouldReplaceBlank) {
       undoWindowBudget.remove(tabs[0].id);
       undoHistories.delete(tabs[0].id);
-      tabs = [receivedTab];
+      replaceSessionTabs([receivedTab], receivedTab.id);
     } else {
-      tabs = insertTabItem(tabs, receivedTab, delivery.dropIndex);
+      replaceSessionTabs(insertTabItem(tabs, receivedTab, delivery.dropIndex));
     }
 
     undoHistories.set(receivedTab.id, receivedHistory);
@@ -1371,7 +1244,7 @@
         resolve(received);
       });
 
-      void emitTo(metadata.sourceWindowLabel, tabTransferRequestEvent, {
+      void desktopWindows.emitTo(metadata.sourceWindowLabel, tabTransferRequestEvent, {
         ...metadata,
         targetWindowLabel: getCurrentEditorWindowLabel(),
         dropIndex
@@ -1398,7 +1271,7 @@
     if (!currentTab) return;
 
     try {
-      await emitTo(request.targetWindowLabel, tabTransferDeliveryEvent, {
+      await desktopWindows.emitTo(request.targetWindowLabel, tabTransferDeliveryEvent, {
         transferId: transfer.transferId,
         sourceWindowLabel: transfer.sourceWindowLabel,
         tab: transfer.tab,
@@ -1414,7 +1287,7 @@
     const delivery = event.payload;
     try {
       if (!insertTransferredTab(delivery)) return;
-      await emitTo(delivery.sourceWindowLabel, tabTransferAcceptedEvent, {
+      await desktopWindows.emitTo(delivery.sourceWindowLabel, tabTransferAcceptedEvent, {
         transferId: delivery.transferId,
         targetWindowLabel: getCurrentEditorWindowLabel()
       } satisfies TabTransferAccepted);
@@ -1430,7 +1303,7 @@
 
     if (tabs.length === 1 && hasTauriRuntime()) {
       try {
-        await getCurrentWindow().destroy();
+        await desktopWindows.current().destroy();
       } catch (error) {
         console.error('Failed to close empty tab window:', error);
       }
@@ -1468,7 +1341,7 @@
       [tabTransferSourceQueryKey]: transfer.sourceWindowLabel
     });
     const hasScreenPosition = transfer.screenX !== 0 || transfer.screenY !== 0;
-    const detachedWindow = new WebviewWindow(label, {
+    const detachedWindow = desktopWindows.create(label, {
       url: `${window.location.origin}/?${searchParams.toString()}`,
       title: getDisplayFileName(transfer.tab),
       width: 800,
@@ -1611,7 +1484,7 @@
 
   function ensureTabTransferListeners(): Promise<UnlistenFn[]> {
     if (tabTransferListenersPromise) return tabTransferListenersPromise;
-    const eventWindow = getCurrentWindow();
+    const eventWindow = desktopWindows.current();
     tabTransferListenersPromise = Promise.all([
       eventWindow.listen<TabTransferRequest>(tabTransferRequestEvent, handleTabTransferRequest),
       eventWindow.listen<TabTransferDelivery>(tabTransferDeliveryEvent, handleTabTransferDelivery),
@@ -1647,7 +1520,7 @@
   });
   function activateTab(tabId: string) {
     if (tabId === activeTabId) return;
-    syncActiveTabState();
+    captureActiveEditorView();
     const nextTab = tabs.find((tab) => tab.id === tabId);
     if (!nextTab) return;
     closeAllDropdown();
@@ -1655,9 +1528,9 @@
   }
 
   function addTab(tab: EditorTab) {
-    syncActiveTabState();
+    captureActiveEditorView();
     resetUndoHistoryForTab(tab);
-    tabs = [...tabs, tab];
+    replaceSessionTabs([...tabs, tab]);
     closeAllDropdown();
     loadTabIntoEditor(tab);
   }
@@ -1666,12 +1539,54 @@
     addTab(createEditorTab());
   }
 
+  function selectNewDocumentFormat(formatId: DocumentFormatId) {
+    if (filePath !== null || fileContent.length > 0) return;
+
+    isNewDocumentFormatPickerOpen = false;
+    updateActiveTab({ selectedDocumentFormatId: formatId });
+
+    const initialContent = getNewDocumentInitialContent(formatId);
+    if (initialContent.length > 0) {
+      commitManualEditorEdit(initialContent, { start: 0, end: 0 });
+    }
+  }
+
+  function toggleNewDocumentFormatPicker() {
+    isNewDocumentFormatPickerOpen = !isNewDocumentFormatPickerOpen;
+    if (!isNewDocumentFormatPickerOpen) return;
+
+    void tick().then(() => {
+      const selectedButton = newDocumentFormatPickerEl
+        ?.querySelector<HTMLButtonElement>('.new-document-format-button.active');
+      const firstButton = newDocumentFormatPickerEl
+        ?.querySelector<HTMLButtonElement>('.new-document-format-button');
+      (selectedButton ?? firstButton)?.focus();
+    });
+  }
+
+  function closeNewDocumentFormatPicker(restoreFocus = true) {
+    isNewDocumentFormatPickerOpen = false;
+    if (restoreFocus) {
+      void tick().then(() => newDocumentFormatTriggerEl?.focus());
+    }
+  }
+
+  function handleNewDocumentFormatPickerKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeNewDocumentFormatPicker();
+  }
+
   function isCleanUntitledTab(tab: EditorTab): boolean {
-    return !tab.filePath && !tab.isDirty && tab.fileContent.length === 0;
+    const initialContent = tab.selectedDocumentFormatId
+      ? getNewDocumentInitialContent(tab.selectedDocumentFormatId)
+      : '';
+    return !tab.filePath && !tab.isDirty && tab.fileContent === initialContent;
   }
 
   function replaceActiveTabWith(tab: EditorTab) {
-    syncActiveTabState();
+    captureActiveEditorView();
     const activeIndex = getActiveTabIndex();
     if (activeIndex === -1) {
       addTab(tab);
@@ -1681,7 +1596,7 @@
     const activeId = tabs[activeIndex].id;
     const nextTab = { ...tab, id: activeId };
     resetUndoHistoryForTab(nextTab);
-    tabs = tabs.map((item) => item.id === activeId ? nextTab : item);
+    replaceSessionTabs(tabs.map((item) => item.id === activeId ? nextTab : item));
     loadTabIntoEditor(nextTab);
   }
 
@@ -1694,7 +1609,7 @@
       undoHistories.delete(tabId);
       const blankTab = createEditorTab();
       resetUndoHistoryForTab(blankTab);
-      tabs = [blankTab];
+      replaceSessionTabs([blankTab], blankTab.id);
       loadTabIntoEditor(blankTab);
       return;
     }
@@ -1702,11 +1617,14 @@
     const nextTabs = tabs.filter((tab) => tab.id !== tabId);
     undoWindowBudget.remove(tabId);
     undoHistories.delete(tabId);
-    tabs = nextTabs;
 
     if (activeTabId === tabId) {
       const nextIndex = Math.min(closingIndex, nextTabs.length - 1);
-      loadTabIntoEditor(nextTabs[nextIndex]);
+      const nextTab = nextTabs[nextIndex];
+      replaceSessionTabs(nextTabs, nextTab.id);
+      loadTabIntoEditor(nextTab);
+    } else {
+      replaceSessionTabs(nextTabs);
     }
   }
 
@@ -1723,17 +1641,20 @@
     const tabList = tabListEl;
     const resizeObserver = new ResizeObserver(updateTabStripMetrics);
     resizeObserver.observe(tabList);
+    tabList.addEventListener('wheel', handleTabListWheel, { passive: false });
     const frame = requestAnimationFrame(updateTabStripMetrics);
 
     return () => {
       cancelAnimationFrame(frame);
       resizeObserver.disconnect();
+      tabList.removeEventListener('wheel', handleTabListWheel);
     };
   });
 
   $effect(() => {
     if (!isBrowser) return;
-    void tabs.length;
+    // 본문·선택 영역 갱신으로 바뀐 탭 배열은 수동 스크롤을 되돌리지 않는다.
+    void tabOrderKey;
     const nextActiveTabId = activeTabId;
     const frame = requestAnimationFrame(() => {
       scrollTabIntoView(nextActiveTabId);
@@ -1771,95 +1692,16 @@
     document.documentElement.dir = isRtlLocale(locale) ? 'rtl' : 'ltr';
   });
 
-  // 기본 색상 복원
-  function resetColorsToDefault() {
-    if (!isBrowser) return;
-    if (editingTheme === 'dark') {
-      darkColors = getSystemDefaultColors(true);
-    } else {
-      lightColors = getSystemDefaultColors(false);
-    }
-  }
-
-  // 마운트 시 localStorage Preferences 로드
+  // 마운트 시 버전된 설정 스냅샷을 로드하고 이전 개별 키를 한 번만 이관한다.
   $effect(() => {
     if (!isBrowser) return;
-
-    const savedLanguagePreference = localStorage.getItem(languagePreferenceKey);
-    if (savedLanguagePreference === 'system' || isAppLocale(savedLanguagePreference)) {
-      languagePreference = savedLanguagePreference;
-    }
     systemLocale = resolveSystemLocale(navigator.languages);
-
-    const savedThemeMode = localStorage.getItem('pref_theme_mode');
-    if (savedThemeMode === 'system' || savedThemeMode === 'light' || savedThemeMode === 'dark') {
-      themeMode = savedThemeMode;
+    if (settingsRepository) {
+      const loadedSettings = untrack(() => settingsRepository.load(getCurrentSettingsSnapshot(), {
+        legacySystemIsDark: systemIsDark
+      }));
+      applySettingsSnapshot(loadedSettings);
     }
-
-    const savedSourceFontSize = localStorage.getItem('pref_source_font_size');
-    if (savedSourceFontSize) sourceFontSize = parseInt(savedSourceFontSize, 10);
-
-    const savedRenderFontSize = localStorage.getItem('pref_render_font_size');
-    if (savedRenderFontSize) renderFontSize = parseInt(savedRenderFontSize, 10);
-
-    const savedTabSize = localStorage.getItem('pref_tab_size');
-    if (savedTabSize) tabSize = parseInt(savedTabSize, 10);
-
-    renderAutoPairEditing = localStorage.getItem('pref_render_auto_pair_editing') !== 'false';
-    renderAutoPairAllowedFollowingStrings = parseAutoPairAllowedFollowingStrings(
-      localStorage.getItem(renderAutoPairAllowedFollowingStringsPreferenceKey)
-    );
-    renderAutoSymbolSubstitution = localStorage.getItem('pref_render_auto_symbol_substitution') !== 'false';
-    renderPreserveIndentOnEnter = localStorage.getItem('pref_render_preserve_indent_on_enter') !== 'false';
-    delimitedTableHighlightHeader = localStorage.getItem('pref_delimited_table_highlight_header') !== 'false';
-    delimitedTableShowRowIndices = localStorage.getItem('pref_delimited_table_show_row_indices') !== 'false';
-    delimitedTableAnimateReorder = localStorage.getItem('pref_delimited_table_animate_reorder') !== 'false';
-    delimitedTableReorderDurationMs = normalizeDelimitedTableReorderDuration(
-      localStorage.getItem('pref_delimited_table_reorder_duration_ms')
-    );
-    documentFeatureSettings = parseDocumentFeatureSettingsValue(localStorage.getItem(documentFeaturePreferenceKey));
-    markdownRenderSettings = parseMarkdownRenderSettingsValue(localStorage.getItem(markdownRenderPreferenceKey));
-
-    renderFontFamily = localStorage.getItem('pref_render_font_family') || 'nanum-gothic';
-
-    const loadColors = (isDark: boolean): ThemeColors => {
-      const prefix = isDark ? 'pref_dark_' : 'pref_light_';
-      const defaults = getSystemDefaultColors(isDark);
-
-      // Migration from old keys (if new key doesn't exist but old key does, use old key once, or just fallback to default)
-      const savedCodeBg = localStorage.getItem(`${prefix}codeBg`)
-        || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_code_bg') : null);
-      const codeBg = !isDark && savedCodeBg?.toLowerCase() === previousLightCodeBgDefault
-        ? defaults.codeBg
-        : savedCodeBg || defaults.codeBg;
-      const savedCodeText = localStorage.getItem(`${prefix}codeText`)
-        || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_code_text') : null);
-      const codeText = isDark && savedCodeText && previousDarkCodeTextDefaults.has(savedCodeText.toLowerCase())
-        ? defaults.codeText
-        : savedCodeText || defaults.codeText;
-
-      return {
-        codeBg,
-        codeText,
-        keyStrong: localStorage.getItem(`${prefix}keyStrong`) || defaults.keyStrong,
-        keyMedium: localStorage.getItem(`${prefix}keyMedium`) || defaults.keyMedium,
-        keyLight: localStorage.getItem(`${prefix}keyLight`) || defaults.keyLight,
-        string: localStorage.getItem(`${prefix}string`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_string') : null) || defaults.string,
-        number: localStorage.getItem(`${prefix}number`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_number') : null) || defaults.number,
-        listMarker: localStorage.getItem(`${prefix}listMarker`) || defaults.listMarker,
-        comment: localStorage.getItem(`${prefix}comment`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_comment') : null) || defaults.comment,
-        guide: localStorage.getItem(`${prefix}guide`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_indent_guide') : null) || defaults.guide,
-        renderBg: localStorage.getItem(`${prefix}renderBg`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_render_bg') : null) || defaults.renderBg,
-        renderText: localStorage.getItem(`${prefix}renderText`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_render_text') : null) || defaults.renderText,
-        renderFontWeight: localStorage.getItem(`${prefix}renderFontWeight`) || defaults.renderFontWeight,
-        paren: localStorage.getItem(`${prefix}paren`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_paren') : null) || defaults.paren,
-        bracket: localStorage.getItem(`${prefix}bracket`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_bracket') : null) || defaults.bracket,
-        brace: localStorage.getItem(`${prefix}brace`) || (isDark && systemIsDark ? localStorage.getItem('pref_color_hl_brace') : null) || defaults.brace,
-      };
-    };
-
-    lightColors = loadColors(false);
-    darkColors = loadColors(true);
 
     requestAnimationFrame(() => {
       setTimeout(() => {
@@ -1868,52 +1710,25 @@
     });
   });
 
-  // 상태 변경 감지 자동 로컬스토리지 동기화
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(languagePreferenceKey, languagePreference); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_theme_mode', themeMode); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_source_font_size', sourceFontSize.toString()); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_font_size', renderFontSize.toString()); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_tab_size', tabSize.toString()); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_pair_editing', renderAutoPairEditing ? 'true' : 'false'); });
+  // 설정 전체를 한 번 정규화한 뒤 단일 저장 단위로 기록한다.
   $effect(() => {
-    if (isBrowser && canPersistPreferences) {
-      localStorage.setItem(renderAutoPairAllowedFollowingStringsPreferenceKey, JSON.stringify(renderAutoPairAllowedFollowingStrings));
-    }
-  });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_auto_symbol_substitution', renderAutoSymbolSubstitution ? 'true' : 'false'); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_render_preserve_indent_on_enter', renderPreserveIndentOnEnter ? 'true' : 'false'); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_highlight_header', delimitedTableHighlightHeader ? 'true' : 'false'); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_show_row_indices', delimitedTableShowRowIndices ? 'true' : 'false'); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_animate_reorder', delimitedTableAnimateReorder ? 'true' : 'false'); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem('pref_delimited_table_reorder_duration_ms', delimitedTableReorderDurationMs.toString()); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(documentFeaturePreferenceKey, JSON.stringify(documentFeatureSettings)); });
-  $effect(() => { if (isBrowser && canPersistPreferences) localStorage.setItem(markdownRenderPreferenceKey, JSON.stringify(markdownRenderSettings)); });
-  $effect(() => { if (isBrowser && canPersistPreferences && renderFontFamily) localStorage.setItem('pref_render_font_family', renderFontFamily); });
-
-  $effect(() => {
-    if (!isBrowser || !canPersistPreferences) return;
-    Object.entries(lightColors).forEach(([key, value]) => localStorage.setItem(`pref_light_${key}`, value));
-  });
-
-  $effect(() => {
-    if (!isBrowser || !canPersistPreferences) return;
-    Object.entries(darkColors).forEach(([key, value]) => localStorage.setItem(`pref_dark_${key}`, value));
+    if (!isBrowser || !canPersistPreferences || !settingsRepository) return;
+    settingsRepository.save(getCurrentSettingsSnapshot());
   });
 
   // 마운트 시 독립 설정창 감지 및 메인 창 종료 시퀀스
   $effect(() => {
     if (!isBrowser || !hasTauriRuntime()) return;
-    const label = getCurrentWindow().label;
+    const label = desktopWindows.current().label;
     isSettingsWindow = label === 'settings';
     if (isSettingsWindow) {
-      activeSettingsView = 'general';
-      getCurrentWindow().onCloseRequested((event) => {
+      desktopWindows.current().onCloseRequested((event) => {
         event.preventDefault();
-        getCurrentWindow().hide();
+        desktopWindows.current().hide();
       });
     } else {
       let unlistenClose: (() => void) | undefined;
-      getCurrentWindow().onCloseRequested(async (event) => {
+      desktopWindows.current().onCloseRequested(async (event) => {
         event.preventDefault();
 
         if (isHandlingCloseRequest) return;
@@ -1923,17 +1738,17 @@
           if (!canClose) return;
 
           try {
-            const editorWindows = (await WebviewWindow.getAll())
+            const editorWindows = (await desktopWindows.getAll())
               .filter((window) => window.label !== 'settings' && window.label !== label);
             if (editorWindows.length === 0) {
-              const settingsWin = await WebviewWindow.getByLabel('settings');
+              const settingsWin = await desktopWindows.getByLabel('settings');
               if (settingsWin) {
                 await settingsWin.destroy();
               }
             }
           } catch {}
 
-          await getCurrentWindow().destroy();
+          await desktopWindows.current().destroy();
         } finally {
           isHandlingCloseRequest = false;
         }
@@ -1947,7 +1762,7 @@
   });
 
   async function shouldCloseEditorWindow(): Promise<boolean> {
-    syncActiveTabState();
+    captureActiveEditorView();
     const dirtyTabs = untrack(() => tabs.filter((tab) => tab.isDirty));
     if (dirtyTabs.length === 0) return true;
 
@@ -1963,7 +1778,7 @@
     if (!hasTauriRuntime()) return;
 
     try {
-      isWindowMaximized = await getCurrentWindow().isMaximized();
+      isWindowMaximized = await desktopWindows.current().isMaximized();
     } catch {}
   }
 
@@ -1972,7 +1787,7 @@
 
     let unlistenResized: UnlistenFn | undefined;
     void refreshWindowMaximizedState();
-    getCurrentWindow().onResized(() => {
+    desktopWindows.current().onResized(() => {
       void refreshWindowMaximizedState();
     }).then((unlisten) => {
       unlistenResized = unlisten;
@@ -1984,7 +1799,7 @@
   });
 
   async function confirmCloseTab(tabId: string): Promise<boolean> {
-    syncActiveTabState();
+    captureActiveEditorView();
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab || !tab.isDirty) return true;
 
@@ -2037,24 +1852,18 @@
     updateTabById(tabId, {
       filePath: savedFile.path,
       fileName: nextFileName,
+      selectedDocumentFormatId: null,
       encoding: savedFile.encoding,
       isDirty: false
     });
-
-    if (tabId === activeTabId) {
-      filePath = savedFile.path;
-      fileName = nextFileName;
-      fileEncoding = savedFile.encoding;
-      isDirty = false;
-    }
   }
 
   async function writeTabContent(tabId: string, targetPath: string) {
-    syncActiveTabState();
+    captureActiveEditorView();
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab) return;
 
-    await invoke("write_file_content", {
+    await desktopFiles.writeFileContent({
       path: targetPath,
       content: tab.fileContent,
       encoding: tab.encoding
@@ -2063,7 +1872,7 @@
   }
 
   async function saveTabFile(tabId: string): Promise<boolean> {
-    syncActiveTabState();
+    captureActiveEditorView();
     const tab = tabs.find((item) => item.id === tabId);
     if (!tab) return false;
 
@@ -2072,7 +1881,7 @@
       return true;
     }
 
-    const savedFile = await invoke<SavedFile | null>("save_file_dialog", {
+    const savedFile = await desktopFiles.saveFileDialog({
       defaultName: getSuggestedSaveFileName(tab),
       content: tab.fileContent,
       encoding: null,
@@ -2089,11 +1898,11 @@
   }
 
   async function saveCurrentFileAs(): Promise<boolean> {
-    syncActiveTabState();
+    captureActiveEditorView();
     const tab = getActiveTab();
     if (!tab) return false;
 
-    const savedFile = await invoke<SavedFile | null>("save_file_dialog", {
+    const savedFile = await desktopFiles.saveFileDialog({
       defaultName: getSuggestedSaveFileName(tab),
       content: tab.fileContent,
       encoding: tab.filePath ? tab.encoding : null,
@@ -2107,38 +1916,11 @@
     return true;
   }
 
-  // storage 변경 감지 핸들러 (창 간 실시간 동기화)
+  // 완성된 설정 스냅샷만 창 사이에 동기화한다.
   function handleStorageChange(e: StorageEvent) {
-    if (!e.key) return;
-    if (e.key === languagePreferenceKey && e.newValue && (e.newValue === 'system' || isAppLocale(e.newValue))) languagePreference = e.newValue;
-    if (e.key === 'pref_theme_mode' && e.newValue && (e.newValue === 'system' || e.newValue === 'light' || e.newValue === 'dark')) themeMode = e.newValue;
-    if (e.key === 'pref_source_font_size' && e.newValue) sourceFontSize = parseInt(e.newValue, 10);
-    if (e.key === 'pref_render_font_size' && e.newValue) renderFontSize = parseInt(e.newValue, 10);
-    if (e.key === 'pref_tab_size' && e.newValue) tabSize = parseInt(e.newValue, 10);
-    if (e.key === 'pref_render_auto_pair_editing' && e.newValue) renderAutoPairEditing = e.newValue !== 'false';
-    if (e.key === renderAutoPairAllowedFollowingStringsPreferenceKey) {
-      renderAutoPairAllowedFollowingStrings = parseAutoPairAllowedFollowingStrings(e.newValue);
-    }
-    if (e.key === 'pref_render_auto_symbol_substitution' && e.newValue) renderAutoSymbolSubstitution = e.newValue !== 'false';
-    if (e.key === 'pref_render_preserve_indent_on_enter' && e.newValue) renderPreserveIndentOnEnter = e.newValue !== 'false';
-    if (e.key === 'pref_delimited_table_highlight_header' && e.newValue) delimitedTableHighlightHeader = e.newValue !== 'false';
-    if (e.key === 'pref_delimited_table_show_row_indices' && e.newValue) delimitedTableShowRowIndices = e.newValue !== 'false';
-    if (e.key === 'pref_delimited_table_animate_reorder' && e.newValue) delimitedTableAnimateReorder = e.newValue !== 'false';
-    if (e.key === 'pref_delimited_table_reorder_duration_ms' && e.newValue) {
-      delimitedTableReorderDurationMs = normalizeDelimitedTableReorderDuration(e.newValue);
-    }
-    if (e.key === documentFeaturePreferenceKey) documentFeatureSettings = parseDocumentFeatureSettingsValue(e.newValue);
-    if (e.key === markdownRenderPreferenceKey) markdownRenderSettings = parseMarkdownRenderSettingsValue(e.newValue);
-    if (e.key === 'pref_render_font_family' && e.newValue) renderFontFamily = e.newValue;
-
-    if (e.key.startsWith('pref_light_') && e.newValue) {
-      const field = e.key.replace('pref_light_', '') as keyof ThemeColors;
-      lightColors[field] = e.newValue;
-    }
-    if (e.key.startsWith('pref_dark_') && e.newValue) {
-      const field = e.key.replace('pref_dark_', '') as keyof ThemeColors;
-      darkColors[field] = e.newValue;
-    }
+    if (!settingsRepository || e.key !== settingsRepository.storageKey) return;
+    const settings = settingsRepository.parseStorageValue(e.newValue);
+    if (settings) applySettingsSnapshot(settings);
   }
 
   $effect(() => {
@@ -2153,7 +1935,8 @@
     return {
       general: {
         language: languagePreference,
-        theme: themeMode
+        theme: themeMode,
+        defaultNewDocumentFormat
       },
       source: {
         fontSize: sourceFontSize
@@ -2189,6 +1972,7 @@
   function applySettingsSnapshot(settings: AppSettingsSnapshot) {
     languagePreference = settings.general.language;
     themeMode = settings.general.theme;
+    defaultNewDocumentFormat = settings.general.defaultNewDocumentFormat;
     sourceFontSize = settings.source.fontSize;
     renderFontSize = settings.render.fontSize;
     tabSize = settings.render.indentWidth;
@@ -2224,7 +2008,7 @@
     isSettingsTransferBusy = true;
     settingsTransferStatus = null;
     try {
-      const savedFile = await invoke<SavedFile | null>('save_file_dialog', {
+      const savedFile = await desktopFiles.saveFileDialog({
         defaultName: 'text-pad-settings.json',
         content: serializeSettingsFile(getCurrentSettingsSnapshot(), installedAppVersion),
         encoding: 'utf8',
@@ -2251,9 +2035,9 @@
     isSettingsTransferBusy = true;
     settingsTransferStatus = null;
     try {
-      const openedFile = await invoke<OpenedFile | null>('open_file_dialog', {
-        filters: [{ name: t('settings.transfer.jsonFilter'), extensions: ['json'] }]
-      });
+      const openedFile = await desktopFiles.openFileDialog([
+        { name: t('settings.transfer.jsonFilter'), extensions: ['json'] }
+      ]);
       if (!openedFile) return;
 
       const result = parseSettingsFile(openedFile.content, getCurrentSettingsSnapshot());
@@ -2282,76 +2066,6 @@
     }
   }
 
-
-  function normalizeHexColor(value: string): string | null {
-    const trimmed = value.trim();
-    return hexColorRegex.test(trimmed) ? trimmed.toUpperCase() : null;
-  }
-
-  function getColorInputValue(value: string): string {
-    return normalizeHexColor(value) ?? '#000000';
-  }
-
-  function formatColorCode(value: string): string {
-    return normalizeHexColor(value) ?? (value.trim().toUpperCase() || '#000000');
-  }
-
-  function getReadableTextColor(value: string): string {
-    const hex = getColorInputValue(value).slice(1);
-    const red = parseInt(hex.slice(0, 2), 16);
-    const green = parseInt(hex.slice(2, 4), 16);
-    const blue = parseInt(hex.slice(4, 6), 16);
-
-    const toLinear = (channel: number) => {
-      const normalized = channel / 255;
-      return normalized <= 0.03928
-        ? normalized / 12.92
-        : Math.pow((normalized + 0.055) / 1.055, 2.4);
-    };
-
-    const luminance = 0.2126 * toLinear(red) + 0.7152 * toLinear(green) + 0.0722 * toLinear(blue);
-    return luminance > 0.179 ? '#000000' : '#ffffff';
-  }
-
-  function getColorCodeStyle(value: string): string {
-    const backgroundColor = getColorInputValue(value);
-    return `background-color: ${backgroundColor}; color: ${getReadableTextColor(backgroundColor)};`;
-  }
-
-  function openColorPicker(inputId: string) {
-    if (!isBrowser) return;
-    const colorInput = document.getElementById(inputId) as (HTMLInputElement & { showPicker?: () => void }) | null;
-    if (!colorInput) return;
-
-    colorInput.focus({ preventScroll: true });
-
-    try {
-      if (typeof colorInput.showPicker === 'function') {
-        colorInput.showPicker();
-      } else {
-        colorInput.click();
-      }
-    } catch {
-      colorInput.click();
-    }
-  }
-
-  function handleColorTextPointerDown(inputId: string, event: PointerEvent) {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    openColorPicker(inputId);
-  }
-
-  function handleColorInput(colors: ThemeColors, field: ColorField, event: Event) {
-    const target = event.currentTarget as HTMLInputElement;
-    colors[field] = target.value.toUpperCase();
-  }
-
-  function handleColorCodeKeydown(inputId: string, event: KeyboardEvent) {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
-    openColorPicker(inputId);
-  }
 
 
   function getLineTextForLayout(content: string, offsets: number[], lineIndex: number): string {
@@ -2437,11 +2151,27 @@
   let charCount = $derived(fileContent.length);
   let textareaDisplayContent = $derived(textOffsetIndex.textareaValue);
   let editorViewportWidth = $state<number>(500);
-  function getEditorTextBoxWidth(): number {
-    const fallbackWidth = Math.max(1, editorViewportWidth);
-    if (!isBrowser || !textareaEl) return fallbackWidth;
-    return Math.max(1, textareaEl.clientWidth || fallbackWidth);
-  }
+  let liveEditorViewportWidth = $state<number>(500);
+  const renderViewportController = isBrowser
+    ? new RenderViewportController({
+        scheduler: createBrowserRenderViewportScheduler(),
+        resizeDebounceMs: editorResizeDebounceMs,
+        caretRevealSettleDelayMs: renderCaretRevealSettleDelayMs,
+        isWrapSettlingEnabled: () => isRenderMode,
+        onViewportWidthChange: (width) => {
+          editorViewportWidth = width;
+        },
+        onViewportHeightChange: (height) => {
+          clientHeight = height;
+        },
+        onWrapSettlingChange: (isSettling) => {
+          isRenderWrapSettling = isSettling;
+        },
+        onCaretSync: (revealCaret) => {
+          syncSteadyEditorCaretPosition(revealCaret);
+        }
+      })
+    : null;
 
   function getEditorTextPaddingLeft(): number {
     if (!isBrowser || !textareaEl) return editorHorizontalPadding / 2;
@@ -2457,10 +2187,56 @@
     const textareaStyle = getComputedStyle(textareaEl);
     const paddingLeft = Number.parseFloat(textareaStyle.paddingLeft) || 0;
     const paddingRight = Number.parseFloat(textareaStyle.paddingRight) || 0;
-    return Math.max(1, getEditorTextBoxWidth() - paddingLeft - paddingRight);
+    return Math.max(1, editorViewportWidth - paddingLeft - paddingRight);
   }
 
+  let selectedDocumentFormat = $derived(
+    filePath === null ? getDocumentFormatById(selectedDocumentFormatId) : null
+  );
+  let activeDocumentFormat = $derived(
+    selectedDocumentFormat ?? getDocumentFormatForContent(fileContent, filePath || fileName)
+  );
+  let shouldShowNewDocumentFormatToolbar = $derived(
+    !isSettingsWindow && filePath === null && fileContent.length === 0
+  );
+  let isActiveDocumentRenderEnabled = $derived(
+    isEnhancedDocumentWithinBudget
+    && isDocumentFormatRenderEnabled(activeDocumentFormat, documentFeatureSettings)
+  );
+  let isActiveDocumentEditEnabled = $derived(isDocumentFormatEditEnabled(activeDocumentFormat, documentFeatureSettings));
+
   let renderWrapContentWidth = $derived(getEditorWrapContentWidth());
+  const markdownPresentationCache = new MarkdownPresentationCache();
+  let markdownPresentation = $derived(isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown'
+    ? markdownPresentationCache.get(fileContent, lineStartOffsets, latestContentChange) : markdownPresentationCache.clear());
+  let markdownRichBlocks = $derived(markdownPresentation.blocks);
+  let markdownRichByLine = $derived.by(() => {
+    const lines = new Map<number, MarkdownRichBlock>();
+    for (const block of markdownRichBlocks) {
+      for (let line = block.startLine; line <= block.endLine; line += 1) lines.set(line, block);
+    }
+    return lines;
+  });
+  let markdownTableBlocks = $derived(markdownPresentation.tables);
+  let markdownTableByLine = $derived.by(() => {
+    const lines = new Map<number, MarkdownTableBlock>();
+    for (const block of markdownTableBlocks) {
+      for (let line = block.startLine; line <= block.endLine; line += 1) lines.set(line, block);
+    }
+    return lines;
+  });
+  let blockLineHeightOverrides = $derived.by(() => {
+    const heights = new Map<number, number>();
+    for (const block of markdownRichBlocks) {
+      heights.set(block.startLine, measuredLineHeight * Math.min(6, block.endLine - block.startLine + 1));
+      for (let line = block.startLine + 1; line <= block.endLine; line += 1) heights.set(line, 0);
+    }
+    for (const block of markdownTableBlocks) {
+      heights.set(block.startLine, 48 + block.document.rows.length * 31);
+      for (let line = block.startLine + 1; line <= block.endLine; line += 1) heights.set(line, 0);
+    }
+    return heights;
+  });
   let renderedLineMeasurementContext = $derived([
     renderWrapContentWidth.toFixed(3),
     measuredLineHeight.toFixed(3),
@@ -2470,12 +2246,17 @@
     tabSize,
     filePath || fileName,
     JSON.stringify(documentFeatureSettings),
-    JSON.stringify(markdownRenderSettings)
+    JSON.stringify(markdownRenderSettings),
+    markdownTableBlocks.map((block) => `${block.startLine}:${block.endLine}`).join(','),
+    markdownRichBlocks.map((block) => `${block.startLine}:${block.endLine}`).join(','),
+    delimitedTableHighlightHeader,
+    delimitedTableShowRowIndices
   ].join('|'));
   let renderLineLayout = $derived(getEditorLineLayout(editorLineLayoutCache, {
     content: fileContent,
     lineStartOffsets,
     contentWidth: renderWrapContentWidth,
+    tabSize,
     fencedCodeRanges: fencedCodeBlocks,
     wrapEnabled: isRenderMode && isEnhancedDocumentWithinBudget,
     measurements: renderedLineHeightMeasurements,
@@ -2485,24 +2266,31 @@
     measureTextEndWidth: measureEditorTextEndWidth,
     measureTextWidth: measureEditorTextWidth,
     getListContinuationIndent: getMeasuredListContinuationIndent,
+    lineHeightOverrides: blockLineHeightOverrides,
     change: latestContentChange
   }));
-  let shouldShowNativeRenderText = $derived(isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling);
-  let shouldRenderHighlightLayer = $derived(isRenderMode && isEnhancedDocumentWithinBudget && !shouldShowNativeRenderText);
+  let renderEditorScrollHeight = $derived(getEditorScrollHeight({
+    baseBottomPadding: editorBottomPadding,
+    clientHeight,
+    renderedContentHeight: renderLineLayout.totalHeight,
+    topPadding: editorTopPadding
+  }));
+  let shouldRenderHighlightLayer = $derived(isRenderMode && isEnhancedDocumentWithinBudget);
 
-  function syncRenderedLineHeightMeasurements(entries: ResizeObserverEntry[]) {
+  function syncRenderedLineHeightMeasurements() {
+    if (!shouldRenderHighlightLayer || !editorViewportEl) return;
     const hasCurrentMeasurements = renderedLineHeightMeasurements.content === fileContent
       && renderedLineHeightMeasurements.context === renderedLineMeasurementContext;
     let nextHeights = hasCurrentMeasurements ? renderedLineHeightMeasurements.heights : {};
     let hasChanged = false;
 
-    for (const entry of entries) {
-      const lineElement = entry.target as HTMLElement;
+    // 크기가 그대로인 줄도 원문 세대가 바뀌면 다시 기록한다.
+    // 변경 통지만 쓰면 나머지 줄은 추정 높이로 돌아간다.
+    for (const lineElement of editorViewportEl.querySelectorAll<HTMLElement>('.backdrop-line')) {
       const lineIndex = Number(lineElement.dataset.lineIndex);
       if (!Number.isFinite(lineIndex)) continue;
 
-      const observedHeight = entry.borderBoxSize[0]?.blockSize
-        ?? lineElement.getBoundingClientRect().height;
+      const observedHeight = lineElement.getBoundingClientRect().height;
       const height = Math.max(measuredLineHeight, observedHeight);
       const previousHeight = nextHeights[lineIndex];
       if (previousHeight !== undefined && Math.abs(previousHeight - height) <= 0.25) {
@@ -2516,17 +2304,40 @@
       nextHeights[lineIndex] = height;
     }
 
-    if (!hasChanged) return;
+    if (!hasChanged) {
+      // 높이가 같아도 줄바꿈 위치와 글자 좌표는 달라질 수 있다.
+      renderViewportController?.syncCaretAfterLayout();
+      scheduleRenderedHighlights();
+      return;
+    }
+    const viewport = editorViewportEl;
+    const previousScrollTop = viewport.scrollTop;
+    const wasAtBottom = previousScrollTop > 0
+      && Math.abs(viewport.scrollHeight - viewport.clientHeight - previousScrollTop) <= 1;
     renderedLineHeightMeasurements = {
       content: fileContent,
       context: renderedLineMeasurementContext,
       heights: nextHeights
     };
     void tick().then(() => {
-      syncSteadyEditorCaretPosition();
-      scheduleRenderedSelectionHighlight();
+      // 끝에서 새 표시 줄을 실측해 높이가 늘어나도 사용자가 도달한 끝을 유지한다.
+      if (wasAtBottom && editorViewportEl === viewport && viewport.scrollTop >= previousScrollTop) {
+        viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+        updateActiveTab({ scrollTop: viewport.scrollTop });
+      }
+      renderViewportController?.syncCaretAfterLayout();
+      scheduleRenderedHighlights();
     });
   }
+
+  $effect(() => {
+    void [fileContent, renderedLineMeasurementContext, shouldRenderHighlightLayer];
+    let cancelled = false;
+    void tick().then(() => {
+      if (!cancelled) syncRenderedLineHeightMeasurements();
+    });
+    return () => { cancelled = true; };
+  });
 
   function observeRenderedLine(node: HTMLElement) {
     if (!isBrowser) return;
@@ -2552,12 +2363,16 @@
   ));
 
   // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
-  let activeDocumentFormat = $derived(getDocumentFormatForContent(fileContent, filePath || fileName));
-  let isActiveDocumentRenderEnabled = $derived(
-    isEnhancedDocumentWithinBudget
-    && isDocumentFormatRenderEnabled(activeDocumentFormat, documentFeatureSettings)
+  let pairedDelimiterIndex = $derived(
+    isRenderMode && isActiveDocumentRenderEnabled
+      ? createPairedDelimiterIndex(fileContent)
+      : null
   );
-  let isActiveDocumentEditEnabled = $derived(isDocumentFormatEditEnabled(activeDocumentFormat, documentFeatureSettings));
+  let pairedDelimiterHighlight = $derived(
+    isEditorFocused && !hasEditorSelection && pairedDelimiterIndex
+      ? getPairedDelimiterHighlightAtCaret(fileContent, caretOffset, pairedDelimiterIndex)
+      : null
+  );
   let activeDelimitedTableSeparator = $derived<DelimitedTableSeparator | null>(
     activeDocumentFormat.id === 'csv' ? ',' : activeDocumentFormat.id === 'tsv' ? '\t' : null
   );
@@ -2573,6 +2388,7 @@
   let documentDiagnostic = $state<DocumentDiagnostic | null>(null);
   let documentRender = $derived(parseDocumentForRender(fileContent, {
     pathOrName: filePath || fileName,
+    formatId: selectedDocumentFormat?.id,
     tabSize,
     lineStartOffsets,
     lineRange: { startLine, endLine },
@@ -2767,7 +2583,41 @@
     return measureEditorTextEndWidth(text, 0);
   }
 
-  function syncSteadyEditorCaretPosition() {
+  function ensureRenderedCaretLineVisible(offset: number): boolean {
+    if (!editorViewportEl || !isRenderMode || !isEnhancedDocumentWithinBudget) return false;
+    // 복합 블록의 중간 원문 줄은 높이 0이다. 보이는 블록은 실제 글자 사각형으로 스크롤한다.
+    if (getRichRoot(offset)) return false;
+
+    const lineIndex = findLineIndexForOffset(offset);
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const lineEnd = getLineEndOffset(fileContent, lineStart);
+    const lineTop = getRenderLineTop(lineIndex) + editorTopPadding;
+    const lineBottom = lineTop + getRenderLineHeight(lineIndex);
+    const viewportTop = editorViewportEl.scrollTop;
+    const viewportBottom = viewportTop + editorViewportEl.clientHeight;
+    let nextScrollTop = viewportTop;
+
+    if (lineBottom <= viewportTop) {
+      nextScrollTop = Math.max(0, lineTop - editorTopPadding);
+    } else if (lineTop >= viewportBottom) {
+      const bottomPadding = offset >= lineEnd ? editorBottomPadding : 0;
+      nextScrollTop = lineBottom + bottomPadding - editorViewportEl.clientHeight;
+    } else {
+      return false;
+    }
+
+    const maximumScrollTop = Math.max(0, renderEditorScrollHeight - editorViewportEl.clientHeight);
+    nextScrollTop = Math.max(0, Math.min(nextScrollTop, maximumScrollTop));
+    if (Math.abs(nextScrollTop - viewportTop) <= 0.5) return false;
+
+    steadyEditorCaretVisible = false;
+    editorViewportEl.scrollTop = nextScrollTop;
+    updateActiveTab({ scrollTop: nextScrollTop });
+    requestAnimationFrame(() => syncSteadyEditorCaretPosition());
+    return true;
+  }
+
+  function syncSteadyEditorCaretPosition(revealCaret = false) {
     if (!textareaEl) return;
 
     const textareaStart = textareaEl.selectionStart;
@@ -2785,6 +2635,16 @@
       const editorHasFocus = isEditorFocused || document.activeElement === textareaEl;
       steadyEditorCaretVisible = editorHasFocus && isActiveDocumentRenderEnabled && shouldRenderHighlightLayer;
       if (!steadyEditorCaretVisible) return;
+      if (revealCaret && ensureRenderedCaretLineVisible(start)) return;
+
+      const table = markdownTableByLine.get(findLineIndexForOffset(start));
+      if (table) {
+        steadyEditorCaretVisible = false;
+        if (revealCaret && document.activeElement === textareaEl) {
+          void tick().then(() => focusMarkdownTableCell(table, start));
+        }
+        return;
+      }
 
       const caretRect = getRenderedCaretRectForOffset(start);
       if (!caretRect || !editorViewportEl) {
@@ -2793,8 +2653,24 @@
       }
 
       const viewportRect = editorViewportEl.getBoundingClientRect();
+      let nextScrollTop = editorViewportEl.scrollTop;
+      if (caretRect.top < viewportRect.top) {
+        nextScrollTop += caretRect.top - viewportRect.top;
+      } else if (caretRect.bottom > viewportRect.bottom) {
+        nextScrollTop += caretRect.bottom - viewportRect.bottom;
+      }
+      if (revealCaret && Math.abs(nextScrollTop - editorViewportEl.scrollTop) > 0.5) {
+        const maximumScrollTop = Math.max(0, renderEditorScrollHeight - editorViewportEl.clientHeight);
+        const clampedScrollTop = Math.max(0, Math.min(nextScrollTop, maximumScrollTop));
+        steadyEditorCaretVisible = false;
+        editorViewportEl.scrollTop = clampedScrollTop;
+        updateActiveTab({ scrollTop: clampedScrollTop });
+        requestAnimationFrame(() => syncSteadyEditorCaretPosition());
+        return;
+      }
+
       steadyEditorCaretLeft = caretRect.left - viewportRect.left;
-      steadyEditorCaretTop = caretRect.top - viewportRect.top;
+      steadyEditorCaretTop = caretRect.top - viewportRect.top + editorViewportEl.scrollTop;
       steadyEditorCaretHeight = Math.max(1, caretRect.height);
       return;
     }
@@ -2821,7 +2697,7 @@
 
   function keepEditorCaretVisibleDuringEdit() {
     if (isRenderMode) {
-      syncSteadyEditorCaretPosition();
+      renderViewportController?.requestCaretReveal();
       return;
     }
 
@@ -2857,79 +2733,43 @@
     measureLineHeight();
   });
 
-  function beginRenderWrapSettling() {
-    if (!isRenderMode) return;
-    renderWrapSettleGeneration += 1;
-    isRenderWrapSettling = true;
-  }
-
-  function finishRenderWrapSettlingAfterPaint() {
-    if (!isBrowser) {
-      isRenderWrapSettling = false;
-      return;
-    }
-
-    const generation = renderWrapSettleGeneration + 1;
-    renderWrapSettleGeneration = generation;
-
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (renderWrapSettleGeneration === generation) {
-          isRenderWrapSettling = false;
-        }
-      });
-    });
-  }
-
   // 뷰포트 크기 변경 관찰
   $effect(() => {
-    if (!editorViewportEl) return;
+    const viewport = editorViewportEl;
+    if (!viewport || !renderViewportController) return;
 
-    pendingEditorViewportWidth = editorViewportEl.clientWidth || editorViewportWidth;
-    editorViewportWidth = pendingEditorViewportWidth;
-    clientHeight = editorViewportEl.clientHeight || clientHeight;
-    let hasObservedViewportResize = false;
-
-    const flushEditorViewportWidth = () => {
-      editorViewportWidth = pendingEditorViewportWidth;
-      editorViewportResizeTimer = null;
-      finishRenderWrapSettlingAfterPaint();
-    };
+    untrack(() => {
+      liveEditorViewportWidth = viewport.clientWidth || editorViewportWidth;
+      renderViewportController.connectViewport(
+        liveEditorViewportWidth,
+        viewport.clientHeight || clientHeight
+      );
+    });
 
     const observer = new ResizeObserver((entries) => {
-      let widthChanged = false;
+      const entry = entries[entries.length - 1];
+      if (!entry) return;
 
-      for (let entry of entries) {
-        const nextWidth = entry.contentRect.width;
-        clientHeight = entry.contentRect.height;
-        widthChanged = widthChanged || Math.abs(nextWidth - pendingEditorViewportWidth) > 0.5;
-        pendingEditorViewportWidth = nextWidth;
-      }
-
-      if (hasObservedViewportResize && widthChanged) {
-        beginRenderWrapSettling();
-      }
-
-      if (editorViewportResizeTimer) {
-        clearTimeout(editorViewportResizeTimer);
-      }
-
-      editorViewportResizeTimer = setTimeout(flushEditorViewportWidth, editorResizeDebounceMs);
-      hasObservedViewportResize = true;
+      liveEditorViewportWidth = entry.contentRect.width;
+      renderViewportController.observeViewportSize(
+        entry.contentRect.width,
+        entry.contentRect.height
+      );
     });
-    observer.observe(editorViewportEl);
+    observer.observe(viewport);
     return () => {
       observer.disconnect();
-      renderWrapSettleGeneration += 1;
-      isRenderWrapSettling = false;
-      if (editorViewportResizeTimer) {
-        clearTimeout(editorViewportResizeTimer);
-        editorViewportResizeTimer = null;
-      }
+      renderViewportController.disconnectViewport();
     };
   });
 
   function openFile(openedFile: OpenedFile, replaceCleanUntitled = true) {
+    const existingTab = findOpenFileTab(tabs, openedFile.path);
+    if (existingTab) {
+      activateTab(existingTab.id);
+      return;
+    }
+
     const openedTab = createEditorTab({
       filePath: openedFile.path,
       fileName: getFileNameFromPath(openedFile.path),
@@ -2952,8 +2792,8 @@
     try {
       isLoading = true;
       errorMsg = null;
-      syncActiveTabState();
-      const openedFiles = await invoke<OpenedFile[]>("open_file_paths", { paths });
+      captureActiveEditorView();
+      const openedFiles = await desktopFiles.openFilePaths(paths);
       for (const openedFile of openedFiles) {
         openFile(openedFile, false);
       }
@@ -2968,12 +2808,12 @@
     if (isSettingsWindow) return;
 
     try {
-      const openedFiles = await invoke<OpenedFile[]>('take_pending_open_files');
+      const openedFiles = await desktopFiles.takePendingOpenFiles();
       if (!openedFiles.length) return;
 
       isLoading = true;
       errorMsg = null;
-      syncActiveTabState();
+      captureActiveEditorView();
       for (const openedFile of openedFiles) {
         openFile(openedFile, false);
       }
@@ -2997,7 +2837,7 @@
 
     let isDisposed = false;
     let unlistenOpenRequest: UnlistenFn | undefined;
-    getCurrentWindow().listen(openFilesRequestedEvent, schedulePendingInstanceFilesOpen)
+    desktopWindows.current().listen(openFilesRequestedEvent, schedulePendingInstanceFilesOpen)
       .then((unlisten) => {
         if (isDisposed) {
           unlisten();
@@ -3021,7 +2861,7 @@
 
     let isDisposed = false;
     let unlistenDragDrop: UnlistenFn | undefined;
-    getCurrentWindow().onDragDropEvent((event) => {
+    desktopWindows.current().onDragDropEvent((event) => {
       if (event.payload.type === 'drop') {
         void openDroppedFiles(event.payload.paths);
       }
@@ -3046,12 +2886,12 @@
     hasLoadedStartupFiles = true;
 
     try {
-      const startupFiles = await invoke<OpenedFile[]>("get_startup_files");
+      const startupFiles = await desktopFiles.getStartupFiles();
       if (!startupFiles.length) return;
 
       isLoading = true;
       errorMsg = null;
-      syncActiveTabState();
+      captureActiveEditorView();
       for (const startupFile of startupFiles) {
         openFile(startupFile);
       }
@@ -3070,7 +2910,7 @@
   }
 
   async function showMainWindowAfterStartup() {
-    const appWindow = getCurrentWindow();
+    const appWindow = desktopWindows.current();
 
     try {
       await Promise.all([
@@ -3260,13 +3100,13 @@
 
   async function initializeMainWindowAfterStartup() {
     if (getCurrentEditorWindowLabel() !== 'main') {
-      void invoke('setup_editor_window_wheel').catch((error) => {
+      void desktopFiles.setupEditorWindowWheel().catch((error) => {
         console.error('Failed to initialize horizontal wheel for editor window:', error);
       });
     }
     const receivedStartupTransfer = await receiveStartupTabTransfer();
     if (startupTabTransferMetadata && !receivedStartupTransfer) {
-      await getCurrentWindow().destroy().catch(() => {});
+      await desktopWindows.current().destroy().catch(() => {});
       return;
     }
     if (!startupTabTransferMetadata) {
@@ -3294,7 +3134,7 @@
   // 창 제목 동기화 (Rune Effect)
   $effect(() => {
     if (!hasTauriRuntime()) return;
-    const appWindow = getCurrentWindow();
+    const appWindow = desktopWindows.current();
     const title = getCurrentWindowTitle();
     appWindow.setTitle(title).catch(() => {});
   });
@@ -3325,8 +3165,13 @@
 
   function clearRenderedSelectionHighlight() {
     hasRenderedSelectionHighlight = false;
-    if (!supportsRenderedSelectionHighlight) return;
+    if (renderedSelectionDecorations.length) renderedSelectionDecorations = [];
+    if (!supportsRenderedHighlights) return;
     CSS.highlights.delete(renderedSelectionHighlightName);
+  }
+
+  function clearRenderedPairHighlight() {
+    if (renderedPairDecorations.length > 0) renderedPairDecorations = [];
   }
 
   function getTextNodeBoundary(
@@ -3359,10 +3204,41 @@
       : null;
   }
 
+  function getVisibleRenderedRange(rangeStart: number, rangeEnd: number): Range | null {
+    if (!editorViewportEl || rangeEnd <= rangeStart) return null;
+
+    const lineIndex = findLineIndexForOffset(rangeStart);
+    if (lineIndex < startLine || lineIndex > endLine) return null;
+
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
+    const lineEnd = lineStart + lineText.length;
+    if (rangeStart < lineStart || rangeEnd > lineEnd) return null;
+
+    const lineContent = editorViewportEl.querySelector(
+      `.backdrop-line[data-line-index="${lineIndex}"] .line-content`
+    ) as HTMLElement | null;
+    if (!lineContent) return null;
+
+    const startBoundary = getTextNodeBoundary(lineContent, rangeStart - lineStart);
+    const endBoundary = getTextNodeBoundary(lineContent, rangeEnd - lineStart);
+    if (!startBoundary || !endBoundary) return null;
+
+    const range = document.createRange();
+    range.setStart(startBoundary.node, startBoundary.offset);
+    range.setEnd(endBoundary.node, endBoundary.offset);
+    return range;
+  }
+
   function getVisibleRenderedSelectionRanges(selection: EditorSelection): Range[] {
     if (!editorViewportEl || selection.start === selection.end) return [];
 
     const ranges: Range[] = [];
+    for (const block of markdownRichBlocks) {
+      if (selection.end <= block.start || selection.start >= block.end) continue;
+      const root = getRichRoot(block.start);
+      if (root) ranges.push(...getRichSelectionRanges(root, selection.start - block.start, selection.end - block.start));
+    }
     for (let lineIndex = startLine; lineIndex <= endLine; lineIndex += 1) {
       const lineStart = lineStartOffsets[lineIndex] ?? 0;
       const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
@@ -3371,19 +3247,8 @@
       const selectedEnd = Math.min(selection.end, lineEnd);
       if (selectedEnd <= selectedStart) continue;
 
-      const lineContent = editorViewportEl.querySelector(
-        `.backdrop-line[data-line-index="${lineIndex}"] .line-content`
-      ) as HTMLElement | null;
-      if (!lineContent) continue;
-
-      const startBoundary = getTextNodeBoundary(lineContent, selectedStart - lineStart);
-      const endBoundary = getTextNodeBoundary(lineContent, selectedEnd - lineStart);
-      if (!startBoundary || !endBoundary) continue;
-
-      const range = document.createRange();
-      range.setStart(startBoundary.node, startBoundary.offset);
-      range.setEnd(endBoundary.node, endBoundary.offset);
-      ranges.push(range);
+      const range = getVisibleRenderedRange(selectedStart, selectedEnd);
+      if (range) ranges.push(range);
     }
 
     return ranges;
@@ -3391,7 +3256,7 @@
 
   function syncRenderedSelectionHighlight() {
     if (
-      !supportsRenderedSelectionHighlight
+      !editorViewportEl
       || !isRenderMode
       || !shouldRenderHighlightLayer
       || !hasEditorSelection
@@ -3407,19 +3272,75 @@
       return;
     }
 
-    CSS.highlights.set(renderedSelectionHighlightName, new Highlight(...ranges));
+    if (supportsRenderedHighlights) {
+      CSS.highlights.set(renderedSelectionHighlightName, new Highlight(...ranges));
+    } else {
+      const viewport = editorViewportEl.getBoundingClientRect();
+      const selectionScrollTop = editorViewportEl.scrollTop;
+      const seenRects = new Set<string>();
+      renderedSelectionDecorations = ranges.flatMap(range => Array.from(range.getClientRects())
+        .filter(rect => {
+          if (rect.width <= 0 || rect.height <= 0) return false;
+          const key = `${rect.left}:${rect.top}:${rect.width}:${rect.height}`;
+          if (seenRects.has(key)) return false;
+          seenRects.add(key);
+          return true;
+        })
+        .map(rect => ({
+          left: rect.left - viewport.left,
+          top: rect.top - viewport.top + selectionScrollTop,
+          width: rect.width,
+          height: rect.height
+        })));
+    }
     hasRenderedSelectionHighlight = true;
   }
 
-  function scheduleRenderedSelectionHighlight() {
-    if (!supportsRenderedSelectionHighlight) return;
-    if (renderedSelectionHighlightFrame !== null) {
-      cancelAnimationFrame(renderedSelectionHighlightFrame);
+  function syncRenderedPairHighlight() {
+    if (
+      !isRenderMode
+      || !shouldRenderHighlightLayer
+      || !pairedDelimiterHighlight
+      || !editorViewportEl
+    ) {
+      clearRenderedPairHighlight();
+      return;
     }
 
-    renderedSelectionHighlightFrame = requestAnimationFrame(() => {
-      renderedSelectionHighlightFrame = null;
+    const viewportRect = editorViewportEl.getBoundingClientRect();
+    const decorations: RenderPairDecoration[] = [];
+    for (const offset of [pairedDelimiterHighlight.opening, pairedDelimiterHighlight.closing]) {
+      const range = getVisibleRenderedRange(offset, offset + 1);
+      if (!range) continue;
+
+      for (const rect of Array.from(range.getClientRects())) {
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        decorations.push({
+          offset,
+          left: rect.left - viewportRect.left,
+          top: rect.top - viewportRect.top + editorViewportEl.scrollTop,
+          width: rect.width,
+          height: rect.height
+        });
+      }
+    }
+
+    if (decorations.length === 0) {
+      clearRenderedPairHighlight();
+      return;
+    }
+
+    renderedPairDecorations = decorations;
+  }
+
+  function scheduleRenderedHighlights() {
+    if (!isBrowser) return;
+    if (renderedHighlightFrame !== null) return;
+
+    renderedHighlightFrame = requestAnimationFrame(() => {
+      renderedHighlightFrame = null;
       syncRenderedSelectionHighlight();
+      syncRenderedPairHighlight();
     });
   }
 
@@ -3468,11 +3389,7 @@
     const lineIndex = findLineIndexForOffset(offset);
     const lineStart = lineStartOffsets[lineIndex] ?? 0;
     const lineEnd = getLineEndOffset(fileContent, lineStart);
-    const insideFencedCode = fencedCodeBlocks.some((block) => (
-      lineStart >= block.openingLineStart
-      && lineStart <= (block.closingLineStart ?? Number.POSITIVE_INFINITY)
-    ));
-    if (insideFencedCode) return null;
+    if (isLineInsideFencedCodeBlock(lineStart)) return null;
 
     const line = fileContent.slice(lineStart, lineEnd);
     const match = line.match(/^([ \t]{0,3})(#{1,6})([ \t]+)/u);
@@ -3483,6 +3400,15 @@
   }
 
   function getSafeRenderedCaretOffset(offset: number, direction: -1 | 0 | 1): number {
+    const rich = markdownRichByLine.get(findLineIndexForOffset(offset));
+    const root = rich && getRichRoot(offset);
+    if (root && rich) {
+      const boundary = getRichTextBoundary(root, offset - rich.start, direction)
+        ?? getRichTextBoundary(root, offset - rich.start);
+      if (boundary) return rich.start + boundary.source;
+    }
+    if (markdownHeadingReplacementCaret === offset) return offset;
+
     const headingMarker = getMarkdownHeadingMarkerRange(offset);
     if (headingMarker && offset > headingMarker.start && offset < headingMarker.end) {
       return direction < 0 ? headingMarker.start : headingMarker.end;
@@ -3540,31 +3466,42 @@
     });
   }
 
-  function updateCursorPosition() {
+  function syncCursorState(revealCaret: boolean) {
     if (!textareaEl) return;
+    if (!revealCaret) renderViewportController?.cancelCaretReveal();
     const isCollapsed = textareaEl.selectionStart === textareaEl.selectionEnd;
-    let { start: pos } = getTextareaSelectionInContent();
+    let selection = getTextareaSelectionInContent();
+    let pos = selection.start;
     const previousCaretOffset = caretOffset;
-    if (isRenderMode && isActiveDocumentRenderEnabled && isCollapsed) {
+    if (isRenderMode && isActiveDocumentRenderEnabled && isCollapsed && !isComposingEditorText) {
       const safePosition = getSafeRenderedCaretOffset(pos, pendingRenderCaretMovementDirection);
       if (safePosition !== pos) {
         setTextareaSelectionFromContent(safePosition, safePosition);
         pos = safePosition;
+        selection = { start: safePosition, end: safePosition };
       }
     }
     pendingRenderCaretMovementDirection = 0;
     updateEditorSelectionState();
-    caretOffset = pos;
     const lineIndex = findLineIndexForOffset(pos);
-    cursorLine = lineIndex + 1;
-    cursorCol = pos - (lineStartOffsets[lineIndex] ?? 0) + 1;
+    updateActiveTab({
+      selectionStart: selection.start,
+      selectionEnd: selection.end,
+      caretOffset: pos,
+      cursorLine: lineIndex + 1,
+      cursorCol: pos - (lineStartOffsets[lineIndex] ?? 0) + 1
+    });
     updateEditorCaretColor(pos);
-    syncSteadyEditorCaretPosition();
+    syncSteadyEditorCaretPosition(revealCaret);
     if (isRenderMode && isCollapsed && pos !== previousCaretOffset && steadyEditorCaretVisible) {
       restartSteadyEditorCaretBlink();
     }
     setLastEditorSnapshot(getCurrentEditorSnapshot());
-    scheduleRenderedSelectionHighlight();
+    scheduleRenderedHighlights();
+  }
+
+  function updateCursorPosition() {
+    syncCursorState(true);
   }
 
   function updateEditorStateForSnapshot(
@@ -3578,19 +3515,21 @@
     latestContentChange = contentChange;
     textOffsetIndex = suppliedOffsetIndex
       ?? (contentChange ? createTextOffsetIndex(snapshot.content) : getTextOffsetIndex(snapshot.content));
-    fileContent = snapshot.content;
-    fileName = filePath ? fileName : getFirstLineTitle(fileContent);
-    isDirty = getActiveUndoHistory().isDirty();
-    errorMsg = null;
-    reconcileInlineColorPickerState();
-    setLastEditorSnapshot(snapshot);
-    updateTabById(activeTabId, {
-      fileName,
-      fileContent,
-      isDirty,
+    if (snapshot.content.length > 0) isNewDocumentFormatPickerOpen = false;
+    const nextFileName = filePath
+      ? fileName
+      : getUnsavedDocumentTitle(snapshot.content, selectedDocumentFormatId);
+    const nextIsDirty = getActiveUndoHistory().isDirty();
+    updateActiveTab({
+      fileName: nextFileName,
+      fileContent: snapshot.content,
+      isDirty: nextIsDirty,
       selectionStart: snapshot.selection.start,
       selectionEnd: snapshot.selection.end
     });
+    errorMsg = null;
+    reconcileInlineColorPickerState();
+    setLastEditorSnapshot(snapshot);
   }
 
   function applyEditorSnapshot(
@@ -3599,20 +3538,29 @@
     change?: TextChange | null,
     offsetIndex?: TextOffsetIndex
   ) {
+    const editedTabId = activeTabId;
+    const activationGeneration = editorActivationGeneration;
     updateEditorStateForSnapshot(snapshot, change, offsetIndex);
 
     if (selectionAlreadyApplied) {
       updateCursorPosition();
-      syncActiveTabState();
       return;
     }
 
-    requestAnimationFrame(() => {
-      if (!textareaEl) return;
-      textareaEl.focus({ preventScroll: true });
+    // 수동 편집 직후의 다음 키 입력도 새 원문과 캐럿을 사용한다.
+    // 다음 프레임까지 선택 복원을 미루면 빠른 입력이 문서 끝에 적용될 수 있다.
+    if (textareaEl) {
+      textareaEl.value = getTextOffsetIndex(snapshot.content).textareaValue;
       setTextareaSelectionFromContent(snapshot.selection.start, snapshot.selection.end, snapshot.content);
+      textareaEl.focus({ preventScroll: true });
+    }
+    void tick().then(() => {
+      if (
+        !textareaEl
+        || activeTabId !== editedTabId
+        || editorActivationGeneration !== activationGeneration
+      ) return;
       updateCursorPosition();
-      syncActiveTabState();
     });
   }
 
@@ -3628,6 +3576,8 @@
       offsetIndex?: TextOffsetIndex;
     } = {}
   ) {
+    const editedTabId = activeTabId;
+    const activationGeneration = editorActivationGeneration;
     const change = options.change === undefined
       ? getTextChange(before.content, after.content)
       : options.change;
@@ -3645,8 +3595,11 @@
     ) {
       updateEditorStateForSnapshot(after, change, offsetIndex);
       void tick().then(() => {
+        if (
+          activeTabId !== editedTabId
+          || editorActivationGeneration !== activationGeneration
+        ) return;
         updateCursorPosition();
-        syncActiveTabState();
         if (options.keepRenderCaretVisible) {
           keepEditorCaretVisibleDuringEdit();
         } else {
@@ -3714,13 +3667,84 @@
     });
   }
 
+  function updateMarkdownTableSelection(block: MarkdownTableBlock, selection: TableCellSelection) {
+    const cell = block.cells[selection.row]?.[selection.column];
+    if (!cell || !textareaEl) return;
+    const start = cell.offsets[Math.min(selection.start, cell.offsets.length - 1)];
+    const end = cell.offsets[Math.min(selection.end, cell.offsets.length - 1)];
+    setTextareaSelectionFromContent(start, end);
+    updateActiveTab({ selectionStart: start, selectionEnd: end });
+    setLastEditorSnapshot({ content: fileContent, selection: { start, end } });
+    hideSteadyEditorCaret();
+    clearRenderedSelectionHighlight();
+  }
+
+  function focusMarkdownTableCell(block: MarkdownTableBlock, offset: number) {
+    if (document.activeElement !== textareaEl || getTextareaSelectionInContent().start !== offset) return;
+    const position = getMarkdownTableCellAtOffset(block, offset);
+    const cell = editorViewportEl?.querySelector<HTMLTextAreaElement>(
+      `[data-markdown-table="${block.startLine}"] [data-table-row="${position.row}"][data-table-column="${position.column}"]`
+    );
+    if (!cell) return;
+    cell.setSelectionRange(position.offset, position.offset);
+    cell.focus();
+  }
+
+  function commitMarkdownTableEdit(
+    block: MarkdownTableBlock,
+    nextDocument: TableDocument,
+    options: TableDocumentChangeOptions = {}
+  ) {
+    if (!isActiveDocumentEditEnabled) return;
+    const nextContent = replaceMarkdownTable(fileContent, block, nextDocument, options.cell);
+    if (nextContent === fileContent) return;
+    if (!options.mergeKey) closeActiveUndoGroup();
+    const before = getCurrentEditorSnapshot();
+    const offsetIndex = createTextOffsetIndex(nextContent);
+    const nextBlock = parseMarkdownTables(nextContent, offsetIndex.lineStartOffsets, MAX_INTERACTIVE_TABLE_CELLS)
+      .find((candidate) => candidate.start === block.start);
+    const cell = options.cell && nextBlock?.cells[options.cell.row]?.[options.cell.column];
+    const start = cell && options.cell
+      ? cell.offsets[Math.min(options.cell.start, cell.offsets.length - 1)] : block.start;
+    const end = cell && options.cell
+      ? cell.offsets[Math.min(options.cell.end, cell.offsets.length - 1)] : start;
+    commitEditorEdit(before, { content: nextContent, selection: { start, end } }, {
+      mergeKey: options.mergeKey === 'composition' ? 'composition' : options.mergeKey ? `markdown:${block.start}:${options.mergeKey}` : null,
+      selectionAlreadyApplied: true,
+      syncRenderCaretAfterUpdate: true,
+      offsetIndex
+    });
+    if (textareaEl) textareaEl.value = offsetIndex.textareaValue;
+    setTextareaSelectionFromContent(start, end, nextContent);
+  }
+
+  function leaveMarkdownTable(block: MarkdownTableBlock, direction: -1 | 1) {
+    let offset = direction < 0
+      ? (block.startLine > 0 ? getLineEndOffset(fileContent, lineStartOffsets[block.startLine - 1]) : 0)
+      : (lineStartOffsets[block.endLine + 1] ?? fileContent.length);
+    if (direction < 0 && block.start === 0) {
+      commitManualEditorEdit(block.lineEnding + fileContent, { start: 0, end: 0 });
+    } else if (direction > 0 && block.end === fileContent.length) {
+      offset = fileContent.length + block.lineEnding.length;
+      commitManualEditorEdit(fileContent + block.lineEnding, { start: offset, end: offset });
+    } else if (textareaEl) {
+      closeActiveUndoGroup();
+      setTextareaSelectionFromContent(offset, offset);
+      textareaEl.focus({ preventScroll: true });
+      updateCursorPosition();
+    }
+  }
+
   function getNativeInputMergeKey(inputType: string, before: EditorSnapshot, isComposing: boolean): string | null {
-    if (isComposing) return 'composition';
-    if (before.selection.start !== before.selection.end) return null;
-    if (inputType === 'insertText') return 'insert-text';
-    if (inputType === 'deleteContentBackward') return 'delete-backward';
-    if (inputType === 'deleteContentForward') return 'delete-forward';
-    return null;
+    return getEditorInputMergeKey(inputType, before.selection.start !== before.selection.end, isComposing);
+  }
+
+  function getRenderSelectionEdit(content: string, selection: EditorSelection, text: string): EditorSnapshot {
+    if (isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown') {
+      return replaceMarkdownSelection(content, selection, text, markdownPresentation.regions, !markdownRenderSettings.hideHeadingMarkers);
+    }
+    return { content: content.slice(0, selection.start) + text + content.slice(selection.end),
+      selection: { start: selection.start + text.length, end: selection.start + text.length } };
   }
 
   // 변경 감지
@@ -3730,13 +3754,24 @@
     pendingNativeInput = null;
 
     const before = pendingInput?.before ?? lastEditorSnapshot;
-    const inputResult = getSnapshotFromTextareaInput(
+    let inputResult = getSnapshotFromTextareaInput(
       before,
       getTextOffsetIndex(before.content),
       target.value,
       target.selectionStart,
       target.selectionEnd
     );
+    if (!isComposingEditorText && !pendingInput?.isComposing
+      && isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown') {
+      const safe = repairMarkdownInput(before, inputResult.snapshot, inputResult.change,
+        markdownPresentation.regions, !markdownRenderSettings.hideHeadingMarkers);
+      if (safe.content !== inputResult.snapshot.content) {
+        const offsetIndex = createTextOffsetIndex(safe.content);
+        target.value = offsetIndex.textareaValue;
+        setTextareaSelectionFromContent(safe.selection.start, safe.selection.end, safe.content);
+        inputResult = { ...inputResult, snapshot: safe, offsetIndex, change: getTextChange(before.content, safe.content) };
+      }
+    }
     const inputType = pendingInput?.inputType ?? 'input';
     const mergeKey = getNativeInputMergeKey(inputType, before, pendingInput?.isComposing ?? isComposingEditorText);
 
@@ -3749,7 +3784,14 @@
     });
   }
 
+  function syncInputWidthBeforeEditing() {
+    if (!isRenderMode) return;
+    // 방향키와 조합 입력의 기본 동작 전에 투명 입력층의 줄바꿈도 맞춘다.
+    flushSync(() => renderViewportController?.flushPendingViewportWidth());
+  }
+
   function handleEditorBeforeInput(event: InputEvent) {
+    syncInputWidthBeforeEditing();
     if (event.inputType === 'historyUndo') {
       event.preventDefault();
       performUndo();
@@ -3780,12 +3822,27 @@
   }
 
   function handleEditorCompositionStart() {
+    syncInputWidthBeforeEditing();
+    closeActiveUndoGroup();
     isComposingEditorText = true;
     pendingNativeInput = null;
+    const before = getCurrentEditorSnapshot();
+    markdownComposition = isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown'
+      && before.selection.start !== before.selection.end
+      ? { tabId: activeTabId, before, regions: markdownPresentation.regions, showHeadingMarkers: !markdownRenderSettings.hideHeadingMarkers } : null;
   }
 
   function handleEditorCompositionEnd() {
     isComposingEditorText = false;
+    const composition = markdownComposition;
+    markdownComposition = null;
+    if (composition && composition.tabId === activeTabId) {
+      const after = getCurrentEditorSnapshot();
+      const safe = repairMarkdownInput(composition.before, after, getTextChange(composition.before.content, after.content),
+        composition.regions, composition.showHeadingMarkers);
+      if (safe.content !== after.content) commitEditorEdit(after, safe, { mergeKey: 'composition' });
+    }
+    closeActiveUndoGroup();
   }
 
   function handleEditorFocus() {
@@ -3796,21 +3853,123 @@
 
   function handleEditorBlur() {
     isEditorFocused = false;
+    markdownHeadingReplacementCaret = null;
     closeActiveUndoGroup();
     updateEditorSelectionState();
     hideSteadyEditorCaret();
+    scheduleRenderedHighlights();
+  }
+
+  function getRichRoot(offset: number): HTMLElement | null {
+    const block = markdownRichByLine.get(findLineIndexForOffset(offset));
+    if (!block || !editorViewportEl) return null;
+    const root = editorViewportEl.querySelector<HTMLElement>(`[data-markdown-rich="${block.startLine}"]`);
+    // 입력 직후에는 이전 DOM의 위치 정보를 새 원문에 사용하지 않는다.
+    return root?.dataset.richSource === block.source ? root : null;
+  }
+
+  function handleRichPointerDown(event: PointerEvent) {
+    const target = event.target as Element;
+    if (target.closest('button') || ((event.ctrlKey || event.metaKey) && target.closest('a, summary'))) return;
+    handleEditorPointerDown(event);
+  }
+
+  function handleRichDoubleClick(event: MouseEvent) {
+    if ((event.target as Element).closest('button') || event.ctrlKey || event.metaKey) return;
+    handleEditorDoubleClick(event);
+  }
+
+  function handleRichTextKey(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing || isComposingEditorText || event.ctrlKey || event.metaKey || event.altKey) return false;
+    if (!['ArrowLeft', 'ArrowRight', 'Backspace', 'Delete', 'Enter'].includes(event.key)) return false;
+    const selection = getTextareaSelectionInContent();
+    const backward = textareaEl.selectionDirection === 'backward';
+    const offset = backward ? selection.start : selection.end;
+    const block = markdownRichByLine.get(findLineIndexForOffset(offset));
+    const root = block && getRichRoot(offset);
+    if (!block || !root) return false;
+    if (event.key === 'Enter') {
+      const boundary = getRichTextBoundary(root, selection.start - block.start);
+      const inCode = !!boundary?.node.parentElement?.closest('pre');
+      const lineStart = lineStartOffsets[findLineIndexForOffset(selection.start)] ?? 0;
+      const quote = fileContent.slice(lineStart, selection.start).match(/^(?: {0,3}>[ \t]?)+/u)?.[0] ?? '';
+      const newline = fileContent.includes('\r\n') ? '\r\n' : '\n';
+      const inserted = /^\s*</u.test(block.source) && !inCode ? '<br>' : (inCode ? '' : '  ') + newline + quote;
+      event.preventDefault();
+      const edit = getRenderSelectionEdit(fileContent, selection, inserted);
+      commitRenderEditorEdit(edit.content, edit.selection);
+      return true;
+    }
+    const direction = event.key === 'ArrowLeft' || event.key === 'Backspace' ? -1 : 1;
+    const local = offset - block.start;
+    const deleting = event.key === 'Backspace' || event.key === 'Delete';
+    if (deleting && selection.start !== selection.end) return false;
+    if (deleting) {
+      // 문자 참조와 태그 경계에서도 표시 문자 하나의 원문 범위만 지운다.
+      const range = getRichDeletionRange(root, local, direction);
+      if (!range) { event.preventDefault(); return true; }
+      event.preventDefault();
+      const start = block.start + range.start;
+      const end = block.start + range.end;
+      commitManualEditorEdit(fileContent.slice(0, start) + fileContent.slice(end), { start, end: start },
+        { mergeKey: `rich-${event.key}`, keepRenderCaretVisible: true });
+      return true;
+    }
+    const boundary = getRichTextBoundary(root, local + direction, direction);
+    let target = boundary ? block.start + boundary.source
+      : direction < 0 ? Math.max(0, block.start - 1) : Math.min(fileContent.length, block.end + 1);
+    if (!event.shiftKey && selection.start !== selection.end) target = direction < 0 ? selection.start : selection.end;
+    event.preventDefault();
+    setRenderPointerSelection(event.shiftKey ? (backward ? selection.end : selection.start) : target, target);
+    return true;
+  }
+
+  async function editMarkdownRichBlock(block: MarkdownRichBlock) {
+    if (!textareaEl) return;
+    // 미리보기 DOM의 글자 수를 원문 오프셋으로 추측하지 않는다.
+    // 동일한 원문 편집기로 돌아가 정확한 블록 범위를 선택한다.
+    if (isRenderMode) toggleRenderMode();
+    await tick();
+    textareaEl.focus();
+    setTextareaSelectionFromContent(block.start, block.end);
+    updateEditorSelectionState();
+  }
+
+  async function openMarkdownRichLink(href: string) {
+    if (href.startsWith('#')) {
+      const line = findMarkdownAnchorLine(fileContent, href);
+      if (line !== null && editorViewportEl) editorViewportEl.scrollTop = getRenderLineTop(line);
+      return;
+    }
+    if (!/^(https?:\/\/|mailto:)/iu.test(href)) return;
+    try {
+      if (desktopWindows.isAvailable()) await openUrl(href);
+      else window.open(href, '_blank', 'noopener,noreferrer');
+    } catch (error) { console.error('링크를 열 수 없습니다', error); }
+  }
+
+  function handleEditorSelectionChange() {
+    if (!textareaEl) return;
+    if (document.activeElement !== textareaEl) {
+      // 표 셀에서 전달한 원문 선택은 상태 표시만 갱신한다.
+      syncCursorState(false);
+      return;
+    }
+    if (pendingRenderCaretPointerDown && !pendingRenderCaretPointerDown.moved) return;
+
+    const selection = getTextareaSelectionInContent();
+    // 가상화로 DOM이 바뀌어도 selectionchange가 발생할 수 있다.
+    // 원문 선택이 그대로라면 사용자 이동으로 취급해 캐럿까지 스크롤하지 않는다.
+    if (selection.start === activeTab?.selectionStart && selection.end === activeTab?.selectionEnd) return;
+    updateCursorPosition();
   }
 
   $effect(() => {
     if (!isBrowser || !textareaEl) return;
 
     const handleDocumentSelectionChange = () => {
-      if (document.activeElement === textareaEl) {
-        if (pendingRenderCaretPointerDown && !pendingRenderCaretPointerDown.moved) return;
-        updateCursorPosition();
-      }
+      if (document.activeElement === textareaEl) handleEditorSelectionChange();
     };
-
     document.addEventListener('selectionchange', handleDocumentSelectionChange);
     return () => document.removeEventListener('selectionchange', handleDocumentSelectionChange);
   });
@@ -3820,27 +3979,32 @@
       isRenderMode,
       shouldRenderHighlightLayer,
       hasEditorSelection,
+      isEditorFocused,
+      pairedDelimiterHighlight,
       fileContent,
       startLine,
       endLine,
       scrollTop,
       scrollLeft,
       editorViewportWidth,
+      liveEditorViewportWidth,
       measuredLineHeight,
       currentFontSize,
       currentRenderFontFamilyCSS,
       activeColors.renderFontWeight,
       tabSize
     ];
-    scheduleRenderedSelectionHighlight();
+    scheduleRenderedHighlights();
   });
 
   onDestroy(() => {
+    stopRenderDragScroll();
+    renderViewportController?.dispose();
     documentDiagnosticWorkerClient?.dispose();
     renderedLineResizeObserver?.disconnect();
     renderedLineResizeObserver = null;
-    if (renderedSelectionHighlightFrame !== null) {
-      cancelAnimationFrame(renderedSelectionHighlightFrame);
+    if (renderedHighlightFrame !== null) {
+      cancelAnimationFrame(renderedHighlightFrame);
     }
     if (startupUpdateTimer) {
       clearTimeout(startupUpdateTimer);
@@ -3855,6 +4019,7 @@
       availableAppUpdate = null;
     }
     clearRenderedSelectionHighlight();
+    clearRenderedPairHighlight();
   });
 
   function getSelectedLineBounds(text: string, start: number, end: number): { start: number; end: number } {
@@ -3876,6 +4041,10 @@
     transformLine: (line: string, absoluteLineStart: number) => string
   ): string {
     const block = text.slice(lineStart, lineEnd);
+    if (block.length === 0) {
+      return `${text.slice(0, lineStart)}${transformLine('', lineStart)}${text.slice(lineEnd)}`;
+    }
+
     let result = '';
     let cursor = 0;
     const lineRegex = /([^\r\n]*)(\r\n|\n|\r|$)/g;
@@ -3972,12 +4141,8 @@
     return (lineStartOffsets[lineIndex] ?? 0) + layout.prefixLength;
   }
 
-  function getRenderListBodyColumnWidth(layout: RenderListLineLayout): number {
-    return Math.max(1, measureEditorTextWidth(`${layout.marker.indent}${layout.marker.marker}`));
-  }
-
   function getRenderListLineStyle(layout: RenderListLineLayout): string {
-    return `--list-prefix-width: ${getRenderListBodyColumnWidth(layout)}px;`;
+    return `--list-visual-indent: ${layout.visualIndentWidth}px; --list-prefix-width: ${layout.prefixWidth}px;`;
   }
 
   function handleRenderListBoundaryArrowLeft(event: KeyboardEvent): boolean {
@@ -4475,6 +4640,62 @@
     return true;
   }
 
+  function handleRenderCheckboxEnter(event: KeyboardEvent): boolean {
+    if (
+      (activeDocumentFormat.id !== 'plain' && activeDocumentFormat.id !== 'markdown')
+      || !isActiveDocumentRenderEnabled
+      || !isActiveDocumentEditEnabled
+    ) return false;
+    if (!textareaEl || event.isComposing || event.key !== 'Enter') return false;
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const lineStart = getLineStartOffset(fileContent, start);
+    const lineEnd = getLineEndOffset(fileContent, start);
+    if (isLineInsideFencedCodeBlock(lineStart)) return false;
+    const edit = getCheckboxEnterEdit(
+      fileContent.slice(lineStart, lineEnd),
+      start - lineStart,
+      getPreferredNewline(fileContent, start)
+    );
+    if (!edit) return false;
+
+    event.preventDefault();
+    const nextCaret = lineStart + edit.caret;
+    commitRenderEditorEdit(
+      `${fileContent.slice(0, lineStart)}${edit.text}${fileContent.slice(lineEnd)}`,
+      { start: nextCaret, end: nextCaret }
+    );
+    return true;
+  }
+
+  function handleRenderJsonPairEnter(event: KeyboardEvent): boolean {
+    if (
+      (activeDocumentFormat.id !== 'json' && activeDocumentFormat.id !== 'jsonc')
+      || !isActiveDocumentRenderEnabled
+      || !isActiveDocumentEditEnabled
+    ) return false;
+    if (!textareaEl || event.isComposing || event.key !== 'Enter') return false;
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+
+    const edit = getJsonPairEnterEdit(
+      fileContent,
+      start,
+      getPreferredNewline(fileContent, start),
+      editorIndentUnit
+    );
+    if (!edit) return false;
+
+    event.preventDefault();
+    commitRenderEditorEdit(edit.content, { start: edit.caret, end: edit.caret });
+    return true;
+  }
+
   function handleRenderPreserveIndentEnter(event: KeyboardEvent): boolean {
     if (!renderPreserveIndentOnEnter) return false;
     if (!textareaEl || event.isComposing) return false;
@@ -4617,6 +4838,58 @@
     return true;
   }
 
+  function isLineInsideFencedCodeBlock(lineStart: number): boolean {
+    return fencedCodeBlocks.some((block) => (
+      lineStart >= block.openingLineStart
+      && lineStart <= (block.closingLineStart ?? Number.POSITIVE_INFINITY)
+    ));
+  }
+
+  function handleRenderMarkdownHeadingSpace(event: KeyboardEvent): boolean {
+    if (activeDocumentFormat.id !== 'markdown' || !isActiveDocumentRenderEnabled) return false;
+    if (!textareaEl || event.isComposing || event.key !== ' ') return false;
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end || isLineInsideFencedCodeBlock(getLineStartOffset(fileContent, start))) return false;
+
+    const edit = getMarkdownHeadingSpaceEdit(fileContent, start);
+    if (!edit) return false;
+
+    event.preventDefault();
+    markdownHeadingReplacementCaret = null;
+    commitRenderEditorEdit(edit.content, edit.selection);
+    return true;
+  }
+
+  function prepareRenderMarkdownHeadingReplacementMarker(event: KeyboardEvent) {
+    if (
+      event.key !== '#'
+      || event.isComposing
+      || event.ctrlKey
+      || event.altKey
+      || event.metaKey
+      || activeDocumentFormat.id !== 'markdown'
+      || !isActiveDocumentRenderEnabled
+      || !textareaEl
+    ) {
+      markdownHeadingReplacementCaret = null;
+      return;
+    }
+
+    const { start, end } = getTextareaSelectionInContent();
+    if (
+      start !== end
+      || isLineInsideFencedCodeBlock(getLineStartOffset(fileContent, start))
+      || !canInsertMarkdownHeadingReplacementMarker(fileContent, start)
+    ) {
+      markdownHeadingReplacementCaret = null;
+      return;
+    }
+
+    markdownHeadingReplacementCaret = start + 1;
+  }
+
   function handleRenderAutoSubstitutionSpace(event: KeyboardEvent): boolean {
     if (!renderAutoSymbolSubstitution) return false;
     if (!textareaEl || event.isComposing) return false;
@@ -4626,45 +4899,43 @@
     const { start, end } = getTextareaSelectionInContent();
     if (start !== end || start === 0) return false;
 
-    const trigger = renderAutoSubstitutionTriggers.find((candidate) => {
-      const triggerStart = start - candidate.length;
-      if (triggerStart < 0) return false;
-      if (fileContent.slice(triggerStart, start) !== candidate) return false;
-      return triggerStart === 0 || /\s/.test(fileContent[triggerStart - 1]);
-    });
-    if (!trigger) return false;
+    const edit = getArrowSubstitutionSpaceEdit(fileContent, start);
+    if (!edit) return false;
 
     event.preventDefault();
-
-    const triggerStart = start - trigger.length;
-    const substitution = renderAutoSubstitutions[trigger];
-    const nextContent = `${fileContent.slice(0, triggerStart)}${substitution} ${fileContent.slice(end)}`;
-    commitRenderEditorEdit(nextContent, {
-      start: triggerStart + substitution.length + 1,
-      end: triggerStart + substitution.length + 1
-    });
+    commitRenderEditorEdit(edit.content, edit.selection);
 
     return true;
   }
 
-  function handleRenderEditorKeyDown(event: KeyboardEvent) {
-    if (handleRenderListBoundaryArrowLeft(event)) return;
-    if (handleRenderListSoftBreakEnter(event)) return;
-    if (handleRenderExitEmptyListEnter(event)) return;
-    if (handleRenderContinueListEnter(event)) return;
-    if (handleRenderListContinuationEnter(event)) return;
-    if (handleRenderPreserveIndentEnter(event)) return;
-    if (handleRenderListMarkerBackspace(event)) return;
-    if (handleRenderListContinuationBackspace(event)) return;
-    if (handleRenderEmptyIndentedLineBackspace(event)) return;
-    if (handleRenderTabIndent(event)) return;
-    if (handleRenderIndentBackspace(event)) return;
-    if (handleRenderAutoPairBackspace(event)) return;
-    if (handleRenderAutoSubstitutionSpace(event)) return;
-    handleRenderAutoPairInput(event);
-  }
+  const renderEditorCommandPipeline = new EditorCommandPipeline<KeyboardEvent>([
+    { id: 'fenced-code-selection-guard', priority: 10, execute: handleRenderFencedCodeSelectionEdit },
+    { id: 'fenced-code-block-backspace', priority: 20, execute: handleRenderFencedCodeBlockBackspace },
+    { id: 'fenced-code-boundary-deletion-guard', priority: 30, execute: handleRenderFencedCodeBoundaryDeletion },
+    { id: 'auto-pair-backspace', priority: 35, execute: handleRenderAutoPairBackspace },
+    { id: 'rich-text-edit', priority: 37, execute: handleRichTextKey },
+    { id: 'list-boundary-arrow-left', priority: 40, execute: handleRenderListBoundaryArrowLeft },
+    { id: 'list-soft-break-enter', priority: 50, execute: handleRenderListSoftBreakEnter },
+    { id: 'checkbox-enter', priority: 55, execute: handleRenderCheckboxEnter },
+    { id: 'empty-list-exit-enter', priority: 60, execute: handleRenderExitEmptyListEnter },
+    { id: 'continue-list-enter', priority: 70, execute: handleRenderContinueListEnter },
+    { id: 'list-continuation-enter', priority: 80, execute: handleRenderListContinuationEnter },
+    { id: 'json-pair-enter', priority: 85, execute: handleRenderJsonPairEnter },
+    { id: 'preserve-indent-enter', priority: 90, execute: handleRenderPreserveIndentEnter },
+    { id: 'list-marker-backspace', priority: 100, execute: handleRenderListMarkerBackspace },
+    { id: 'list-continuation-backspace', priority: 110, execute: handleRenderListContinuationBackspace },
+    { id: 'empty-indented-line-backspace', priority: 120, execute: handleRenderEmptyIndentedLineBackspace },
+    { id: 'tab-indent', priority: 130, execute: handleRenderTabIndent },
+    { id: 'indent-backspace', priority: 140, execute: handleRenderIndentBackspace },
+    { id: 'markdown-heading-space', priority: 160, execute: handleRenderMarkdownHeadingSpace },
+    { id: 'auto-substitution-space', priority: 170, execute: handleRenderAutoSubstitutionSpace },
+    { id: 'auto-pair-input', priority: 180, execute: handleRenderAutoPairInput }
+  ]);
 
   function handleEditorKeyDown(event: KeyboardEvent) {
+    syncInputWidthBeforeEditing();
+    if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Shift'].includes(event.key)
+      || event.ctrlKey || event.metaKey) prettyPrintCaretAffinity = null;
     if (editorMovementKeys.has(event.key)) {
       pendingRenderCaretMovementDirection = event.key === 'ArrowLeft'
         || event.key === 'ArrowUp'
@@ -4675,11 +4946,13 @@
       closeActiveUndoGroup();
     }
 
-    if (!isRenderMode) return;
-    if (handleRenderFencedCodeSelectionEdit(event)) return;
-    if (handleRenderFencedCodeBlockBackspace(event)) return;
-    if (handleRenderFencedCodeBoundaryDeletion(event)) return;
-    handleRenderEditorKeyDown(event);
+    if (!isRenderMode) {
+      markdownHeadingReplacementCaret = null;
+      return;
+    }
+    if (handlePrettyPrintNavigation(event)) return;
+    prepareRenderMarkdownHeadingReplacementMarker(event);
+    renderEditorCommandPipeline.execute(event);
   }
 
   // 새 탭 생성
@@ -4692,11 +4965,9 @@
     try {
       isLoading = true;
       errorMsg = null;
-      syncActiveTabState();
+      captureActiveEditorView();
       closeAllDropdown();
-      const openedFile = await invoke<OpenedFile | null>("open_file_dialog", {
-        filters: getOpenFileDialogFilters(locale)
-      });
+      const openedFile = await desktopFiles.openFileDialog(getOpenFileDialogFilters(locale));
 
       if (openedFile) {
         openFile(openedFile);
@@ -4722,13 +4993,13 @@
   function handleExit() {
     // onCloseRequested 이벤트 리스너가 저장 여부를 묻고
     // 설정창도 함께 닫아주므로 여기서 바로 close만 호출합니다.
-    getCurrentWindow().close().catch(() => {});
+    desktopWindows.current().close().catch(() => {});
   }
 
   async function handleTitlebarMouseDown(event: MouseEvent) {
     if (!hasTauriRuntime() || event.buttons !== 1 || event.detail > 2) return;
     event.preventDefault();
-    const appWindow = getCurrentWindow();
+    const appWindow = desktopWindows.current();
 
     if (event.detail === 2) {
       await appWindow.toggleMaximize().catch((err) => {
@@ -4746,13 +5017,13 @@
   async function handleWindowMinimize(event: MouseEvent) {
     event.stopPropagation();
     if (!hasTauriRuntime()) return;
-    await getCurrentWindow().minimize().catch(() => {});
+    await desktopWindows.current().minimize().catch(() => {});
   }
 
   async function handleWindowToggleMaximize(event: MouseEvent) {
     event.stopPropagation();
     if (!hasTauriRuntime()) return;
-    await getCurrentWindow().toggleMaximize().catch(() => {});
+    await desktopWindows.current().toggleMaximize().catch(() => {});
     await refreshWindowMaximizedState();
   }
 
@@ -4762,8 +5033,8 @@
   }
 
   // 설정 창 열기 (독립 윈도우)
-  async function centerSettingsWindowOverMain(settingsWindow: WebviewWindow) {
-    const mainWindow = getCurrentWindow();
+  async function centerSettingsWindowOverMain(settingsWindow: DesktopWindowHandle) {
+    const mainWindow = desktopWindows.current();
     const [mainPosition, mainSize, settingsSize] = await Promise.all([
       mainWindow.outerPosition(),
       mainWindow.outerSize(),
@@ -4772,10 +5043,10 @@
 
     const x = Math.round(mainPosition.x + (mainSize.width - settingsSize.width) / 2);
     const y = Math.round(mainPosition.y + (mainSize.height - settingsSize.height) / 2);
-    await settingsWindow.setPosition(new PhysicalPosition(x, y));
+    await settingsWindow.setPosition({ x, y });
   }
 
-  async function centerSettingsWindowOnFirstOpen(settingsWindow: WebviewWindow) {
+  async function centerSettingsWindowOnFirstOpen(settingsWindow: DesktopWindowHandle) {
     if (hasCenteredSettingsWindowThisSession) return;
 
     try {
@@ -4789,7 +5060,7 @@
   async function handleSettingsTrigger(e: MouseEvent) {
     e.stopPropagation();
     try {
-      const win = await WebviewWindow.getByLabel('settings');
+      const win = await desktopWindows.getByLabel('settings');
       if (win) {
         await centerSettingsWindowOnFirstOpen(win);
         await win.show();
@@ -4797,7 +5068,7 @@
       } else {
         const settingsUrl = isBrowser ? window.location.origin + '/' : '/';
 
-        const settingsWin = new WebviewWindow('settings', {
+        const settingsWin = desktopWindows.create('settings', {
           url: settingsUrl,
           title: t('settings.windowTitle'),
           width: 800,
@@ -4827,21 +5098,6 @@
   }
 
   // 메뉴 제어
-  function toggleDropdown(menu: 'file' | 'edit' | 'help', event: MouseEvent) {
-    event.stopPropagation();
-    if (openDropdown === menu) {
-      openDropdown = null;
-    } else {
-      openDropdown = menu;
-    }
-  }
-
-  function handleMouseEnter(menu: 'file' | 'edit' | 'help') {
-    if (openDropdown !== null) {
-      openDropdown = menu;
-    }
-  }
-
   function closeAllDropdown() {
     openDropdown = null;
     isTabOverflowMenuOpen = false;
@@ -4935,12 +5191,8 @@
     const selectedText = fileContent.substring(start, end);
     await navigator.clipboard.writeText(selectedText);
 
-    const before = fileContent.substring(0, start);
-    const after = fileContent.substring(end);
-    commitManualEditorEdit(before + after, {
-      start,
-      end: start
-    });
+    const edit = getRenderSelectionEdit(fileContent, { start, end }, '');
+    commitManualEditorEdit(edit.content, edit.selection);
 
     closeAllDropdown();
   }
@@ -4965,12 +5217,8 @@
         return;
       }
 
-      const before = fileContent.substring(0, start);
-      const after = fileContent.substring(end);
-      commitManualEditorEdit(before + text + after, {
-        start: start + text.length,
-        end: start + text.length
-      });
+      const edit = getRenderSelectionEdit(fileContent, { start, end }, text);
+      commitManualEditorEdit(edit.content, edit.selection);
 
       closeAllDropdown();
     } catch (err) {
@@ -4992,22 +5240,17 @@
       }
     }
 
-    let newCursorPos = start;
-
     if (start === end) {
-      const before = fileContent.substring(0, start);
-      const after = fileContent.substring(start + 1);
-      commitManualEditorEdit(before + after, {
-        start: newCursorPos,
-        end: newCursorPos
-      });
+      const block = isRenderMode && isActiveDocumentRenderEnabled ? markdownRichByLine.get(findLineIndexForOffset(start)) : undefined;
+      const root = block && getRichRoot(start);
+      const range = root && block ? getRichDeletionRange(root, start - block.start, 1) : null;
+      if (root && block && !range) { closeAllDropdown(); return; }
+      const from = range && block ? block.start + range.start : start;
+      const to = range && block ? block.start + range.end : start + 1;
+      commitManualEditorEdit(fileContent.slice(0, from) + fileContent.slice(to), { start: from, end: from });
     } else {
-      const before = fileContent.substring(0, start);
-      const after = fileContent.substring(end);
-      commitManualEditorEdit(before + after, {
-        start: newCursorPos,
-        end: newCursorPos
-      });
+      const edit = getRenderSelectionEdit(fileContent, { start, end }, '');
+      commitManualEditorEdit(edit.content, edit.selection);
     }
 
     closeAllDropdown();
@@ -5031,28 +5274,71 @@
 
     wheelDebug = `dX:${e.deltaX.toFixed(0)}, dY:${e.deltaY.toFixed(0)}, shift:${e.shiftKey}`;
 
+    if (isRenderMode && isEnhancedDocumentWithinBudget) {
+      if (!editorViewportEl) return;
+      const renderScrollDelta = getRenderWheelScrollDelta({
+        deltaMode: e.deltaMode,
+        deltaY: e.deltaY,
+        lineHeight: measuredLineHeight,
+        pageHeight: editorViewportEl.clientHeight,
+        shiftKey: e.shiftKey
+      });
+      if (renderScrollDelta === 0) return;
+
+      editorViewportEl.scrollTop += renderScrollDelta;
+      updateActiveTab({ scrollTop: editorViewportEl.scrollTop });
+      e.preventDefault();
+      return;
+    }
+
     // deltaX가 존재하면 가로 휠 입력이 있는 것임 (macOS 및 일반 브라우저 환경 등)
     if (e.deltaX !== 0) {
       // 일반 브라우저 환경에서 가로 휠 동작 시 스크롤 속도를 보정하기 위해 배율(x3) 적용
       textareaEl.scrollLeft += e.deltaX * 3;
-      scrollLeft = textareaEl.scrollLeft;
+      updateActiveTab({ scrollLeft: textareaEl.scrollLeft });
       e.preventDefault();
     }
     // Shift 키를 누르고 세로 휠을 돌릴 때 가로 스크롤 매핑
     else if (e.shiftKey && e.deltaY !== 0) {
       textareaEl.scrollLeft += e.deltaY;
-      scrollLeft = textareaEl.scrollLeft;
+      updateActiveTab({ scrollLeft: textareaEl.scrollLeft });
       e.preventDefault();
     }
   }
 
   // 스크롤 갱신 핸들러
   function handleScroll(e: Event) {
+    if (isRenderMode && isEnhancedDocumentWithinBudget) return;
     const target = e.target as HTMLTextAreaElement;
-    scrollTop = target.scrollTop;
-    scrollLeft = target.scrollLeft;
+    updateActiveTab({ scrollTop: target.scrollTop, scrollLeft: target.scrollLeft });
     syncSteadyEditorCaretPosition();
   }
+
+  function handleEditorViewportScroll(e: Event) {
+    if (!isRenderMode || !isEnhancedDocumentWithinBudget) return;
+    const target = e.target as HTMLDivElement;
+    updateActiveTab({ scrollTop: target.scrollTop, scrollLeft: target.scrollLeft });
+    syncSteadyEditorCaretPosition();
+  }
+
+  function cancelPendingRenderCaretReveal() {
+    if (isRenderMode && isEnhancedDocumentWithinBudget) {
+      renderViewportController?.cancelCaretReveal();
+    }
+  }
+
+  $effect(() => {
+    const viewport = editorViewportEl;
+    if (!viewport) return;
+
+    viewport.addEventListener('pointerdown', cancelPendingRenderCaretReveal);
+    // 표 셀 위의 휠은 원문 textarea를 거치지 않으므로 뷰포트에서 함께 처리한다.
+    viewport.addEventListener('wheel', cancelPendingRenderCaretReveal, { capture: true, passive: true });
+    return () => {
+      viewport.removeEventListener('pointerdown', cancelPendingRenderCaretReveal);
+      viewport.removeEventListener('wheel', cancelPendingRenderCaretReveal, true);
+    };
+  });
 
   // passive: false 리스너로 등록하여 preventDefault() 오동작 차단 및 Rust 네이티브 가로 휠 이벤트 통합
   $effect(() => {
@@ -5067,14 +5353,17 @@
     // Windows WebView2에서는 가로 휠 조작 시 브라우저 내 wheel 이벤트의 deltaX가 아예 0이 되는 버그가 있습니다.
     // 이를 우회하기 위해 Rust 백엔드에서 WM_MOUSEHWHEEL 메시지를 후킹하여 가로 휠 델타를 직접 수신받습니다.
     const unlistenPromise = hasTauriRuntime()
-      ? getCurrentWindow().listen<number>("native-horizontal-wheel", (event: TauriEvent<number>) => {
+      ? desktopWindows.current().listen<number>("native-horizontal-wheel", (event: TauriEvent<number>) => {
           if (!textareaEl) return;
+          if (isRenderMode && isEnhancedDocumentWithinBudget) return;
           const delta = event.payload;
           // OS의 delta 값(보통 120 또는 -120)을 받아 가로 스크롤에 직접 반영
           // 윈도우 OS의 가로 스크롤 한 틱 단위가 대개 120이므로, 120px 만큼 스크롤됩니다.
           textareaEl.scrollLeft += delta;
-          scrollTop = textareaEl.scrollTop;
-          scrollLeft = textareaEl.scrollLeft;
+          updateActiveTab({
+            scrollTop: textareaEl.scrollTop,
+            scrollLeft: textareaEl.scrollLeft
+          });
 
           // 디버그 텍스트 갱신
           wheelDebug = `Native dX: ${delta}`;
@@ -5170,6 +5459,9 @@
         classes.push('hl-boolean-false');
       }
     }
+    if (token.type === 'checkbox' && token.text === '[V]') {
+      classes.push('hl-checkbox-checked');
+    }
     if (token.type === 'keyword') {
       const normalized = (token.text || '').trim().toLowerCase();
       if (normalized) classes.push(`hl-keyword-${normalized}`);
@@ -5187,7 +5479,7 @@
   let pendingInlineColorReplacement = $state<{ start: number; end: number } | null>(null);
   let pendingInlineColorEditBefore = $state<EditorSnapshot | null>(null);
   let suppressNextEditorClickAfterRenderAction = false;
-  let pendingRenderCaretPointerDown: { pointerId: number; x: number; y: number; moved: boolean } | null = null;
+  let pendingRenderCaretPointerDown: { pointerId: number; x: number; y: number; moved: boolean; anchor?: number } | null = null;
   const parkedInlineColorPickerPosition = { left: -10000, top: -10000 };
   let inlineColorPickerPosition = $state<{ left: number; top: number }>({ ...parkedInlineColorPickerPosition });
   type DataBooleanValue = 'true' | 'false';
@@ -5195,6 +5487,11 @@
     start: number;
     end: number;
     value: DataBooleanValue;
+  }
+  interface RenderCheckboxRange {
+    start: number;
+    end: number;
+    checked: boolean;
   }
 
   function hasWhitespaceWordBoundary(text: string, start: number, end: number): boolean {
@@ -5226,7 +5523,7 @@
     const { start, end } = pendingInlineColorReplacement;
     const currentValue = fileContent.slice(start, end);
 
-    if (!hexColorRegex.test(currentValue)) {
+    if (normalizeHexColor(currentValue) === null) {
       clearInlineColorPickerState();
     }
   }
@@ -5246,7 +5543,7 @@
     for (let start = minStart; start <= maxStart; start++) {
       const end = start + colorCodeLength;
       const value = text.slice(start, end);
-      if (!hexColorRegex.test(value)) continue;
+      if (normalizeHexColor(value) === null) continue;
       if (!hasWhitespaceWordBoundary(text, start, end)) continue;
       if (requireCaretInside ? offset > start && offset < end : offset >= start && offset < end) {
         return { start, end, value };
@@ -5268,7 +5565,7 @@
     const activeColor = isRenderMode && isActiveDocumentRenderEnabled ? findColorCodeAtCaretOffset(fileContent, offset) : null;
     editorCaretColor = activeColor
       ? getReadableTextColor(activeColor.value)
-      : 'var(--color-render-text, var(--text-color))';
+      : 'var(--color-caret, var(--color-render-text))';
   }
 
   function getColorTokenElement(range: { start: number; end: number }) {
@@ -5314,10 +5611,13 @@
     let rect: DOMRect | null = range.getClientRects()[0] ?? null;
     if (rect && rect.height <= 0) rect = null;
 
-    if (!rect && boundary.offset < boundary.node.data.length) {
+    if (boundary.offset < boundary.node.data.length) {
       range.setEnd(boundary.node, boundary.offset + 1);
-      rect = range.getClientRects()[0] ?? null;
-      if (rect && rect.height <= 0) rect = null;
+      const nextRect = range.getClientRects()[0];
+      // 접힌 범위가 자동 줄바꿈 앞줄 끝을 가리키면 실제 다음 글자의 줄 시작을 사용한다.
+      if (nextRect && nextRect.height > 0 && (!rect || nextRect.top > rect.top + 0.5)) {
+        rect = nextRect;
+      }
     } else if (!rect && boundary.offset > 0) {
       range.setStart(boundary.node, boundary.offset - 1);
       range.setEnd(boundary.node, boundary.offset);
@@ -5349,6 +5649,17 @@
     if (!lineContent) return null;
 
     const targetOffset = clamp(offsetInLine, 0, lineText.length);
+    const lineStart = lineStartOffsets[Number(lineElement.dataset.lineIndex)] ?? 0;
+    if (prettyPrintCaretAffinity?.content === fileContent
+      && prettyPrintCaretAffinity.offset === lineStart + targetOffset) {
+      const row = lineContent.querySelector<HTMLElement>(
+        `.pretty-print-row[data-source-start="${prettyPrintCaretAffinity.rowStart}"]`
+      );
+      if (row) {
+        const boundary = getTextNodeBoundary(row, prettyPrintCaretAffinity.offset - prettyPrintCaretAffinity.rowStart);
+        if (boundary) return getRenderedCaretRectAtBoundary(boundary);
+      }
+    }
     const listBody = lineContent.querySelector<HTMLElement>('.list-item-body');
     const listBodyStart = Number(lineContent.dataset.listBodyStart);
     if (listBody && Number.isFinite(listBodyStart)) {
@@ -5388,6 +5699,29 @@
     if (lineText.length === 0) return 0;
     const lineContent = lineElement.querySelector<HTMLElement>('.line-content');
     if (!lineContent) return 0;
+    const prettyRows = lineContent.querySelectorAll<HTMLElement>('.pretty-print-row');
+    if (prettyRows.length) {
+      let closest = prettyRows[0];
+      let distance = Number.POSITIVE_INFINITY;
+      for (const row of prettyRows) {
+        const rect = row.getBoundingClientRect();
+        const current = Math.max(rect.top - clientY, clientY - rect.bottom, 0);
+        if (current < distance) { closest = row; distance = current; }
+      }
+      const rowStart = Number(closest.dataset.sourceStart);
+      const rowEnd = Number(closest.dataset.sourceEnd);
+      const lineStart = lineStartOffsets[Number(lineElement.dataset.lineIndex)] ?? 0;
+      const maximum = rowEnd - rowStart;
+      const native = getNativeCaretTextOffsetAtPoint(closest, maximum, clientX, clientY, textareaEl);
+      const offset = native ?? findClosestRenderedTextOffset(maximum, clientX, clientY,
+        Math.max(liveEditorViewportWidth, 1), offset => {
+          const boundary = getTextNodeBoundary(closest, offset, true);
+          return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
+        });
+      // 같은 원문 경계의 앞줄 끝/뒷줄 시작 중 실제로 선택한 표시 쪽을 기억한다.
+      prettyPrintCaretAffinity = { content: fileContent, offset: rowStart + offset, rowStart };
+      return rowStart - lineStart + offset;
+    }
     const listBody = lineContent.querySelector<HTMLElement>('.list-item-body');
     const listBodyStart = Number(lineContent.dataset.listBodyStart);
     const pointRoot = listBody && Number.isFinite(listBodyStart) ? listBody : lineContent;
@@ -5403,7 +5737,8 @@
       pointRoot,
       pointMaximum,
       clientX,
-      clientY
+      clientY,
+      textareaEl
     );
     if (nativeOffset !== null) return pointOffsetBase + nativeOffset;
 
@@ -5412,7 +5747,7 @@
       pointMaximum,
       clientX,
       clientY,
-      Math.max(editorViewportWidth, 1),
+      Math.max(liveEditorViewportWidth, 1),
       (offset) => {
         const boundary = boundaries.getBoundary(offset);
         return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
@@ -5422,6 +5757,13 @@
 
   function getRenderedCaretRectForOffset(offset: number): DOMRect | null {
     if (!isBrowser || !editorViewportEl || !shouldRenderHighlightLayer) return null;
+
+    const rich = markdownRichByLine.get(findLineIndexForOffset(offset));
+    if (rich) {
+      const root = getRichRoot(offset);
+      const boundary = root && getRichTextBoundary(root, offset - rich.start);
+      return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
+    }
 
     const lineIndex = findLineIndexForOffset(offset);
     if (lineIndex < startLine || lineIndex > endLine) return null;
@@ -5494,6 +5836,12 @@
     const lineIndex = Number(lineElement.dataset.lineIndex);
     if (!Number.isFinite(lineIndex)) return null;
 
+    const rich = markdownRichByLine.get(lineIndex);
+    if (rich) {
+      const offset = getRichTextOffsetAtPoint(lineElement, clientX, clientY, getRenderedCaretRectAtBoundary, textareaEl);
+      return offset === null ? rich.start : rich.start + offset;
+    }
+
     const lineStart = lineStartOffsets[lineIndex] ?? 0;
     const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
     const headingMarkerOffset = getHiddenHeadingMarkerCaretOffsetAtPoint(lineElement, clientX, clientY);
@@ -5503,6 +5851,42 @@
 
     const offsetInLine = getRenderedLineTextOffsetAtPoint(lineElement, lineText, clientX, clientY);
     return lineStart + offsetInLine;
+  }
+
+  let prettyPrintNavigationX: number | null = null;
+  let prettyPrintNavigationOffset: number | null = null;
+  let prettyPrintCaretAffinity: { content: string; offset: number; rowStart: number } | null = null;
+
+  function handlePrettyPrintNavigation(event: KeyboardEvent): boolean {
+    const vertical = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key);
+    if (!vertical) prettyPrintNavigationX = null;
+    if ((!vertical && event.key !== 'Home' && event.key !== 'End')
+      || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || !textareaEl) return false;
+    const selection = getTextareaSelectionInContent();
+    const backward = textareaEl.selectionDirection === 'backward';
+    const offset = backward ? selection.start : selection.end;
+    // 이웃한 원문 줄에서 펼친 줄로 들어갈 때도 입력창의 원래 줄 높이를 쓰지 않는다.
+    if (!markdownRichBlocks.length && !parsedLines.some(line => line.prettyRows || getKeyValueStart(line.tokens) !== null)) return false;
+    const caret = getRenderedCaretRectForOffset(offset);
+    if (!caret || !editorViewportEl) return false;
+    const viewport = editorViewportEl.getBoundingClientRect();
+    const direction = event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1;
+    const step = event.key.startsWith('Page')
+      ? Math.max(measuredLineHeight, editorViewportEl.clientHeight - measuredLineHeight)
+      : measuredLineHeight;
+    if (vertical && (prettyPrintNavigationX === null || prettyPrintNavigationOffset !== offset)) {
+      prettyPrintNavigationX = caret.left;
+    }
+    const target = getRenderedCaretOffsetAtPoint(
+      vertical ? prettyPrintNavigationX ?? caret.left : event.key === 'Home' ? viewport.left : viewport.right,
+      caret.top + caret.height / 2 + (vertical ? direction * step : 0)
+    );
+    if (target === null) return false;
+    event.preventDefault();
+    const anchor = event.shiftKey ? (backward ? selection.end : selection.start) : target;
+    setRenderPointerSelection(anchor, target);
+    prettyPrintNavigationOffset = target;
+    return true;
   }
 
   function findRenderedTokenElementAtPoint(
@@ -5542,6 +5926,37 @@
     if (!value) return null;
 
     return { start, end, value };
+  }
+
+  function findRenderCheckboxAtPoint(clientX: number, clientY: number): RenderCheckboxRange | null {
+    if (!isBrowser || !isRenderMode || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled) return null;
+    const element = findRenderedTokenElementAtPoint(
+      clientX,
+      clientY,
+      '.hl-checkbox[data-token-start][data-token-end]'
+    );
+    if (!element) return null;
+
+    const start = Number(element.dataset.tokenStart);
+    const end = Number(element.dataset.tokenEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+
+    const marker = fileContent.slice(start, end);
+    if (marker !== '[]' && marker !== '[V]') return null;
+    return { start, end, checked: marker === '[V]' };
+  }
+
+  function toggleRenderCheckbox(range: RenderCheckboxRange) {
+    const nextMarker = range.checked ? '[]' : '[V]';
+    const nextContent = `${fileContent.slice(0, range.start)}${nextMarker}${fileContent.slice(range.end)}`;
+    const { start: selectionStart, end: selectionEnd } = getCurrentEditorSelection();
+    const nextSelectionStart = adjustOffsetAfterReplacement(selectionStart, range, nextMarker.length);
+    const nextSelectionEnd = adjustOffsetAfterReplacement(selectionEnd, range, nextMarker.length);
+
+    commitRenderEditorEdit(nextContent, {
+      start: nextSelectionStart,
+      end: nextSelectionEnd
+    });
   }
 
   function toggleDataBoolean(range: DataBooleanRange) {
@@ -5602,20 +6017,24 @@
     const margin = 8;
 
     if (!tokenRect) {
-      setInlineColorPickerPosition({ left: margin, top: margin });
+      setInlineColorPickerPosition({
+        left: margin,
+        top: editorViewportEl.scrollTop + margin
+      });
       return;
     }
 
     const target = {
       left: tokenRect.left - viewportRect.left,
-      top: tokenRect.top - viewportRect.top,
+      top: tokenRect.top - viewportRect.top + editorViewportEl.scrollTop,
       width: tokenRect.width,
       height: tokenRect.height
     };
     const viewportWidth = Math.max(viewportRect.width, pickerAnchorSize + margin * 2);
     const viewportHeight = Math.max(viewportRect.height, pickerAnchorSize + margin * 2);
     const maxLeft = viewportWidth - pickerAnchorSize - margin;
-    const maxTop = viewportHeight - pickerAnchorSize - margin;
+    const minTop = editorViewportEl.scrollTop + margin;
+    const maxTop = editorViewportEl.scrollTop + viewportHeight - pickerAnchorSize - margin;
 
     const candidates = [
       { left: target.left + target.width + gap, top: target.top + target.height / 2 },
@@ -5624,7 +6043,7 @@
       { left: target.left, top: target.top - gap }
     ].map((candidate) => ({
       left: clamp(candidate.left, margin, maxLeft),
-      top: clamp(candidate.top, margin, maxTop)
+      top: clamp(candidate.top, minTop, maxTop)
     }));
 
     const positioned = candidates[0];
@@ -5658,34 +6077,38 @@
   }
 
   function applyInlineColorPreview(start: number, end: number, nextValue: string) {
+    const editedTabId = activeTabId;
+    const activationGeneration = editorActivationGeneration;
     const beforeContent = fileContent;
     const nextContent = `${beforeContent.slice(0, start)}${nextValue}${beforeContent.slice(end)}`;
     latestContentChange = getTextChange(beforeContent, nextContent);
     textOffsetIndex = createTextOffsetIndex(nextContent);
-    fileContent = nextContent;
     inlineColorPickerValue = nextValue;
     pendingInlineColorReplacement = { start, end: start + nextValue.length };
-    fileName = filePath ? fileName : getFirstLineTitle(fileContent);
-    isDirty = true;
+    const nextFileName = filePath ? fileName : getFirstLineTitle(nextContent);
+    updateActiveTab({
+      fileName: nextFileName,
+      fileContent: nextContent,
+      isDirty: true,
+      selectionStart: start,
+      selectionEnd: start + nextValue.length
+    });
     errorMsg = null;
     updateEditorCaretColor(caretOffset);
     setLastEditorSnapshot({
-      content: fileContent,
+      content: nextContent,
       selection: {
         start,
         end: start + nextValue.length
       }
     });
-    updateTabById(activeTabId, {
-      fileName,
-      fileContent,
-      isDirty,
-      selectionStart: start,
-      selectionEnd: start + nextValue.length
-    });
 
     requestAnimationFrame(() => {
-      if (!textareaEl) return;
+      if (
+        !textareaEl
+        || activeTabId !== editedTabId
+        || editorActivationGeneration !== activationGeneration
+      ) return;
       setTextareaSelectionFromContent(start, start + nextValue.length);
       updateCursorPosition();
       if (pendingInlineColorReplacement) {
@@ -5709,8 +6132,13 @@
   }
 
   function handleEditorPointerDown(event: PointerEvent) {
+    // 너비 동기화가 스크롤 위치를 보정하기 전에 사용자가 누른 글자의 원문 위치를 확보한다.
+    const richOffset = (event.target as Element).closest('[data-markdown-rich]')
+      ? getRenderedCaretOffsetAtPoint(event.clientX, event.clientY) : null;
+    syncInputWidthBeforeEditing();
     if (event.button === 0) {
       closeActiveUndoGroup();
+      markdownHeadingReplacementCaret = null;
     }
     if (!isRenderMode || !isActiveDocumentRenderEnabled || !textareaEl || event.button !== 0) return;
 
@@ -5722,6 +6150,17 @@
     };
 
     if (!isActiveDocumentEditEnabled) return;
+
+    const checkboxRange = findRenderCheckboxAtPoint(event.clientX, event.clientY);
+    if (checkboxRange) {
+      pendingRenderCaretPointerDown = null;
+      event.preventDefault();
+      suppressNextEditorClickAfterRenderAction = true;
+      textareaEl.focus({ preventScroll: true });
+      clearInlineColorPickerState();
+      toggleRenderCheckbox(checkboxRange);
+      return;
+    }
 
     const booleanRange = findDataBooleanAtPoint(event.clientX, event.clientY);
     if (booleanRange) {
@@ -5735,7 +6174,20 @@
     }
 
     const range = findColorCodeAtPoint(event.clientX, event.clientY);
-    if (!range) return;
+    if (!range) {
+      const offset = richOffset ?? getRenderedCaretOffsetAtPoint(event.clientX, event.clientY);
+      if (offset === null) return;
+      event.preventDefault();
+      const selection = getCurrentEditorSelection();
+      const anchor = event.shiftKey
+        ? (textareaEl.selectionDirection === 'backward' ? selection.end : selection.start)
+        : offset;
+      pendingRenderCaretPointerDown.anchor = anchor;
+      textareaEl.focus({ preventScroll: true });
+      textareaEl.setPointerCapture(event.pointerId);
+      setRenderPointerSelection(anchor, offset);
+      return;
+    }
 
     pendingRenderCaretPointerDown = null;
     event.preventDefault();
@@ -5760,7 +6212,61 @@
     return true;
   }
 
+  function setRenderPointerSelection(anchor: number, offset: number) {
+    if (!textareaEl) return;
+    setTextareaSelectionFromContent(Math.min(anchor, offset), Math.max(anchor, offset));
+    textareaEl.setSelectionRange(textareaEl.selectionStart, textareaEl.selectionEnd,
+      offset < anchor ? 'backward' : 'forward');
+    updateCursorPosition();
+    scheduleRenderedHighlights();
+  }
+
+  let renderDragScrollFrame: number | null = null;
+
+  function stopRenderDragScroll() {
+    if (renderDragScrollFrame !== null) cancelAnimationFrame(renderDragScrollFrame);
+    renderDragScrollFrame = null;
+  }
+
+  function handleEditorPointerCancel() {
+    stopRenderDragScroll();
+    pendingRenderCaretPointerDown = null;
+  }
+
+  function continueRenderPointerSelection() {
+    renderDragScrollFrame = null;
+    const drag = pendingRenderCaretPointerDown;
+    if (drag?.anchor === undefined || !editorViewportEl) return;
+    const viewport = editorViewportEl.getBoundingClientRect();
+    const delta = drag.y < viewport.top ? drag.y - viewport.top
+      : drag.y > viewport.bottom ? drag.y - viewport.bottom : 0;
+    if (delta !== 0) editorViewportEl.scrollTop += Math.sign(delta) * Math.min(30, Math.abs(delta));
+    const offset = getRenderedCaretOffsetAtPoint(drag.x, clamp(drag.y, viewport.top + 1, viewport.bottom - 1));
+    if (offset !== null) setRenderPointerSelection(drag.anchor, offset);
+    if (delta !== 0) renderDragScrollFrame = requestAnimationFrame(continueRenderPointerSelection);
+  }
+
+  function handleEditorDoubleClick(event: MouseEvent) {
+    if (!shouldRenderHighlightLayer || !textareaEl) return;
+    const offset = getRenderedCaretOffsetAtPoint(event.clientX, event.clientY);
+    if (offset === null) return;
+    event.preventDefault();
+    // 단어 선택도 투명 입력창이 아닌 보이는 글자에서 시작한다.
+    const lineIndex = findLineIndexForOffset(offset);
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
+    for (const segment of segmenter.segment(lineText)) {
+      const start = lineStart + segment.index;
+      if (offset >= start && offset < start + segment.segment.length) {
+        setRenderPointerSelection(start, start + segment.segment.length);
+        break;
+      }
+    }
+  }
+
   function handleEditorPointerUp(event: PointerEvent) {
+    stopRenderDragScroll();
     if (!isRenderMode || !isActiveDocumentRenderEnabled || !textareaEl || event.button !== 0) return;
     if (suppressNextEditorClickAfterRenderAction) {
       pendingRenderCaretPointerDown = null;
@@ -5770,6 +6276,17 @@
     const pointerDown = pendingRenderCaretPointerDown;
     if (!pointerDown || pointerDown.pointerId !== event.pointerId) return;
 
+    if (pointerDown.anchor !== undefined) {
+      if (pointerDown.moved) {
+        const offset = getRenderedCaretOffsetAtPoint(event.clientX, event.clientY);
+        if (offset !== null) setRenderPointerSelection(pointerDown.anchor, offset);
+      }
+      pendingRenderCaretPointerDown = null;
+      suppressNextEditorClickAfterRenderAction = true;
+      if (textareaEl.hasPointerCapture(event.pointerId)) textareaEl.releasePointerCapture(event.pointerId);
+      return;
+    }
+
     const movedDistance = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
     pointerDown.moved = movedDistance > 4;
     if (pointerDown.moved) {
@@ -5778,9 +6295,19 @@
     }
   }
 
-  function trackRenderCaretPointerMove(event: MouseEvent) {
+  function trackRenderCaretPointerMove(event: PointerEvent) {
     const pointerDown = pendingRenderCaretPointerDown;
-    if (!pointerDown || pointerDown.moved || event.buttons !== 1) return;
+    if (!pointerDown || event.buttons !== 1) return;
+    if (pointerDown.anchor !== undefined) {
+      pointerDown.moved ||= Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 4;
+      if (!pointerDown.moved) return;
+      pointerDown.x = event.clientX;
+      pointerDown.y = event.clientY;
+      stopRenderDragScroll();
+      continueRenderPointerSelection();
+      return;
+    }
+    if (pointerDown.moved) return;
 
     const movedDistance = Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y);
     if (movedDistance <= 4) return;
@@ -5833,13 +6360,13 @@
   }
 
   function handleEditorMouseMove(event: MouseEvent) {
-    trackRenderCaretPointerMove(event);
-
     if (!isRenderMode || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled) {
       editorCursorStyle = 'text';
       return;
     }
-    editorCursorStyle = findDataBooleanAtPoint(event.clientX, event.clientY) || findColorCodeAtPoint(event.clientX, event.clientY)
+    editorCursorStyle = findRenderCheckboxAtPoint(event.clientX, event.clientY)
+      || findDataBooleanAtPoint(event.clientX, event.clientY)
+      || findColorCodeAtPoint(event.clientX, event.clientY)
       ? 'pointer'
       : 'text';
   }
@@ -5875,659 +6402,85 @@
     editorCursorStyle = 'text';
     hideSteadyEditorCaret();
     clearInlineColorPickerState();
-    requestAnimationFrame(() => updateCursorPosition());
+    requestAnimationFrame(() => {
+      if (isRenderMode && isEnhancedDocumentWithinBudget) {
+        if (editorViewportEl) editorViewportEl.scrollTop = scrollTop;
+        if (textareaEl) textareaEl.scrollTop = 0;
+      } else if (textareaEl) {
+        textareaEl.scrollTop = scrollTop;
+      }
+      syncCursorState(false);
+    });
   }
+
+  function toggleThemeMode() {
+    if (themeMode === 'system') {
+      themeMode = systemIsDark ? 'light' : 'dark';
+    } else {
+      themeMode = themeMode === 'light' ? 'dark' : 'light';
+    }
+  }
+
+  const editorMenuCommands = {
+    newFile: handleNewFile,
+    openFile: handleOpenFile,
+    saveFile: handleSaveFile,
+    saveFileAs: handleSaveAsFile,
+    exit: handleExit,
+    undo: handleUndo,
+    redo: handleRedo,
+    cut: handleCut,
+    copy: handleCopy,
+    paste: handlePaste,
+    deleteSelection: handleDelete,
+    selectAll: handleSelectAll,
+    insertDateTime,
+    checkForUpdates: handleManualUpdateCheck,
+    installUpdate: handleAvailableUpdateInstall,
+    openAbout: handleAboutDialogOpen,
+    toggleNewDocumentFormatPicker,
+    toggleTheme: toggleThemeMode,
+    toggleRenderMode,
+    openSettings: handleSettingsTrigger
+  };
 </script>
 
 <svelte:window onkeydown={handleKeyDown} onclick={closeAllDropdown} />
 
 {#snippet renderToken(token: Token)}{#if token.children && token.children.length > 0}<span class={getTokenClass(token)}>{#each token.children as child}{@render renderToken(child)}{/each}</span>{:else if token.type === 'boolean'}<span class={getTokenClass(token)} data-token-start={token.start ?? null} data-token-end={token.end ?? null} data-boolean-start={token.start} data-boolean-end={token.end} data-boolean-value={token.text}>{token.text || ''}</span>{:else if token.type === 'color'}<span class={getTokenClass(token)} style={getColorCodeStyle(token.text || '')} data-token-start={token.start ?? null} data-token-end={token.end ?? null} data-color-start={token.start} data-color-end={token.end}>{token.text || ''}</span>{:else}<span class={getTokenClass(token)} data-token-start={token.start ?? null} data-token-end={token.end ?? null}>{token.text || ''}</span>{/if}{/snippet}
 
-{#snippet colorSettingRow(id: string, labelText: string, colors: ThemeColors, field: ColorField)}
-  {@const pickerId = `${id}-picker`}
-  <div class="settings-row color-row">
-    <label for={id}>{labelText}</label>
-    <div class="color-picker-wrapper">
-      <input
-        id={pickerId}
-        class="color-picker-native"
-        type="color"
-        value={getColorInputValue(colors[field])}
-        oninput={(event) => handleColorInput(colors, field, event)}
-        tabindex="-1"
-        aria-hidden="true"
-      />
-      <input
-        id={id}
-        type="text"
-        readonly
-        class="color-text-input"
-        value={formatColorCode(colors[field])}
-        style={getColorCodeStyle(colors[field])}
-        onpointerdown={(event) => handleColorTextPointerDown(pickerId, event)}
-        onkeydown={(event) => handleColorCodeKeydown(pickerId, event)}
-        aria-label={labelText}
-      />
-    </div>
-  </div>
-{/snippet}
-
 {#if isSettingsWindow}
-  <div class="settings-window-container" style="
-    --color-hl-code-bg: {activeColors.codeBg};
-    --color-hl-code-text: {activeColors.codeText};
-    --color-hl-key-strong: {activeColors.keyStrong};
-    --color-hl-key-medium: {activeColors.keyMedium};
-    --color-hl-key-light: {activeColors.keyLight};
-    --color-hl-string: {activeColors.string};
-    --color-hl-number: {activeColors.number};
-    --color-hl-list-marker: {activeColors.listMarker};
-    --color-hl-comment: {activeColors.comment};
-    --color-indent-guide: {activeColors.guide};
-    --color-render-bg: {activeColors.renderBg};
-    --color-render-text: {activeColors.renderText};
-    --font-render-family: {currentRenderFontFamilyCSS};
-    --font-render-weight: {activeColors.renderFontWeight};
-    --color-hl-paren: {activeColors.paren};
-    --color-hl-bracket: {activeColors.bracket};
-    --color-hl-brace: {activeColors.brace};
-  ">
-    <div class="settings-body window-mode">
-      <!-- 좌측 네비게이션 메뉴 -->
-      <aside class="settings-sidebar" aria-label={t('settings.sidebarLabel')}>
-        <button
-          type="button"
-          class="sidebar-item"
-          class:active={activeSettingsView === 'general'}
-          onclick={() => activeSettingsView = 'general'}
-        >
-          <Settings size={16} class="tab-icon"/> {t('settings.general')}
-        </button>
-
-        <div class="sidebar-tree-group">
-          <button
-            type="button"
-            class="sidebar-group"
-            aria-expanded={isSourceSettingsExpanded}
-            onclick={() => isSourceSettingsExpanded = !isSourceSettingsExpanded}
-          >
-            <ChevronDown size={14} class={isSourceSettingsExpanded ? 'tree-chevron' : 'tree-chevron collapsed'}/>
-            <FileCode2 size={16} class="tab-icon"/> {t('settings.sourceMode')}
-          </button>
-          {#if isSourceSettingsExpanded}
-            <button
-              type="button"
-              class="sidebar-item tree-child"
-              class:active={activeSettingsView === 'sourceAppearance'}
-              onclick={() => activeSettingsView = 'sourceAppearance'}
-            >
-              <PaintRoller size={15} class="tab-icon"/> {t('settings.appearance')}
-            </button>
-          {/if}
-        </div>
-
-        <div class="sidebar-tree-group">
-          <button
-            type="button"
-            class="sidebar-group"
-            aria-expanded={isRenderSettingsExpanded}
-            onclick={() => isRenderSettingsExpanded = !isRenderSettingsExpanded}
-          >
-            <ChevronDown size={14} class={isRenderSettingsExpanded ? 'tree-chevron' : 'tree-chevron collapsed'}/>
-            <PaintRoller size={16} class="tab-icon"/> {t('settings.renderMode')}
-          </button>
-          {#if isRenderSettingsExpanded}
-            <button
-              type="button"
-              class="sidebar-item tree-child"
-              class:active={activeSettingsView === 'renderAppearance'}
-              onclick={() => activeSettingsView = 'renderAppearance'}
-            >
-              <PaintRoller size={15} class="tab-icon"/> {t('settings.appearance')}
-            </button>
-            <button
-              type="button"
-              class="sidebar-item tree-child"
-              class:active={activeSettingsView === 'renderEditing'}
-              onclick={() => activeSettingsView = 'renderEditing'}
-            >
-              <PenLine size={15} class="tab-icon"/> {t('settings.editing')}
-            </button>
-            {#each configurableDocumentFormatCategories as category}
-              <div class="sidebar-tree-group format-category-group">
-                <button
-                  type="button"
-                  class="sidebar-item tree-child sidebar-category"
-                  class:active={activeSettingsView === getDocumentFormatCategorySettingsView(category.id)}
-                  aria-expanded={expandedFormatCategories[category.id]}
-                  onclick={() => selectDocumentFormatCategory(category.id)}
-                >
-                  <ChevronDown
-                    size={12}
-                    class={expandedFormatCategories[category.id] ? 'tree-chevron' : 'tree-chevron collapsed'}
-                  />
-                  {#if category.id === 'document'}
-                    <FileText size={15} class="tab-icon"/>
-                  {:else if category.id === 'structured'}
-                    <Braces size={15} class="tab-icon"/>
-                  {:else if category.id === 'table'}
-                    <Table2 size={15} class="tab-icon"/>
-                  {:else if category.id === 'subtitle'}
-                    <FileText size={15} class="tab-icon"/>
-                  {:else}
-                    <Code2 size={15} class="tab-icon"/>
-                  {/if}
-                  {t(category.labelKey)}
-                </button>
-                {#if expandedFormatCategories[category.id]}
-                  {#each getDocumentFormatsForCategory(category) as format}
-                    <button
-                      type="button"
-                      class="sidebar-item tree-grandchild"
-                      class:active={activeSettingsView === getDocumentFormatSettingsView(format.id)}
-                      onclick={() => activeSettingsView = getDocumentFormatSettingsView(format.id)}
-                    >
-                      <FileCode2 size={14} class="tab-icon"/> {t(format.labelKey)}
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {/each}
-          {/if}
-        </div>
-      </aside>
-
-      <!-- 우측 메인 콘텐츠 영역 -->
-      <div class="settings-main">
-        {#if activeSettingsView === 'general'}
-          <div class="settings-section">
-            <h4 class="section-title">{t('settings.languageSection')}</h4>
-            <div class="settings-row">
-              <label for="language-select-window">{t('settings.languageLabel')}</label>
-              <select id="language-select-window" bind:value={languagePreference} class="tab-size-select language-select">
-                <option value="system">{t('settings.systemLanguage', { language: getLanguageNativeName(systemLocale) })}</option>
-                {#each supportedLanguages as language}
-                  <option value={language.code}>{language.nativeName}</option>
-                {/each}
-              </select>
-            </div>
-            <p class="settings-category-note">{t('settings.languageDescription')}</p>
-          </div>
-          <div class="settings-section">
-            <h4 class="section-title">{t('settings.transfer.title')}</h4>
-            <p class="settings-category-note">{t('settings.transfer.description')}</p>
-            <div class="settings-transfer-actions">
-              <button
-                type="button"
-                class="settings-transfer-button"
-                disabled={isSettingsTransferBusy}
-                onclick={() => void handleImportSettings()}
-              >
-                <Upload size={15} aria-hidden="true"/>
-                {t('settings.transfer.import')}
-              </button>
-              <button
-                type="button"
-                class="settings-transfer-button"
-                disabled={isSettingsTransferBusy}
-                onclick={() => void handleExportSettings()}
-              >
-                <Download size={15} aria-hidden="true"/>
-                {t('settings.transfer.export')}
-              </button>
-            </div>
-            {#if settingsTransferStatus}
-              <p
-                class="settings-transfer-status"
-                class:warning={settingsTransferStatus.kind === 'warning'}
-                class:error={settingsTransferStatus.kind === 'error'}
-                role={settingsTransferStatus.kind === 'error' ? 'alert' : 'status'}
-                aria-live="polite"
-              >
-                {settingsTransferStatus.message}
-              </p>
-            {/if}
-          </div>
-        {:else if activeSettingsView === 'sourceAppearance'}
-          <div class="settings-section">
-            <h4 class="section-title">{t('settings.fontSettings')}</h4>
-            <div class="settings-row">
-              <label for="source-font-size-input-window">{t('settings.fontSize')}</label>
-              <div class="size-control">
-                <input
-                  id="source-font-size-input-window"
-                  type="number"
-                  min="6"
-                  max="72"
-                  bind:value={sourceFontSize}
-                  class="font-size-num"
-                />
-                <button class="adjust-btn" onclick={() => sourceFontSize = Math.max(6, sourceFontSize - 1)}>-</button>
-                <button class="adjust-btn" onclick={() => sourceFontSize = Math.min(72, sourceFontSize + 1)}>+</button>
-              </div>
-            </div>
-          </div>
-        {:else if activeSettingsView === 'renderAppearance'}
-          <div class="settings-section">
-            <h4 class="section-title">{t('settings.displayAndFont')}</h4>
-            <div class="settings-row">
-              <label for="render-font-size-input-window">{t('settings.fontSize')}</label>
-              <div class="size-control">
-                <input
-                  id="render-font-size-input-window"
-                  type="number"
-                  min="6"
-                  max="72"
-                  bind:value={renderFontSize}
-                  class="font-size-num"
-                />
-                <button class="adjust-btn" onclick={() => renderFontSize = Math.max(6, renderFontSize - 1)}>-</button>
-                <button class="adjust-btn" onclick={() => renderFontSize = Math.min(72, renderFontSize + 1)}>+</button>
-              </div>
-            </div>
-
-            <div class="settings-row">
-              <label for="tab-size-select-window">{t('settings.indentWidth')}</label>
-              <select id="tab-size-select-window" bind:value={tabSize} class="tab-size-select">
-                <option value={2}>2</option>
-                <option value={4}>4</option>
-                <option value={8}>8</option>
-              </select>
-            </div>
-
-            <div class="settings-row">
-              <label for="render-font-family-select-window">{t('settings.renderFont')}</label>
-              <select id="render-font-family-select-window" bind:value={renderFontFamily} class="tab-size-select" style="width: 195px; text-align-last: center;">
-                <optgroup label={t('settings.fontGroupDefault')}>
-                  <option value="nanum-gothic">나눔고딕</option>
-                  <option value="notepad">{t('settings.defaultFont')}</option>
-                </optgroup>
-                <optgroup label={t('settings.fontGroupMonospace')}>
-                  <option value="jetbrains-mono">JetBrains Mono</option>
-                  <option value="d2coding">D2Coding</option>
-                  <option value="nanum-gothic-coding">나눔고딕 코딩</option>
-                  <option value="fira-code">Fira Code</option>
-                  <option value="roboto-mono">Roboto Mono</option>
-                  <option value="cascadia-mono">Cascadia Mono</option>
-                  <option value="consolas">Consolas</option>
-                </optgroup>
-              </select>
-            </div>
-          </div>
-
-          <div class="settings-section">
-            <div class="settings-row" style="margin-bottom: 0.75rem;">
-              <h4 class="section-title">{t('settings.themeColors')}</h4>
-
-              <div class="theme-edit-toggle">
-                <button
-                  class="theme-toggle-btn"
-                  class:active={editingTheme === 'light'}
-                  onclick={() => editingTheme = 'light'}
-                >
-                  <Sun size={16} class="tab-icon"/> {t('settings.themeLight')}
-                </button>
-                <button
-                  class="theme-toggle-btn"
-                  class:active={editingTheme === 'dark'}
-                  onclick={() => editingTheme = 'dark'}
-                >
-                  <Moon size={16} class="tab-icon"/> {t('settings.themeDark')}
-                </button>
-              </div>
-            </div>
-
-            {#if editingTheme === 'dark'}
-              {@render colorSettingRow('color-render-bg-window-dark', t('settings.color.renderBackground'), darkColors, 'renderBg')}
-              {@render colorSettingRow('color-render-text-window-dark', t('settings.color.renderText'), darkColors, 'renderText')}
-
-              <div class="settings-row color-row">
-                <label for="render-font-weight-window-dark">{t('settings.fontWeight')}</label>
-                <select id="render-font-weight-window-dark" bind:value={darkColors.renderFontWeight} class="tab-size-select" style="width: 140px;">
-                  <option value="300">{t('settings.weightLight')}</option>
-                  <option value="400">{t('settings.weightNormal')}</option>
-                  <option value="500">{t('settings.weightMedium')}</option>
-                  <option value="600">{t('settings.weightSemiBold')}</option>
-                  <option value="700">{t('settings.weightBold')}</option>
-                </select>
-              </div>
-
-              {@render colorSettingRow('color-hl-code-bg-window-dark', t('settings.color.codeBackground'), darkColors, 'codeBg')}
-              {@render colorSettingRow('color-hl-code-text-window-dark', t('settings.color.codeText'), darkColors, 'codeText')}
-              {@render colorSettingRow('color-hl-key-strong-window-dark', t('settings.color.keyStrong'), darkColors, 'keyStrong')}
-              {@render colorSettingRow('color-hl-key-medium-window-dark', t('settings.color.keyMedium'), darkColors, 'keyMedium')}
-              {@render colorSettingRow('color-hl-key-light-window-dark', t('settings.color.keyLight'), darkColors, 'keyLight')}
-              {@render colorSettingRow('color-hl-string-window-dark', t('settings.color.string'), darkColors, 'string')}
-              {@render colorSettingRow('color-hl-number-window-dark', t('settings.color.number'), darkColors, 'number')}
-              {@render colorSettingRow('color-hl-list-marker-window-dark', t('settings.color.listMarker'), darkColors, 'listMarker')}
-              {@render colorSettingRow('color-hl-comment-window-dark', t('settings.color.comment'), darkColors, 'comment')}
-              {@render colorSettingRow('color-hl-paren-window-dark', t('settings.color.parenthesis'), darkColors, 'paren')}
-              {@render colorSettingRow('color-hl-bracket-window-dark', t('settings.color.bracket'), darkColors, 'bracket')}
-              {@render colorSettingRow('color-hl-brace-window-dark', t('settings.color.brace'), darkColors, 'brace')}
-              {@render colorSettingRow('color-indent-guide-window-dark', t('settings.color.indentGuide'), darkColors, 'guide')}
-            {:else}
-              {@render colorSettingRow('color-render-bg-window-light', t('settings.color.renderBackground'), lightColors, 'renderBg')}
-              {@render colorSettingRow('color-render-text-window-light', t('settings.color.renderText'), lightColors, 'renderText')}
-
-              <div class="settings-row color-row">
-                <label for="render-font-weight-window-light">{t('settings.fontWeight')}</label>
-                <select id="render-font-weight-window-light" bind:value={lightColors.renderFontWeight} class="tab-size-select" style="width: 140px;">
-                  <option value="300">{t('settings.weightLight')}</option>
-                  <option value="400">{t('settings.weightNormal')}</option>
-                  <option value="500">{t('settings.weightMedium')}</option>
-                  <option value="600">{t('settings.weightSemiBold')}</option>
-                  <option value="700">{t('settings.weightBold')}</option>
-                </select>
-              </div>
-
-              {@render colorSettingRow('color-hl-code-bg-window-light', t('settings.color.codeBackground'), lightColors, 'codeBg')}
-              {@render colorSettingRow('color-hl-code-text-window-light', t('settings.color.codeText'), lightColors, 'codeText')}
-              {@render colorSettingRow('color-hl-key-strong-window-light', t('settings.color.keyStrong'), lightColors, 'keyStrong')}
-              {@render colorSettingRow('color-hl-key-medium-window-light', t('settings.color.keyMedium'), lightColors, 'keyMedium')}
-              {@render colorSettingRow('color-hl-key-light-window-light', t('settings.color.keyLight'), lightColors, 'keyLight')}
-              {@render colorSettingRow('color-hl-string-window-light', t('settings.color.string'), lightColors, 'string')}
-              {@render colorSettingRow('color-hl-number-window-light', t('settings.color.number'), lightColors, 'number')}
-              {@render colorSettingRow('color-hl-list-marker-window-light', t('settings.color.listMarker'), lightColors, 'listMarker')}
-              {@render colorSettingRow('color-hl-comment-window-light', t('settings.color.comment'), lightColors, 'comment')}
-              {@render colorSettingRow('color-hl-paren-window-light', t('settings.color.parenthesis'), lightColors, 'paren')}
-              {@render colorSettingRow('color-hl-bracket-window-light', t('settings.color.bracket'), lightColors, 'bracket')}
-              {@render colorSettingRow('color-hl-brace-window-light', t('settings.color.brace'), lightColors, 'brace')}
-              {@render colorSettingRow('color-indent-guide-window-light', t('settings.color.indentGuide'), lightColors, 'guide')}
-            {/if}
-
-            <div class="settings-action-row">
-              <button class="reset-colors-btn" onclick={resetColorsToDefault}>
-                {t('settings.resetColors')}
-              </button>
-            </div>
-          </div>
-        {:else if activeSettingsView === 'renderEditing'}
-          <div class="settings-section">
-            <h4 class="section-title">{t('settings.autoInput')}</h4>
-            <label class="settings-check-row" for="render-auto-pair-editing-window">
-              <input
-                id="render-auto-pair-editing-window"
-                class="settings-checkbox"
-                type="checkbox"
-                bind:checked={renderAutoPairEditing}
-              />
-              <span class="settings-check-copy">
-                <span class="settings-check-title">{t('settings.autoPair.title')}</span>
-                <span class="settings-check-description">{t('settings.autoPair.description')}</span>
-              </span>
-            </label>
-            <div
-              class="auto-pair-following-settings"
-              class:disabled={!renderAutoPairEditing}
-              aria-disabled={!renderAutoPairEditing}
-            >
-              <div class="auto-pair-following-heading">
-                <span class="settings-check-title">{t('settings.autoPair.followingTitle')}</span>
-                <span class="settings-check-description">{t('settings.autoPair.followingDescription')}</span>
-              </div>
-              <div class="auto-pair-following-list" role="list">
-                <span class="auto-pair-following-chip fixed" role="listitem">
-                  <span>{t('settings.autoPair.whitespace')}</span>
-                  <span class="auto-pair-following-fixed-label">{t('settings.autoPair.alwaysAllowed')}</span>
-                </span>
-                {#each renderAutoPairAllowedFollowingStrings as value (value)}
-                  <span class="auto-pair-following-chip" role="listitem">
-                    <code>{value}</code>
-                    <button
-                      type="button"
-                      class="auto-pair-following-remove"
-                      aria-label={t('settings.autoPair.removeFollowingString', { value })}
-                      title={t('settings.autoPair.removeFollowingString', { value })}
-                      disabled={!renderAutoPairEditing}
-                      onclick={() => removeRenderAutoPairAllowedFollowingString(value)}
-                    >
-                      <X size={12} aria-hidden="true" />
-                    </button>
-                  </span>
-                {/each}
-              </div>
-              <div class="auto-pair-following-add-row">
-                <input
-                  id="render-auto-pair-allowed-following-string-window"
-                  class="auto-pair-following-input"
-                  type="text"
-                  maxlength={maximumAutoPairAllowedFollowingStringLength}
-                  autocomplete="off"
-                  aria-label={t('settings.autoPair.followingInputLabel')}
-                  placeholder={t('settings.autoPair.followingPlaceholder')}
-                  disabled={!renderAutoPairEditing || renderAutoPairAllowedFollowingStrings.length >= maximumAutoPairAllowedFollowingStringCount}
-                  bind:value={renderAutoPairAllowedFollowingStringDraft}
-                  onkeydown={handleRenderAutoPairAllowedFollowingStringKeydown}
-                />
-                <button
-                  type="button"
-                  class="auto-pair-following-add"
-                  disabled={!renderAutoPairEditing || !canAddRenderAutoPairAllowedFollowingString}
-                  onclick={addRenderAutoPairAllowedFollowingString}
-                >
-                  <Plus size={13} aria-hidden="true" />
-                  {t('settings.autoPair.addFollowingString')}
-                </button>
-              </div>
-            </div>
-            <label class="settings-check-row" for="render-auto-symbol-substitution-window">
-              <input
-                id="render-auto-symbol-substitution-window"
-                class="settings-checkbox"
-                type="checkbox"
-                bind:checked={renderAutoSymbolSubstitution}
-              />
-              <span class="settings-check-copy">
-                <span class="settings-check-title">{t('settings.autoSymbols.title')}</span>
-                <span class="settings-check-description">{t('settings.autoSymbols.description')}</span>
-              </span>
-            </label>
-            <label class="settings-check-row" for="render-preserve-indent-on-enter-window">
-              <input
-                id="render-preserve-indent-on-enter-window"
-                class="settings-checkbox"
-                type="checkbox"
-                bind:checked={renderPreserveIndentOnEnter}
-              />
-              <span class="settings-check-copy">
-                <span class="settings-check-title">{t('settings.preserveIndent.title')}</span>
-                <span class="settings-check-description">{t('settings.preserveIndent.description')}</span>
-              </span>
-            </label>
-          </div>
-        {:else if activeSettingsCategory}
-          <div class="settings-section">
-            <div class="settings-format-module">
-              <div class="settings-format-heading">
-                <h4 class="section-title">{t(activeSettingsCategory.labelKey)}</h4>
-                <span class="settings-check-description">{t(activeSettingsCategory.descriptionKey)}</span>
-              </div>
-              <div class="settings-category-formats" aria-label={t('settings.categoryFormats', { category: t(activeSettingsCategory.labelKey) })}>
-                {#each getDocumentFormatsForCategory(activeSettingsCategory) as format}
-                  <span class="settings-format-chip">{t(format.labelKey)}</span>
-                {/each}
-              </div>
-            </div>
-
-            {#if activeSettingsCategory.id === 'table'}
-              <div class="settings-format-module">
-                <h5 class="settings-subsection-title">{t('settings.table.display')}</h5>
-                <label class="settings-check-row" for="delimited-table-highlight-header-window">
-                  <input
-                    id="delimited-table-highlight-header-window"
-                    class="settings-checkbox"
-                    type="checkbox"
-                    bind:checked={delimitedTableHighlightHeader}
-                  />
-                  <span class="settings-check-copy">
-                    <span class="settings-check-title">{t('settings.table.highlightHeader.title')}</span>
-                    <span class="settings-check-description">{t('settings.table.highlightHeader.description')}</span>
-                  </span>
-                </label>
-                <label class="settings-check-row" for="delimited-table-show-row-indices-window">
-                  <input
-                    id="delimited-table-show-row-indices-window"
-                    class="settings-checkbox"
-                    type="checkbox"
-                    bind:checked={delimitedTableShowRowIndices}
-                  />
-                  <span class="settings-check-copy">
-                    <span class="settings-check-title">{t('settings.table.rowNumbers.title')}</span>
-                    <span class="settings-check-description">{t('settings.table.rowNumbers.description')}</span>
-                  </span>
-                </label>
-              </div>
-
-              <div class="settings-format-module">
-                <h5 class="settings-subsection-title">{t('settings.table.reorderSection')}</h5>
-                <label class="settings-check-row" for="delimited-table-reorder-animation-window">
-                  <input
-                    id="delimited-table-reorder-animation-window"
-                    class="settings-checkbox"
-                    type="checkbox"
-                    bind:checked={delimitedTableAnimateReorder}
-                  />
-                  <span class="settings-check-copy">
-                    <span class="settings-check-title">{t('settings.table.reorder.title')}</span>
-                    <span class="settings-check-description">{t('settings.table.reorder.description')}</span>
-                  </span>
-                </label>
-                <label
-                  class="settings-duration-row"
-                  class:disabled={!delimitedTableAnimateReorder}
-                  for="delimited-table-reorder-duration-window"
-                >
-                  <span>{t('settings.table.reorder.duration')}</span>
-                  <input
-                    id="delimited-table-reorder-duration-window"
-                    class="settings-duration-range"
-                    type="range"
-                    min={delimitedTableReorderDurationMinMs}
-                    max={delimitedTableReorderDurationMaxMs}
-                    step={delimitedTableReorderDurationStepMs}
-                    bind:value={delimitedTableReorderDurationMs}
-                    disabled={!delimitedTableAnimateReorder}
-                    aria-valuetext={formatDelimitedTableReorderDuration(delimitedTableReorderDurationMs)}
-                  />
-                  <output class="settings-duration-value">
-                    {formatDelimitedTableReorderDuration(delimitedTableReorderDurationMs)}
-                  </output>
-                </label>
-              </div>
-            {:else}
-              <p class="settings-category-note">
-                {t('settings.categoryNote')}
-              </p>
-            {/if}
-          </div>
-        {:else if activeSettingsFormat}
-          <div class="settings-section">
-            <div class="settings-format-module">
-              <div class="settings-format-heading">
-                <h4 class="section-title">{t(activeSettingsFormat.labelKey)}</h4>
-                <span class="settings-check-description">
-                  {activeSettingsFormat.extensions.length > 0 ? activeSettingsFormat.extensions.map((extension) => `.${extension}`).join(', ') : t('settings.noExtension')}
-                </span>
-              </div>
-              <label class="settings-check-row" for={`document-format-${activeSettingsFormat.id}-render-window`}>
-                <input
-                  id={`document-format-${activeSettingsFormat.id}-render-window`}
-                  class="settings-checkbox"
-                  type="checkbox"
-                  checked={documentFeatureSettings[activeSettingsFormat.id].render}
-                  onchange={(event) => setDocumentFormatFeature(activeSettingsFormat.id, 'render', (event.currentTarget as HTMLInputElement).checked)}
-                />
-                <span class="settings-check-copy">
-                  <span class="settings-check-title">{t('settings.renderDisplay.title')}</span>
-                  <span class="settings-check-description">{t(activeSettingsFormat.renderDescriptionKey)}</span>
-                </span>
-              </label>
-              <label class="settings-check-row" for={`document-format-${activeSettingsFormat.id}-edit-window`}>
-                <input
-                  id={`document-format-${activeSettingsFormat.id}-edit-window`}
-                  class="settings-checkbox"
-                  type="checkbox"
-                  checked={documentFeatureSettings[activeSettingsFormat.id].edit}
-                  onchange={(event) => setDocumentFormatFeature(activeSettingsFormat.id, 'edit', (event.currentTarget as HTMLInputElement).checked)}
-                />
-                <span class="settings-check-copy">
-                  <span class="settings-check-title">{t('settings.renderEditing.title')}</span>
-                  <span class="settings-check-description">{t(activeSettingsFormat.editDescriptionKey)}</span>
-                </span>
-              </label>
-            </div>
-
-            {#if activeSettingsFormat.id === 'markdown'}
-              <div class="settings-format-module">
-                <h5 class="settings-subsection-title">{t('settings.markdown.headings')}</h5>
-                <label class="settings-check-row" for="markdown-hide-heading-markers-window">
-                  <input
-                    id="markdown-hide-heading-markers-window"
-                    class="settings-checkbox"
-                    type="checkbox"
-                    checked={markdownRenderSettings.hideHeadingMarkers}
-                    onchange={(event) => markdownRenderSettings = { ...markdownRenderSettings, hideHeadingMarkers: (event.currentTarget as HTMLInputElement).checked }}
-                  />
-                  <span class="settings-check-copy">
-                    <span class="settings-check-title">{t('settings.markdown.hideMarkers.title')}</span>
-                    <span class="settings-check-description">{t('settings.markdown.hideMarkers.description')}</span>
-                  </span>
-                </label>
-                <label class="settings-check-row" for="markdown-heading-dividers-window">
-                  <input
-                    id="markdown-heading-dividers-window"
-                    class="settings-checkbox"
-                    type="checkbox"
-                    checked={markdownRenderSettings.showHeadingDividers}
-                    onchange={(event) => markdownRenderSettings = { ...markdownRenderSettings, showHeadingDividers: (event.currentTarget as HTMLInputElement).checked }}
-                  />
-                  <span class="settings-check-copy">
-                    <span class="settings-check-title">{t('settings.markdown.dividers.title')}</span>
-                    <span class="settings-check-description">{t('settings.markdown.dividers.description')}</span>
-                  </span>
-                </label>
-
-                <div class="markdown-heading-settings" aria-label={t('settings.markdown.headings')}>
-                  {#each markdownHeadingLevels as level}
-                    <div class="markdown-heading-setting-row">
-                      <span class="markdown-heading-setting-label">{t('settings.markdown.level', { level })}</span>
-                      <label for={`markdown-heading-${level}-size-window`}>{t('settings.markdown.sizePercent')}</label>
-                      <input
-                        id={`markdown-heading-${level}-size-window`}
-                        class="font-size-num markdown-heading-size-input"
-                        type="number"
-                        min="80"
-                        max="145"
-                        step="1"
-                        value={markdownRenderSettings.headings[level].sizePercent}
-                        onchange={(event) => setMarkdownHeadingStyle(level, 'sizePercent', Number((event.currentTarget as HTMLInputElement).value))}
-                      />
-                      <span class="markdown-heading-unit">%</span>
-                      <label for={`markdown-heading-${level}-weight-window`}>{t('settings.fontWeight')}</label>
-                      <select
-                        id={`markdown-heading-${level}-weight-window`}
-                        class="tab-size-select markdown-heading-weight-select"
-                        value={markdownRenderSettings.headings[level].fontWeight}
-                        onchange={(event) => setMarkdownHeadingStyle(level, 'fontWeight', (event.currentTarget as HTMLSelectElement).value as MarkdownHeadingStyle['fontWeight'])}
-                      >
-                        <option value="400">400</option>
-                        <option value="500">500</option>
-                        <option value="600">600</option>
-                        <option value="700">700</option>
-                        <option value="800">800</option>
-                      </select>
-                    </div>
-                  {/each}
-                </div>
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </div>
-    </div>
-  </div>
+  <SettingsWindow
+    {locale}
+    {systemLocale}
+    {currentTheme}
+    {currentRenderFontFamilyCSS}
+    bind:languagePreference
+    bind:defaultNewDocumentFormat
+    bind:sourceFontSize
+    bind:renderFontSize
+    bind:tabSize
+    bind:renderFontFamily
+    bind:renderAutoPairEditing
+    bind:renderAutoPairAllowedFollowingStrings
+    bind:renderAutoSymbolSubstitution
+    bind:renderPreserveIndentOnEnter
+    bind:delimitedTableHighlightHeader
+    bind:delimitedTableShowRowIndices
+    bind:delimitedTableAnimateReorder
+    bind:delimitedTableReorderDurationMs
+    bind:documentFeatureSettings
+    bind:markdownRenderSettings
+    bind:lightColors
+    bind:darkColors
+    {settingsTransferStatus}
+    {isSettingsTransferBusy}
+    onImportSettings={handleImportSettings}
+    onExportSettings={handleExportSettings}
+  />
 {:else}
   <div class="app-container" style="
+    {getAdditionalRenderThemeStyle(activeColors)}
     --color-hl-code-bg: {activeColors.codeBg};
     --color-hl-code-text: {activeColors.codeText};
     --color-hl-key-strong: {activeColors.keyStrong};
@@ -6572,7 +6525,6 @@
             aria-label={t('window.openTabs')}
             bind:this={tabListEl}
             onscroll={updateTabStripMetrics}
-            onwheel={handleTabListWheel}
           >
             {#each tabs as tab (tab.id)}
               <div
@@ -6735,201 +6687,85 @@
       </div>
     {/if}
 
-    <!-- 메뉴바 영역 -->
-    <nav class="menu-bar">
-      <div class="menu-left">
-        <div class="menu-item-container">
-          <button
-            class="menu-trigger"
-            class:active={openDropdown === 'file'}
-            onclick={(e) => toggleDropdown('file', e)}
-            onmouseenter={() => handleMouseEnter('file')}
-          >
-            {t('menu.file')}
-          </button>
-          {#if openDropdown === 'file'}
-            <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
-              <button class="dropdown-item" onclick={handleNewFile}>
-                <span class="item-label">{t('menu.newTab')}</span>
-                <span class="shortcut-label">Ctrl+N</span>
-              </button>
-              <button class="dropdown-item" onclick={handleOpenFile}>
-                <span class="item-label">{t('menu.open')}</span>
-                <span class="shortcut-label">Ctrl+O</span>
-              </button>
-              <button class="dropdown-item" onclick={handleSaveFile}>
-                <span class="item-label">{t('menu.save')}</span>
-                <span class="shortcut-label">Ctrl+S</span>
-              </button>
-              <button class="dropdown-item" onclick={handleSaveAsFile}>
-                <span class="item-label">{t('menu.saveAs')}</span>
-                <span class="shortcut-label">Ctrl+Shift+S</span>
-              </button>
-              <div class="menu-divider"></div>
-              <button class="dropdown-item" onclick={handleExit}>
-                <span class="item-label">{t('menu.exit')}</span>
-                <span class="shortcut-label">Alt+F4</span>
-              </button>
-            </div>
-          {/if}
-        </div>
-
-        <div class="menu-item-container">
-          <button
-            class="menu-trigger"
-            class:active={openDropdown === 'edit'}
-            onclick={(e) => toggleDropdown('edit', e)}
-            onmouseenter={() => handleMouseEnter('edit')}
-          >
-            {t('menu.edit')}
-          </button>
-          {#if openDropdown === 'edit'}
-            <div class="dropdown-menu" onclick={(e) => e.stopPropagation()}>
-              <button class="dropdown-item" onclick={handleUndo} disabled={!canUndoActiveTab()}>
-                <span class="item-label">{t('menu.undo')}</span>
-                <span class="shortcut-label">Ctrl+Z</span>
-              </button>
-              <button class="dropdown-item" onclick={handleRedo} disabled={!canRedoActiveTab()}>
-                <span class="item-label">{t('menu.redo')}</span>
-                <span class="shortcut-label">Ctrl+Y</span>
-              </button>
-              <div class="menu-divider"></div>
-              <button class="dropdown-item" onclick={handleCut} disabled={!fileContent}>
-                <span class="item-label">{t('menu.cut')}</span>
-                <span class="shortcut-label">Ctrl+X</span>
-              </button>
-              <button class="dropdown-item" onclick={handleCopy} disabled={!fileContent}>
-                <span class="item-label">{t('menu.copy')}</span>
-                <span class="shortcut-label">Ctrl+C</span>
-              </button>
-              <button class="dropdown-item" onclick={handlePaste}>
-                <span class="item-label">{t('menu.paste')}</span>
-                <span class="shortcut-label">Ctrl+V</span>
-              </button>
-              <button class="dropdown-item" onclick={handleDelete} disabled={!fileContent}>
-                <span class="item-label">{t('menu.delete')}</span>
-                <span class="shortcut-label">Del</span>
-              </button>
-              <div class="menu-divider"></div>
-              <button class="dropdown-item" onclick={handleSelectAll}>
-                <span class="item-label">{t('menu.selectAll')}</span>
-                <span class="shortcut-label">Ctrl+A</span>
-              </button>
-              <button class="dropdown-item" onclick={insertDateTime}>
-                <span class="item-label">{t('menu.dateTime')}</span>
-                <span class="shortcut-label">F5</span>
-              </button>
-            </div>
-          {/if}
-        </div>
-
-        <div class="menu-item-container">
-          <button
-            class="menu-trigger"
-            class:active={openDropdown === 'help'}
-            onclick={(e) => toggleDropdown('help', e)}
-            onmouseenter={() => handleMouseEnter('help')}
-          >
-            {t('menu.help')}
-          </button>
-          {#if openDropdown === 'help'}
-            <div class="dropdown-menu help-menu">
-              <button
-                class="dropdown-item"
-                onclick={handleManualUpdateCheck}
-                disabled={isCheckingForUpdate || isInstallingUpdate}
-              >
-                <span class="item-label">
-                  {isInstallingUpdate ? t('update.menuInstalling') : isCheckingForUpdate ? t('update.menuChecking') : t('update.menuCheck')}
-                </span>
-              </button>
-              <div class="menu-divider"></div>
-              <button class="dropdown-item" onclick={handleAboutDialogOpen}>
-                <span class="item-label">{t('menu.about')}</span>
-              </button>
-            </div>
-          {/if}
-        </div>
-
-        <!-- 에러 표시 간소화 -->
-        {#if errorMsg || documentDiagnostic}
-          <div
-            class="menu-error-indicator"
-            class:syntax-error={!errorMsg && !!documentDiagnostic}
-            title={errorMsg || documentDiagnostic?.message}
-          >
-            ⚠️ {errorMsg || documentDiagnostic?.message}
-          </div>
-        {/if}
-      </div>
-
-      <!-- 우측 업데이트, 테마, 렌더 모드 및 설정 버튼 -->
-      <div class="menu-right">
-        {#if availableAppUpdate}
-          <button
-            type="button"
-            class="available-update-button"
-            onclick={handleAvailableUpdateInstall}
-            disabled={isCheckingForUpdate || isInstallingUpdate}
-            aria-label={`${t('update.install')} ${availableAppUpdate.version}`}
-            title={`${t('update.install')} ${availableAppUpdate.version}`}
-          >
-            <Download size={14} aria-hidden="true" />
-            <span>{t('update.install')}</span>
-            <span class="available-update-version">{availableAppUpdate.version}</span>
-          </button>
-        {/if}
-
-        <button
-          class="theme-mode-toggle"
-          onclick={() => {
-            if (themeMode === 'system') themeMode = systemIsDark ? 'light' : 'dark';
-            else themeMode = themeMode === 'light' ? 'dark' : 'light';
-          }}
-          title={t('toolbar.changeTheme')}
-        >
-          {#if currentTheme === 'dark'}
-            <Moon size={18} />
-          {:else}
-            <Sun size={18} />
-          {/if}
-        </button>
-
-        <button
-          class="render-mode-toggle"
-          class:active={isRenderMode}
-          onclick={toggleRenderMode}
-          title={isRenderMode ? t('toolbar.switchToSource') : t('toolbar.switchToRender')}
-        >
-          {#if isRenderMode}
-            <PaintRoller size={18} />
-          {:else}
-            <FileCode2 size={18} />
-          {/if}
-        </button>
-
-        <button
-          class="settings-trigger"
-          onclick={handleSettingsTrigger}
-          title={t('toolbar.settings')}
-        >
-          <Settings size={18} />
-        </button>
-      </div>
-    </nav>
-
+    <EditorMenuBar
+      {locale}
+      bind:openDropdown
+      canUndo={canUndoActiveTab()}
+      canRedo={canRedoActiveTab()}
+      hasContent={fileContent.length > 0}
+      errorMessage={errorMsg || documentDiagnostic?.message || null}
+      isSyntaxError={!errorMsg && !!documentDiagnostic}
+      availableUpdateVersion={availableAppUpdate?.version ?? null}
+      {isCheckingForUpdate}
+      {isInstallingUpdate}
+      {shouldShowNewDocumentFormatToolbar}
+      {isNewDocumentFormatPickerOpen}
+      bind:newDocumentFormatTriggerEl
+      {currentTheme}
+      {isRenderMode}
+      commands={editorMenuCommands}
+    />
     <!-- 편집 공간 -->
     <main
       class="editor-area"
+      style:--editor-layout-width={`${editorViewportWidth}px`}
       class:render-mode={isRenderMode && isEnhancedDocumentWithinBudget}
       class:render-selection-active={isRenderMode && isEnhancedDocumentWithinBudget && hasEditorSelection}
-      class:render-custom-selection={isRenderMode && supportsRenderedSelectionHighlight && shouldRenderHighlightLayer && hasRenderedSelectionHighlight}
+      class:render-custom-selection={isRenderMode && shouldRenderHighlightLayer && hasRenderedSelectionHighlight}
       class:render-wrap-settling={isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling}
-      class:render-native-text-visible={shouldShowNativeRenderText}
     >
+      {#if shouldShowNewDocumentFormatToolbar && isNewDocumentFormatPickerOpen}
+        <div
+          bind:this={newDocumentFormatPickerEl}
+          id="new-document-format-picker"
+          class="new-document-format-picker"
+          role="dialog"
+          tabindex="-1"
+          aria-labelledby="new-document-format-picker-title"
+          onkeydown={handleNewDocumentFormatPickerKeydown}
+        >
+          <div class="new-document-format-picker-heading">
+            <strong id="new-document-format-picker-title">{t('newDocument.formatPrompt')}</strong>
+            <button
+              type="button"
+              class="new-document-format-picker-close"
+              aria-label={t('window.closeTitle')}
+              title={t('window.closeTitle')}
+              onclick={() => closeNewDocumentFormatPicker()}
+            >
+              <X size={14} aria-hidden="true" />
+            </button>
+          </div>
+          <div class="new-document-format-groups">
+            {#each configurableDocumentFormatCategories as category}
+              <div
+                class="new-document-format-group"
+                role="group"
+                aria-label={t(category.labelKey)}
+              >
+                <span class="new-document-format-category">{t(category.labelKey)}</span>
+                <div class="new-document-format-buttons">
+                  {#each getDocumentFormatsForCategory(category) as format}
+                    <button
+                      type="button"
+                      class="new-document-format-button"
+                      class:active={selectedDocumentFormatId === format.id}
+                      aria-pressed={selectedDocumentFormatId === format.id}
+                      onclick={() => selectNewDocumentFormat(format.id)}
+                    >
+                      {t(format.labelKey)}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
       <div class="editor-container">
         {#if shouldShowDelimitedTableEditor && activeDelimitedTableDocument}
-          <DelimitedTableEditor
+          {#key activeTabId}
+          <TableEditor
             document={activeDelimitedTableDocument}
             formatLabel={t(activeDocumentFormat.labelKey)}
             locale={locale}
@@ -6939,17 +6775,20 @@
             animateReorder={delimitedTableAnimateReorder}
             reorderDurationMs={delimitedTableReorderDurationMs}
             ondocumentchange={commitDelimitedTableEdit}
+            onhistoryinput={(direction) => direction === 'undo' ? performUndo() : performRedo()}
+            onundogroupend={closeActiveUndoGroup}
             onhighlightheaderchange={(enabled) => delimitedTableHighlightHeader = enabled}
             onshowrowindiceschange={(enabled) => delimitedTableShowRowIndices = enabled}
           />
+          {/key}
         {:else}
         <!-- 라인 번호 Gutter -->
         {#if isRenderMode && isEnhancedDocumentWithinBudget}
-          <div class="editor-gutter" style="background-color: var(--color-render-bg); border-right: 1px solid var(--border-color);">
-            {#if !isRenderWrapSettling}
+          <div class="editor-gutter" style="background-color: var(--color-render-bg); border-right: 1px solid var(--color-gutter-border);">
               <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
                 {#each Array(endLine - startLine + 1) as _, idx}
                   {@const lineIdx = startLine + idx}
+                  {#if (!markdownTableByLine.has(lineIdx) || markdownTableByLine.get(lineIdx)?.startLine === lineIdx) && (!markdownRichByLine.has(lineIdx) || markdownRichByLine.get(lineIdx)?.startLine === lineIdx)}
                   <div
                     class="gutter-line-number"
                     class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1}
@@ -6957,28 +6796,38 @@
                   >
                     {lineIdx + 1}
                   </div>
+                  {/if}
                 {/each}
               </div>
-            {/if}
           </div>
         {/if}
 
         <!-- 에디터 영역 뷰포트 -->
         <div
           class="editor-viewport"
+          data-testid="editor-viewport"
           bind:this={editorViewportEl}
+          onscroll={handleEditorViewportScroll}
         >
+          {#if isRenderMode && isEnhancedDocumentWithinBudget}
+            <div
+              class="editor-render-scroll-extent"
+              data-testid="editor-render-scroll-extent"
+              style="height: {renderEditorScrollHeight}px;"
+              aria-hidden="true"
+            ></div>
+          {/if}
           <!-- 렌더 모드 Backdrop -->
           {#if shouldRenderHighlightLayer}
-            <div class="editor-backdrop">
-              <div class="backdrop-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
+            <div class="editor-backdrop" style="height: {renderEditorScrollHeight}px;">
+              <div class="backdrop-scroll-container">
                 {#each Array(endLine - startLine + 1) as _, idx}
                   {@const lineIdx = startLine + idx}
                   {@const line = parsedLines[idx]}
                   {@const listLayout = renderListLineLayouts[idx] ?? null}
-                  {@const indentGuideCount = listLayout ? getRenderListIndentGuideCount(listLayout, tabSize) : line?.indentLevel ?? 0}
+                  {@const indentGuideCount = listLayout ? listLayout.indentGuideCount : line?.indentLevel ?? 0}
                   {@const listTokenParts = listLayout ? getListRenderTokenParts(line?.tokens ?? [], listLayout.prefixLength) : null}
-                  {#if line}
+                  {#if line && !markdownTableByLine.has(lineIdx) && !markdownRichByLine.has(lineIdx)}
                     <div
                       use:observeRenderedLine
                       class="backdrop-line"
@@ -6999,12 +6848,27 @@
                       class:markdown-heading-line={line.headingLevel !== undefined}
                       class:markdown-heading-divider={line.headingLevel !== undefined && line.headingLevel <= 2 && markdownRenderSettings.showHeadingDividers}
                       class:styled-text-geometry={line.headingLevel !== undefined}
-                      style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; width: {getEditorTextBoxWidth()}px; min-height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize}; {getMarkdownHeadingLineStyle(line.headingLevel)} {listLayout ? getRenderListLineStyle(listLayout) : ''}"
+                      style="position: absolute; top: {getRenderLineTop(lineIdx) + editorTopPadding}px; left: 0; min-height: {measuredLineHeight}px; line-height: {measuredLineHeight}px; font-size: {currentFontSize}pt; tab-size: {tabSize}; -moz-tab-size: {tabSize}; {getMarkdownHeadingLineStyle(line.headingLevel)} {listLayout ? getRenderListLineStyle(listLayout) : ''}"
                     >
                       {#each Array(indentGuideCount) as _, i}
                         <span class="guide-line" style="left: {getIndentGuideLeft(i)}px;"></span>
                       {/each}
-                      {#if listLayout && listTokenParts}
+                      {#if line.prettyRows}
+                        <span class="line-content pretty-print-content" style="--pretty-space-width: {measureEditorPlainTextWidth(' ')}px;">
+                          {#each line.prettyRows as row}
+                            <span class="pretty-print-row" data-source-start={row.start} data-source-end={row.end}
+                              style="padding-left: min(60%, {measureEditorPlainTextWidth(' '.repeat(row.indentColumns))}px);">
+                              <span class="pretty-row-content" use:alignKeyValue={{ tokens: row.tokens, context: renderedLineMeasurementContext }}>
+                              {#each row.tokens as token}
+                                <span class:pretty-space-after={token.type === 'punctuation' && token.text === ':' && !/\s/.test(fileContent[token.end ?? 0] ?? '')}>
+                                  {@render renderToken(token)}
+                                </span>
+                              {/each}
+                              </span>
+                            </span>
+                          {/each}
+                        </span>
+                      {:else if listLayout && listTokenParts}
                         <span class="line-content list-item-content" data-list-body-start={listLayout.prefixLength}>
                           <span class="list-item-prefix">
                             {#each listTokenParts.prefixTokens as token}
@@ -7017,7 +6881,7 @@
                           </span>
                         </span>
                       {:else}
-                        <span class="line-content">
+                        <span class="line-content" use:alignKeyValue={{ tokens: line.tokens, context: renderedLineMeasurementContext }}>
                           {#each line.tokens as token}
                             {@render renderToken(token)}
                           {/each}
@@ -7030,11 +6894,87 @@
             </div>
           {/if}
 
+          {#each markdownRichBlocks.filter((block) => block.startLine <= endLine && block.endLine >= startLine) as block (`${activeTabId}:${block.startLine}`)}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div class="backdrop-line render-rich-block"
+              onpointerdown={handleRichPointerDown} ondblclick={handleRichDoubleClick}
+              data-rich-source={block.source}
+              use:observeRenderedLine data-line-index={block.startLine} data-markdown-rich={block.startLine}
+              style:top={`${getRenderLineTop(block.startLine) + editorTopPadding}px`}
+              style:font-size={`${currentFontSize}pt`} style:line-height={`${measuredLineHeight}px`} style:tab-size={tabSize}>
+              <MarkdownRichBlockView settings={markdownRenderSettings} editable source={block.source} environment={block.environment} documentPath={filePath} editLabel={t('toolbar.switchToSource')}
+                onedit={() => editMarkdownRichBlock(block)} onlink={openMarkdownRichLink} />
+            </div>
+          {/each}
+
+          {#each markdownTableBlocks.filter((block) => block.startLine <= endLine && block.endLine >= startLine) as block (`${activeTabId}:${block.startLine}`)}
+            <div
+              class="backdrop-line render-table-block"
+              class:table-source-selected={isEditorFocused && (activeTab?.selectionStart ?? 0) < block.end && (activeTab?.selectionEnd ?? 0) > block.start}
+              use:observeRenderedLine
+              data-line-index={block.startLine}
+              data-markdown-table={block.startLine}
+              style:top={`${getRenderLineTop(block.startLine) + editorTopPadding}px`}
+            >
+              <TableEditor
+                document={block.document}
+                formatLabel={t(activeDocumentFormat.labelKey)}
+                {locale}
+                embedded
+                editable={isActiveDocumentEditEnabled}
+                highlightHeader={delimitedTableHighlightHeader}
+                showRowIndices={delimitedTableShowRowIndices}
+                animateReorder={delimitedTableAnimateReorder}
+                reorderDurationMs={delimitedTableReorderDurationMs}
+                ondocumentchange={(next, options) => commitMarkdownTableEdit(block, next, options)}
+                oncellselection={(selection) => updateMarkdownTableSelection(block, selection)}
+                onleave={(direction) => leaveMarkdownTable(block, direction)}
+                onhistoryinput={(direction) => direction === 'undo' ? performUndo() : performRedo()}
+                onundogroupend={closeActiveUndoGroup}
+                onhighlightheaderchange={(enabled) => delimitedTableHighlightHeader = enabled}
+                onshowrowindiceschange={(enabled) => delimitedTableShowRowIndices = enabled}
+              >
+                {#snippet cellPreview(row: number, column: number)}
+                  {@const cell = block.cells[row]?.[column]}
+                  {@const source = cell ? fileContent.slice(cell.start, cell.end).replace(/\\\|/gu, '|') : ''}
+                  {#if /[*_~`<&\[!]/u.test(source)}
+                  <MarkdownRichBlockView
+                    {source}
+                    environment={markdownPresentation.environment} documentPath={filePath}
+                    settings={markdownRenderSettings} editLabel={t('toolbar.switchToSource')} showEdit={false} inline
+                    onedit={() => { if (cell) focusMarkdownTableCell(block, cell.start); }} onlink={openMarkdownRichLink}
+                  />
+                  {:else}
+                    <span style:white-space="pre-wrap">{block.document.rows[row]?.[column] || '\u200b'}</span>
+                  {/if}
+                {/snippet}
+              </TableEditor>
+            </div>
+          {/each}
+
+          {#if shouldRenderHighlightLayer}
+            {#each renderedPairDecorations as decoration, index (`${decoration.offset}:${index}`)}
+              <span
+                class="render-pair-decoration"
+                data-pair-offset={decoration.offset}
+                style="left: {decoration.left}px; top: {decoration.top}px; width: {decoration.width}px; height: {decoration.height}px;"
+                aria-hidden="true"
+              ></span>
+            {/each}
+          {/if}
+
+          {#each renderedSelectionDecorations as decoration}
+            <span class="render-selection-decoration"
+              style="left: {decoration.left}px; top: {decoration.top}px; width: {decoration.width}px; height: {decoration.height}px;"
+              aria-hidden="true"></span>
+          {/each}
           <textarea
             bind:this={textareaEl}
             class="editor-textarea"
-            style="font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled && !shouldShowNativeRenderText ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode && isEnhancedDocumentWithinBudget ? editorCursorStyle : 'text'};"
+            data-testid="editor-textarea"
+            style="height: {isRenderMode && isEnhancedDocumentWithinBudget ? `${renderEditorScrollHeight}px` : '100%'}; font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode && isEnhancedDocumentWithinBudget ? editorCursorStyle : 'text'};"
             wrap={isRenderMode && isEnhancedDocumentWithinBudget ? 'soft' : 'off'}
+            style:transform={isRenderMode && isEnhancedDocumentWithinBudget ? `scaleX(${liveEditorViewportWidth / Math.max(1, editorViewportWidth)})` : null}
             value={textareaDisplayContent}
             onkeydown={handleEditorKeyDown}
             onbeforeinput={handleEditorBeforeInput}
@@ -7044,9 +6984,12 @@
             onscroll={handleScroll}
             onpointerdown={handleEditorPointerDown}
             onpointerup={handleEditorPointerUp}
+            onpointermove={trackRenderCaretPointerMove}
+            onpointercancel={handleEditorPointerCancel}
             onkeyup={updateCursorPosition}
-            onselect={updateCursorPosition}
+            onselect={handleEditorSelectionChange}
             onclick={handleEditorClick}
+            ondblclick={handleEditorDoubleClick}
             onmousemove={handleEditorMouseMove}
             onmouseleave={handleEditorMouseLeave}
             onfocus={handleEditorFocus}
@@ -7219,12 +7162,48 @@
   :global(.hl-heading-marker) {
     color: var(--color-hl-list-marker);
   }
+  :global(.hl-checkbox) {
+    position: relative;
+    display: inline-block;
+    width: 1em;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    text-shadow: none;
+  }
+  :global(.hl-checkbox)::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0.01em;
+    width: 0.7em;
+    height: 0.7em;
+    box-sizing: border-box;
+    border: 1px solid var(--color-hl-list-marker);
+    border-radius: 0.14em;
+    background-color: color-mix(in srgb, var(--color-render-bg) 92%, var(--color-hl-list-marker));
+    transform: translateY(-50%);
+  }
+  :global(.hl-checkbox-checked)::before {
+    background-color: var(--color-hl-list-marker);
+  }
+  :global(.hl-checkbox-checked)::after {
+    content: '';
+    position: absolute;
+    top: 47%;
+    left: 0.24em;
+    width: 0.18em;
+    height: 0.36em;
+    box-sizing: border-box;
+    border: solid var(--color-render-bg);
+    border-width: 0 0.1em 0.1em 0;
+    transform: translateY(-58%) rotate(45deg);
+  }
   :global(.hl-section) {
     color: var(--color-hl-key-strong);
     font-weight: 700;
   }
   :global(.hl-operator) {
-    color: var(--text-muted);
+    color: var(--color-muted-syntax);
   }
   :global(.hl-timestamp) {
     color: var(--color-hl-key-medium);
@@ -7236,11 +7215,11 @@
   }
   :global(.hl-keyword-error),
   :global(.hl-keyword-fatal) {
-    color: #dc2626;
+    color: var(--color-error);
   }
   :global(.hl-keyword-warn),
   :global(.hl-keyword-warning) {
-    color: #d97706;
+    color: var(--color-warning);
   }
   :global(.hl-link) {
     color: var(--color-hl-key-medium);
@@ -7252,6 +7231,7 @@
   :global(.hl-emphasis) {
     font-style: italic;
   }
+  :global(.hl-strike) { text-decoration: line-through; }
   :global(.hl-quote-marker) {
     color: var(--color-hl-list-marker);
     font-weight: 700;
@@ -7305,39 +7285,29 @@
     border-radius: 3px;
     margin-inline: -0.16em;
     padding-inline: 0.16em;
-    box-shadow: inset 0 0 0 1px rgba(107, 114, 128, 0.35);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-boolean-border) 45%, transparent);
     box-decoration-break: clone;
     -webkit-box-decoration-break: clone;
   }
   :global(.hl-boolean-true) {
-    color: #166534;
-    background-color: #dcfce7;
+    color: var(--color-boolean-true-text);
+    background-color: var(--color-boolean-true-bg);
   }
   :global(.hl-boolean-false) {
-    color: #991b1b;
-    background-color: #fee2e2;
-  }
-  :global(.theme-dark .hl-boolean-true) {
-    color: #bbf7d0;
-    background-color: rgba(34, 197, 94, 0.22);
-    box-shadow: inset 0 0 0 1px rgba(134, 239, 172, 0.45);
-  }
-  :global(.theme-dark .hl-boolean-false) {
-    color: #fecaca;
-    background-color: rgba(239, 68, 68, 0.22);
-    box-shadow: inset 0 0 0 1px rgba(252, 165, 165, 0.45);
+    color: var(--color-boolean-false-text);
+    background-color: var(--color-boolean-false-bg);
   }
   :global(.hl-punctuation) {
-    color: var(--text-muted);
+    color: var(--color-muted-syntax);
   }
   :global(.hl-invalid) {
-    color: #dc2626;
-    background-color: rgba(220, 38, 38, 0.12);
-    box-shadow: inset 0 -1px 0 #dc2626;
+    color: var(--color-error);
+    background-color: color-mix(in srgb, var(--color-error) 12%, transparent);
+    box-shadow: inset 0 -1px 0 var(--color-error);
   }
   :global(.hl-color) {
     border-radius: 2px;
-    box-shadow: inset 0 0 0 1px #9ca3af;
+    box-shadow: inset 0 0 0 1px var(--color-color-border);
     box-decoration-break: clone;
     -webkit-box-decoration-break: clone;
     cursor: pointer;
@@ -7377,71 +7347,6 @@
     color: transparent;
     -webkit-text-fill-color: transparent;
     text-shadow: none;
-  }
-
-  .render-mode-toggle, .theme-mode-toggle {
-    background: transparent;
-    border: none;
-    color: var(--text-color);
-    font-size: 0.95rem;
-    padding: 0.2rem 0.4rem;
-    margin-right: 0.25rem;
-    cursor: pointer;
-    border-radius: 4px;
-    transition: background-color 0.1s;
-    outline: none;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .render-mode-toggle:hover, .render-mode-toggle.active,
-  .theme-mode-toggle:hover {
-    background-color: var(--bg-menu-hover);
-  }
-
-  .theme-edit-toggle {
-    display: flex;
-    gap: 4px;
-    background-color: var(--bg-window);
-    padding: 2px;
-    border-radius: 6px;
-    border: 1px solid var(--border-color);
-  }
-
-  .theme-toggle-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-color);
-    padding: 4px 12px;
-    font-size: 0.8rem;
-    border-radius: 4px;
-    cursor: pointer;
-    outline: none;
-    transition: background 0.1s;
-  }
-
-  .theme-toggle-btn:hover {
-    background-color: var(--bg-menu-hover);
-  }
-
-  .theme-toggle-btn.active {
-    background-color: var(--bg-editor);
-    font-weight: 600;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-  }
-
-  .tab-size-select {
-    padding: 0.2rem 0.4rem;
-    border: 1px solid var(--border-color);
-    background-color: var(--bg-editor);
-    color: var(--text-color);
-    border-radius: 4px;
-    font-family: var(--font-ui);
-    font-size: 0.85rem;
-    outline: none;
-    width: 100px;
-    text-align: center;
   }
 
   :global(body) {
@@ -7826,184 +7731,6 @@
     outline-offset: -3px;
   }
 
-  /* 메뉴바 디자인 */
-  .menu-bar {
-    position: relative;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background-color: var(--bg-window);
-    height: 32px;
-    padding: 0 0.5rem;
-    border-bottom: 1px solid var(--border-color);
-    user-select: none;
-    box-sizing: border-box;
-    z-index: 100;
-  }
-
-  .menu-left {
-    display: flex;
-    align-items: center;
-    gap: 0.15rem;
-    flex: 1;
-  }
-
-  .menu-right {
-    display: flex;
-    align-items: center;
-    gap: 0.1rem;
-  }
-
-  .available-update-button {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.3rem;
-    height: 24px;
-    padding: 0 0.5rem;
-    margin-right: 0.25rem;
-    border: 1px solid var(--accent-color);
-    border-radius: 5px;
-    background-color: transparent;
-    color: var(--accent-color);
-    font-family: var(--font-ui);
-    font-size: 0.75rem;
-    font-weight: 600;
-    line-height: 1;
-    cursor: pointer;
-    transition: background-color 0.1s, color 0.1s;
-  }
-
-  .available-update-button:hover:not(:disabled) {
-    background-color: var(--accent-color);
-    color: white;
-  }
-
-  .available-update-button:focus-visible {
-    outline: 2px solid var(--accent-color);
-    outline-offset: 1px;
-  }
-
-  .available-update-button:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-
-  .available-update-version {
-    font-size: 0.68rem;
-    font-variant-numeric: tabular-nums;
-    opacity: 0.78;
-  }
-
-  .menu-item-container {
-    position: relative;
-  }
-
-  .menu-trigger, .settings-trigger {
-    background: transparent;
-    border: none;
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.8rem;
-    padding: 0.25rem 0.5rem;
-    cursor: pointer;
-    border-radius: 4px;
-    transition: background-color 0.1s;
-    outline: none;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .settings-trigger {
-    font-size: 0.95rem;
-    padding: 0.2rem 0.4rem;
-    margin-right: 0.25rem;
-  }
-
-  .menu-trigger:hover, .menu-trigger.active,
-  .settings-trigger:hover, .settings-trigger.active {
-    background-color: var(--bg-menu-hover);
-  }
-
-  /* 드롭다운 메뉴 */
-  .dropdown-menu {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    background-color: var(--bg-dropdown);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    box-shadow: var(--shadow-menu);
-    min-width: 240px;
-    padding: 0.25rem;
-    display: flex;
-    flex-direction: column;
-    z-index: 20;
-    margin-top: 2px;
-  }
-
-  .dropdown-menu.help-menu {
-    min-width: 190px;
-  }
-
-  .dropdown-item {
-    background: transparent;
-    border: none;
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.8rem;
-    padding: 0.35rem 0.75rem;
-    text-align: left;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    cursor: pointer;
-    border-radius: 4px;
-    outline: none;
-    transition: background-color 0.08s;
-  }
-
-  .dropdown-item:hover:not(:disabled) {
-    background-color: var(--bg-menu-hover);
-  }
-
-  .dropdown-item:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  .item-label {
-    flex: 1;
-  }
-
-  .shortcut-label {
-    color: var(--text-muted);
-    font-size: 0.75rem;
-    margin-left: 1.5rem;
-  }
-
-  .menu-divider {
-    height: 1px;
-    background-color: var(--border-color);
-    margin: 0.25rem 0.5rem;
-  }
-
-  .menu-error-indicator {
-    margin-left: auto;
-    font-size: 0.75rem;
-    color: #ef4444;
-    padding-right: 0.5rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 250px;
-  }
-
-  .menu-error-indicator.syntax-error {
-    color: #dc2626;
-  }
-
   /* 메인 편집기 공간 */
   .editor-area {
     flex: 1;
@@ -8020,6 +7747,126 @@
     height: 100%;
     overflow: hidden;
     position: relative;
+  }
+
+  .new-document-format-picker {
+    position: absolute;
+    z-index: 5;
+    top: 12px;
+    left: 50%;
+    width: min(960px, calc(100% - 24px));
+    max-height: calc(100% - 24px);
+    padding: 10px 12px 12px;
+    box-sizing: border-box;
+    overflow: auto;
+    transform: translateX(-50%);
+    color: var(--text-color);
+    background: var(--bg-window);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: var(--shadow-menu);
+    font-family: var(--font-ui);
+  }
+
+  .new-document-format-picker-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 9px;
+    font-size: 12px;
+  }
+
+  .new-document-format-picker-heading strong {
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  .new-document-format-category {
+    color: var(--text-muted);
+  }
+
+  .new-document-format-picker-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .new-document-format-picker-close:hover {
+    background: var(--bg-menu-hover);
+    color: var(--text-color);
+  }
+
+  .new-document-format-picker-close:focus-visible {
+    outline: 1px solid var(--accent-color);
+    outline-offset: 1px;
+  }
+
+  .new-document-format-groups {
+    display: grid;
+    gap: 8px;
+  }
+
+  .new-document-format-group {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+  }
+
+  .new-document-format-category {
+    padding-top: 5px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .new-document-format-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .new-document-format-button {
+    min-height: 26px;
+    padding: 3px 8px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: var(--bg-menu-hover);
+    color: var(--text-color);
+    font-family: var(--font-ui);
+    font-size: 11px;
+    white-space: nowrap;
+    cursor: default;
+  }
+
+  .new-document-format-button:hover,
+  .new-document-format-button.active {
+    border-color: color-mix(in srgb, var(--accent-color) 55%, var(--border-color));
+    background: color-mix(in srgb, var(--accent-color) 14%, var(--bg-menu-hover));
+  }
+
+  .new-document-format-button:focus-visible {
+    outline: 1px solid var(--accent-color);
+    outline-offset: 1px;
+  }
+
+  @media (max-width: 640px) {
+    .new-document-format-group {
+      grid-template-columns: 1fr;
+      gap: 3px;
+    }
+
+    .new-document-format-category {
+      padding-top: 0;
+    }
   }
 
   .editor-gutter {
@@ -8050,7 +7897,7 @@
   }
 
   .gutter-line-number.diagnostic-line {
-    color: #dc2626;
+    color: var(--color-error);
     font-weight: 700;
   }
 
@@ -8059,6 +7906,16 @@
     height: 100%;
     position: relative;
     overflow: hidden;
+  }
+
+  .render-mode .editor-viewport {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .editor-render-scroll-extent {
+    width: 1px;
+    pointer-events: none;
   }
 
   .editor-backdrop {
@@ -8083,9 +7940,9 @@
   .backdrop-line {
     width: 100%;
     min-width: 0;
-    white-space: pre-wrap;
+    white-space: normal;
     overflow-wrap: break-word;
-    word-break: keep-all;
+    word-break: break-all;
     font-family: var(--font-render-family, var(--font-notepad));
     padding: 0 12px;
     box-sizing: border-box;
@@ -8097,6 +7954,42 @@
     -webkit-font-smoothing: subpixel-antialiased;
     -moz-osx-font-smoothing: auto;
     font-weight: var(--font-render-weight, normal);
+  }
+
+  .pretty-print-row {
+    display: block;
+    box-sizing: border-box;
+    min-width: 0;
+  }
+
+  .pretty-row-content {
+    display: block;
+  }
+
+  :global(.key-value-wrapping) {
+    box-sizing: border-box;
+    padding-left: var(--key-value-indent);
+    text-indent: calc(-1 * var(--key-value-indent));
+  }
+
+  .pretty-space-after {
+    padding-right: var(--pretty-space-width);
+  }
+
+  .render-table-block, .render-rich-block {
+    position: absolute;
+    left: 0;
+    z-index: 3;
+    padding: 0 12px 8px;
+  }
+
+  .table-source-selected::after {
+    content: '';
+    position: absolute;
+    inset: 0 12px 8px;
+    background: color-mix(in srgb, var(--color-selection) 28%, transparent);
+    pointer-events: none;
+    border-radius: 4px;
   }
 
   .backdrop-line.markdown-heading-line .line-content {
@@ -8114,8 +8007,8 @@
   }
 
   .backdrop-line.configuration-negated-rule-line {
-    background-color: color-mix(in srgb, #d97706 5%, transparent);
-    box-shadow: inset 3px 0 color-mix(in srgb, #d97706 48%, transparent);
+    background-color: color-mix(in srgb, var(--color-warning) 5%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--color-warning) 48%, transparent);
   }
 
   .backdrop-line.translation-source-line {
@@ -8123,13 +8016,13 @@
   }
 
   .backdrop-line.translation-target-line {
-    background-color: color-mix(in srgb, #16a34a 4%, transparent);
-    box-shadow: inset 3px 0 color-mix(in srgb, #16a34a 42%, transparent);
+    background-color: color-mix(in srgb, var(--color-success) 4%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--color-success) 42%, transparent);
   }
 
   .backdrop-line.translation-empty-line {
-    background-color: color-mix(in srgb, #d97706 7%, transparent);
-    box-shadow: inset 3px 0 color-mix(in srgb, #d97706 55%, transparent);
+    background-color: color-mix(in srgb, var(--color-warning) 7%, transparent);
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--color-warning) 55%, transparent);
   }
 
   .backdrop-line.subject-line {
@@ -8186,7 +8079,7 @@
   }
 
   .backdrop-line.diagnostic-line {
-    background-color: rgba(220, 38, 38, 0.07);
+    background-color: color-mix(in srgb, var(--color-error) 7%, transparent);
   }
 
   .guide-line {
@@ -8195,10 +8088,12 @@
     bottom: 0;
     width: 1px;
     background-color: var(--color-indent-guide);
+    opacity: 0.5;
   }
 
   .line-content {
-    display: inline;
+    display: block;
+    white-space: break-spaces;
     color: var(--color-render-text, var(--text-color));
   }
 
@@ -8208,10 +8103,13 @@
 
   .list-item-content {
     display: grid;
+    white-space: normal;
     grid-template-columns: var(--list-prefix-width) minmax(0, 1fr);
     align-items: start;
     width: 100%;
     min-width: 0;
+    box-sizing: border-box;
+    padding-left: var(--list-visual-indent);
   }
 
   .list-item-prefix {
@@ -8223,9 +8121,9 @@
     grid-column: 2;
     min-width: 0;
     min-height: 1lh;
-    white-space: pre-wrap;
+    white-space: break-spaces;
     overflow-wrap: break-word;
-    word-break: keep-all;
+    word-break: break-all;
   }
 
   .editor-textarea {
@@ -8258,39 +8156,48 @@
 
   /* 렌더 모드 활성화 시 스타일 */
   .render-mode .editor-textarea {
+    width: var(--editor-layout-width);
+    /* 투명 입력층의 클릭 범위만 확장한다. 보이는 텍스트와 선택 좌표는 렌더층이 소유한다. */
+    transform-origin: top left;
     background-color: transparent;
     color: transparent;
     caret-color: var(--color-render-text, var(--text-color));
     font-family: var(--font-render-family, var(--font-notepad));
     font-weight: var(--font-render-weight, normal);
-    white-space: pre-wrap;
+    white-space: break-spaces;
     overflow-wrap: break-word;
-    word-break: keep-all;
+    word-break: break-all;
+    overflow: hidden;
   }
 
   .render-mode .editor-textarea::selection {
-    background: rgba(96, 165, 250, 0.28);
+    background: color-mix(in srgb, var(--color-selection) 28%, transparent);
     color: transparent;
   }
 
   :global(::highlight(render-selection)) {
-    background-color: rgba(96, 165, 250, 0.28);
+    background-color: color-mix(in srgb, var(--color-selection) 28%, transparent);
+  }
+
+  .render-selection-decoration {
+    position: absolute;
+    z-index: 1;
+    pointer-events: none;
+    background-color: color-mix(in srgb, var(--color-selection) 28%, transparent);
+  }
+
+  .render-pair-decoration {
+    position: absolute;
+    z-index: 1;
+    box-sizing: border-box;
+    pointer-events: none;
+    background-color: color-mix(in srgb, var(--color-pair-highlight) 30%, transparent);
+    border-bottom: 1px solid var(--color-pair-highlight);
+    border-radius: 2px;
   }
 
   .render-mode.render-custom-selection .editor-textarea::selection {
     background: transparent;
-  }
-
-  .render-mode.render-native-text-visible .editor-backdrop {
-    opacity: 0;
-  }
-
-  .render-mode.render-native-text-visible .editor-textarea {
-    color: var(--color-render-text, var(--text-color));
-  }
-
-  .render-mode.render-native-text-visible .editor-textarea::selection {
-    color: var(--color-render-text, var(--text-color));
   }
 
   .steady-editor-caret {
@@ -8314,498 +8221,8 @@
     background-color: var(--color-render-bg, var(--bg-editor));
   }
 
-  .settings-window-container {
-    display: flex;
-    flex-direction: column;
-    width: 100vw;
-    height: 100vh;
-    box-sizing: border-box;
-    background-color: var(--bg-editor);
-  }
-
-  .settings-body {
-    display: flex;
-    flex: 1;
-    overflow: hidden;
-  }
-
-  .settings-body.window-mode {
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-  }
-
-  .settings-sidebar {
-    width: 180px;
-    background-color: var(--bg-window);
-    border-right: 1px solid var(--border-color);
-    display: flex;
-    flex-direction: column;
-    padding: 0.5rem 0;
-    gap: 2px;
-    user-select: none;
-    flex-shrink: 0;
-    overflow-y: auto;
-  }
-
-  .sidebar-tree-group {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-
-  .sidebar-group,
-  .sidebar-item {
-    background: transparent;
-    border: none;
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.85rem;
-    padding: 0.6rem 1rem;
-    text-align: left;
-    cursor: pointer;
-    transition: background-color 0.1s, color 0.1s;
-    outline: none;
-    border-left: 3px solid transparent;
-  }
-
-  .sidebar-group {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    font-weight: 600;
-  }
-
-  .tree-chevron {
-    flex-shrink: 0;
-    transition: transform 0.1s;
-  }
-
-  .tree-chevron.collapsed {
-    transform: rotate(-90deg);
-  }
-
-  .tree-child {
-    padding-left: 2.35rem;
-  }
-
-  .tree-grandchild {
-    padding-left: 4.25rem;
-    font-size: 0.8rem;
-  }
-
-  .format-category-group {
-    gap: 0;
-  }
-
-  .sidebar-category {
-    font-weight: 500;
-  }
-
-  .sidebar-item {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-
-  .sidebar-group:hover,
-  .sidebar-item:hover {
-    background-color: var(--bg-menu-hover);
-  }
-
-  .sidebar-item.active {
-    background-color: var(--bg-menu-active);
-    font-weight: 600;
-    border-left-color: var(--accent-color);
-  }
-
-  .settings-main {
-    flex: 1;
-    padding: 1rem 1.25rem;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 1.25rem;
-    background-color: var(--bg-editor);
-  }
-
-  .settings-section {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 1rem;
-  }
-
-  .settings-section:last-child {
-    border-bottom: none;
-    padding-bottom: 0;
-  }
-
-  .section-title {
-    margin: 0;
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--accent-color);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-
-  .settings-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 0.85rem;
-    min-height: 28px;
-  }
-
-  .settings-check-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.65rem;
-    font-size: 0.85rem;
-    cursor: pointer;
-  }
-
-  .settings-checkbox {
-    flex-shrink: 0;
-    width: 16px;
-    height: 16px;
-    margin-top: 2px;
-    accent-color: var(--accent-color);
-  }
-
-  .settings-check-copy {
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-    line-height: 1.35;
-  }
-
-  .settings-check-title {
-    color: var(--text-color);
-    font-weight: 500;
-  }
-
-  .settings-check-description {
-    color: var(--text-muted);
-    font-size: 0.78rem;
-  }
-
-  .auto-pair-following-settings {
-    display: flex;
-    flex-direction: column;
-    gap: 0.55rem;
-    margin: -0.1rem 0 0.15rem 26px;
-    padding: 0.65rem 0.75rem;
-    border-left: 2px solid var(--border-color);
-    background: var(--bg-window);
-  }
-
-  .auto-pair-following-settings.disabled {
-    opacity: 0.55;
-  }
-
-  .auto-pair-following-heading {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-
-  .auto-pair-following-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-  }
-
-  .auto-pair-following-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    max-width: 100%;
-    min-height: 24px;
-    padding: 0.1rem 0.2rem 0.1rem 0.5rem;
-    border: 1px solid var(--border-color);
-    border-radius: 999px;
-    background: var(--bg-editor);
-    color: var(--text-color);
-    font-size: 0.76rem;
-  }
-
-  .auto-pair-following-chip.fixed {
-    gap: 0.4rem;
-    padding-right: 0.5rem;
-  }
-
-  .auto-pair-following-chip code {
-    overflow-wrap: anywhere;
-    font-family: "Cascadia Mono", Consolas, monospace;
-    font-size: 0.76rem;
-  }
-
-  .auto-pair-following-fixed-label {
-    color: var(--text-muted);
-    font-size: 0.68rem;
-  }
-
-  .auto-pair-following-remove {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    border: none;
-    border-radius: 50%;
-    background: transparent;
-    color: var(--text-muted);
-    cursor: pointer;
-  }
-
-  .auto-pair-following-remove:hover:not(:disabled) {
-    background: var(--bg-menu-hover);
-    color: var(--text-color);
-  }
-
-  .auto-pair-following-add-row {
-    display: flex;
-    gap: 0.4rem;
-    max-width: 360px;
-  }
-
-  .auto-pair-following-input {
-    flex: 1;
-    min-width: 0;
-    height: 28px;
-    box-sizing: border-box;
-    padding: 0.25rem 0.5rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    outline: none;
-    background: var(--bg-editor);
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.78rem;
-  }
-
-  .auto-pair-following-input:focus {
-    border-color: var(--accent-color);
-    box-shadow: 0 0 0 1px var(--accent-color);
-  }
-
-  .auto-pair-following-add {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.25rem;
-    min-width: 62px;
-    height: 28px;
-    padding: 0 0.55rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    background: var(--bg-editor);
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.76rem;
-    cursor: pointer;
-  }
-
-  .auto-pair-following-add:hover:not(:disabled) {
-    background: var(--bg-menu-hover);
-  }
-
-  .auto-pair-following-add:disabled,
-  .auto-pair-following-remove:disabled,
-  .auto-pair-following-input:disabled {
-    cursor: not-allowed;
-  }
-
-  .settings-duration-row {
-    display: grid;
-    grid-template-columns: 64px minmax(120px, 240px) 52px;
-    align-items: center;
-    gap: 0.6rem;
-    padding-left: 26px;
-    color: var(--text-color);
-    font-size: 0.8rem;
-  }
-
-  .settings-duration-row.disabled {
-    opacity: 0.45;
-  }
-
-  .settings-duration-range {
-    width: 100%;
-    min-width: 0;
-    margin: 0;
-    accent-color: var(--accent-color);
-  }
-
-  .settings-duration-value {
-    color: var(--text-muted);
-    font-size: 0.78rem;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-  }
-
-  .settings-format-module {
-    display: flex;
-    flex-direction: column;
-    gap: 0.65rem;
-    padding-top: 0.25rem;
-  }
-
-  .settings-format-module + .settings-format-module {
-    border-top: 1px solid var(--border-color);
-    padding-top: 0.85rem;
-  }
-
-  .markdown-heading-settings {
-    display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
-  }
-
-  .markdown-heading-setting-row {
-    display: grid;
-    grid-template-columns: 72px 82px 58px 18px 88px minmax(92px, 120px);
-    align-items: center;
-    gap: 0.45rem;
-    color: var(--text-color);
-    font-size: 0.78rem;
-  }
-
-  .markdown-heading-setting-label {
-    font-weight: 600;
-  }
-
-  .markdown-heading-size-input {
-    width: 58px;
-  }
-
-  .markdown-heading-unit {
-    color: var(--text-muted);
-  }
-
-  .markdown-heading-weight-select {
-    width: 100%;
-  }
-
-  .settings-format-heading {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    min-height: 20px;
-  }
-
-  .settings-subsection-title {
-    margin: 0 0 0.1rem;
-    color: var(--text-color);
-    font-size: 0.8rem;
-    font-weight: 600;
-  }
-
-  .settings-category-formats {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-  }
-
-  .settings-format-chip {
-    padding: 0.15rem 0.45rem;
-    border: 1px solid var(--border-color);
-    border-radius: 999px;
-    background: var(--bg-window);
-    color: var(--text-muted);
-    font-size: 0.72rem;
-  }
-
-  .settings-category-note {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: 0.8rem;
-    line-height: 1.45;
-  }
-
-  .settings-transfer-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-
-  .settings-transfer-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.4rem;
-    min-height: 30px;
-    padding: 0.35rem 0.75rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    background: var(--bg-window);
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.8rem;
-    cursor: pointer;
-  }
-
-  .settings-transfer-button:hover:not(:disabled) {
-    background: var(--bg-menu-hover);
-  }
-
-  .settings-transfer-button:focus-visible {
-    outline: 2px solid var(--accent-color);
-    outline-offset: 2px;
-  }
-
-  .settings-transfer-button:disabled {
-    cursor: wait;
-    opacity: 0.55;
-  }
-
-  .settings-transfer-status {
-    margin: 0;
-    color: #16753c;
-    font-size: 0.78rem;
-    line-height: 1.4;
-  }
-
-  .settings-transfer-status.warning {
-    color: #946200;
-  }
-
-  .settings-transfer-status.error {
-    color: var(--error-text, #b91c1c);
-  }
-  :global(.theme-dark) .settings-transfer-status {
-    color: #86efac;
-  }
-
-  :global(.theme-dark) .settings-transfer-status.warning {
-    color: #fde68a;
-  }
-
-  :global(.theme-dark) .settings-transfer-status.error {
-    color: #fca5a5;
-  }
-
-
-  .color-picker-wrapper {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    position: relative;
-  }
-
-  .color-picker-native {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    opacity: 0;
-    pointer-events: none;
-  }
-
   .inline-color-picker-native {
+    position: absolute;
     width: 1px;
     height: 1px;
     min-width: 0;
@@ -8835,104 +8252,6 @@
     padding: 0;
     border: 0;
   }
-
-  .color-text-input {
-    width: 92px;
-    min-height: 28px;
-    padding: 0;
-    border: 1px solid #9ca3af;
-    border-radius: 4px;
-    font-family: Consolas, "Courier New", monospace;
-    font-size: 0.8rem;
-    font-weight: 600;
-    line-height: 26px;
-    text-align: center;
-    outline: none;
-    text-transform: uppercase;
-    cursor: pointer;
-    box-sizing: border-box;
-    transition: box-shadow 0.1s, transform 0.1s;
-  }
-
-  .color-text-input:hover {
-    box-shadow: 0 0 0 1px rgba(156, 163, 175, 0.45);
-  }
-
-  .color-text-input:focus {
-    border-color: #9ca3af;
-    outline: 2px solid var(--accent-color);
-    outline-offset: 2px;
-  }
-
-  .color-text-input:active {
-    transform: translateY(1px);
-  }
-
-  .color-text-input::selection {
-    background: rgba(255, 255, 255, 0.35);
-  }
-
-  .settings-action-row {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: 0.5rem;
-  }
-
-  .reset-colors-btn {
-    background-color: var(--bg-window);
-    border: 1px solid var(--border-color);
-    color: var(--text-color);
-    border-radius: 4px;
-    padding: 0.4rem 0.8rem;
-    font-family: var(--font-ui);
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: background-color 0.1s;
-    outline: none;
-  }
-
-  .reset-colors-btn:hover {
-    background-color: var(--bg-menu-hover);
-  }
-
-  .size-control {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-  }
-
-  .font-size-num {
-    width: 50px;
-    padding: 0.2rem 0.4rem;
-    border: 1px solid var(--border-color);
-    background-color: var(--bg-editor);
-    color: var(--text-color);
-    border-radius: 4px;
-    font-family: var(--font-ui);
-    font-size: 0.85rem;
-    text-align: center;
-    outline: none;
-  }
-
-  .adjust-btn {
-    background-color: var(--bg-menu-hover);
-    border: 1px solid var(--border-color);
-    color: var(--text-color);
-    border-radius: 4px;
-    width: 26px;
-    height: 26px;
-    cursor: pointer;
-    font-weight: bold;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    outline: none;
-  }
-
-  .adjust-btn:hover {
-    background-color: var(--bg-menu-active);
-  }
-
   @keyframes fadeIn {
     from {
       opacity: 0;
@@ -9001,7 +8320,7 @@
   }
 
   .status-item.status-error {
-    color: #dc2626;
+    color: var(--color-error);
     font-weight: 600;
   }
 
@@ -9009,5 +8328,3 @@
     border-left: none;
   }
 </style>
-
-

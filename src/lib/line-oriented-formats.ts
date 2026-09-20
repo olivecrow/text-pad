@@ -1,4 +1,3 @@
-import { getListMarkerAtStart } from './list-markers';
 import {
   tokenizeLineWithState,
   type CommentSyntax,
@@ -11,7 +10,6 @@ import {
   type DocumentLineRange,
   type ParsedLine
 } from './structured-rendering';
-import type { MarkdownHeadingLevel } from './markdown-settings';
 import {
   createLineStateCheckpointCache,
   getLineStateAt,
@@ -22,7 +20,10 @@ import {
 import type { TextChange } from './text-change';
 
 export type LineOrientedFormatId =
+  | 'plain'
   | 'markdown'
+  | 'csv'
+  | 'tsv'
   | 'ini'
   | 'conf'
   | 'properties'
@@ -88,87 +89,6 @@ function annotateTokenOffsets(tokens: Token[], lineStartOffset: number) {
   };
 
   tokens.forEach(visit);
-}
-
-export function getMarkdownHeadingLevel(line: string): MarkdownHeadingLevel | null {
-  const match = line.match(/^[ \t]{0,3}(#{1,6})[ \t]+/u);
-  return match?.[1]?.length as MarkdownHeadingLevel | undefined ?? null;
-}
-
-function tokenizeMarkdownInline(text: string, absoluteStart: number): Token[] {
-  const tokens: Token[] = [];
-  const pattern = /(\[[^\]\r\n]+\]\([^)\r\n]+\)|\*\*[^*\r\n]+\*\*|__[^_\r\n]+__|\x60[^\x60\r\n]+\x60|\*[^*\r\n]+\*|_[^_\r\n]+_)/gu;
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > cursor) {
-      tokens.push(createToken('text', text.slice(cursor, match.index), absoluteStart + cursor));
-    }
-    const matchedText = match[0];
-    const type: Token['type'] = matchedText.startsWith('[')
-      ? 'link'
-      : matchedText.startsWith('**') || matchedText.startsWith('__')
-        ? 'strong'
-        : matchedText.charCodeAt(0) === 96
-          ? 'code'
-          : 'emphasis';
-    tokens.push(createToken(type, matchedText, absoluteStart + match.index));
-    cursor = match.index + matchedText.length;
-  }
-
-  if (cursor < text.length) {
-    tokens.push(createToken('text', text.slice(cursor), absoluteStart + cursor));
-  }
-  return tokens;
-}
-
-function parseMarkdownTextLine(line: string, lineStartOffset: number): Token[] {
-  const quoteMatch = line.match(/^([ \t]{0,3})(>[ \t]?)(.*)$/u);
-  if (quoteMatch) {
-    const indent = quoteMatch[1] || '';
-    const marker = quoteMatch[2] || '';
-    const body = quoteMatch[3] || '';
-    return [
-      ...(indent ? [createToken('text', indent, lineStartOffset)] : []),
-      createToken('quote-marker', marker, lineStartOffset + indent.length),
-      ...tokenizeMarkdownInline(body, lineStartOffset + indent.length + marker.length)
-    ];
-  }
-
-  const listMarker = getListMarkerAtStart(line);
-  if (listMarker) {
-    const bodyStart = listMarker.indent.length + listMarker.marker.length;
-    return [
-      ...(listMarker.indent ? [createToken('text', listMarker.indent, lineStartOffset)] : []),
-      createToken('list-marker', listMarker.marker, lineStartOffset + listMarker.indent.length),
-      ...tokenizeMarkdownInline(line.slice(bodyStart), lineStartOffset + bodyStart)
-    ];
-  }
-
-  return tokenizeMarkdownInline(line, lineStartOffset);
-}
-
-function parseMarkdownHeading(
-  line: string,
-  lineStartOffset: number,
-  hideMarker: boolean
-): { tokens: Token[]; headingLevel: MarkdownHeadingLevel } | null {
-  const match = line.match(/^([ \t]{0,3})(#{1,6})([ \t]+)(.*)$/u);
-  const hashes = match?.[2];
-  if (!match || !hashes) return null;
-
-  const indent = match[1] || '';
-  const spacing = match[3] || '';
-  const body = match[4] || '';
-  const marker = `${hashes}${spacing}`;
-  const bodyStart = lineStartOffset + indent.length + marker.length;
-  const tokens: Token[] = [];
-  if (indent) tokens.push(createToken('text', indent, lineStartOffset));
-  tokens.push(createToken('heading-marker', marker, lineStartOffset + indent.length, hideMarker));
-  tokens.push(...tokenizeMarkdownInline(body, bodyStart));
-
-  return { tokens, headingLevel: hashes.length as MarkdownHeadingLevel };
 }
 
 function findUnquotedCommentStart(value: string, markers: string[]): number {
@@ -376,54 +296,30 @@ function parseLineOrientedLine(
 ): { line: ParsedLine; state: TokenizeState | null } {
   const lineText = getLineText(content, options.lineStartOffsets, lineIndex);
   const lineStartOffset = options.lineStartOffsets[lineIndex] ?? 0;
-  let tokens: Token[];
-  let headingLevel: MarkdownHeadingLevel | undefined;
+  let tokens: Token[] | null = null;
+  let headingLevel: ParsedLine['headingLevel'];
   let fencedCodePosition;
 
-  if (format === 'markdown') {
-    const heading = state
-      ? null
-      : parseMarkdownHeading(lineText, lineStartOffset, options.hideMarkdownHeadingMarkers);
-    if (heading) {
-      tokens = heading.tokens;
-      headingLevel = heading.headingLevel;
-    } else if (state || /^[ \t]*\x60{3,}/u.test(lineText) || lineText.includes('<!--')) {
-      const tokenized = tokenizeLineWithState(lineText, { comments: options.commentSyntax, state });
-      tokens = tokenized.tokens;
-      state = tokenized.state;
-      fencedCodePosition = tokenized.fencedCodePosition;
-      annotateTokenOffsets(tokens, lineStartOffset);
-    } else {
-      tokens = parseMarkdownTextLine(lineText, lineStartOffset);
-    }
-  } else if (format === 'ini' || format === 'conf' || format === 'properties' || format === 'dotenv') {
+  if (format === 'ini' || format === 'conf' || format === 'properties' || format === 'dotenv') {
     tokens = parseConfigLine(lineText, lineStartOffset, format);
   } else if (format === 'log') {
-    const logTokens = parseLogLine(lineText, lineStartOffset);
-    if (logTokens) {
-      tokens = logTokens;
-    } else {
-      const tokenized = tokenizeLineWithState(lineText, { state });
-      tokens = tokenized.tokens;
-      state = tokenized.state;
-      fencedCodePosition = tokenized.fencedCodePosition;
-      annotateTokenOffsets(tokens, lineStartOffset);
-    }
+    tokens = state ? null : parseLogLine(lineText, lineStartOffset);
   } else if (format === 'srt' || format === 'webvtt' || format === 'lrc') {
-    const subtitleTokens = parseSubtitleLine(lineText, lineStartOffset, format);
-    if (subtitleTokens) {
-      tokens = subtitleTokens;
-    } else {
-      const tokenized = tokenizeLineWithState(lineText, { state });
-      tokens = tokenized.tokens;
-      state = tokenized.state;
-      fencedCodePosition = tokenized.fencedCodePosition;
-      annotateTokenOffsets(tokens, lineStartOffset);
-    }
-  } else {
-    const tokenized = tokenizeLineWithState(lineText, { comments: options.commentSyntax, state });
+    tokens = state ? null : parseSubtitleLine(lineText, lineStartOffset, format);
+  }
+
+  if (!tokens) {
+    const tokenized = tokenizeLineWithState(lineText, {
+      comments: options.commentSyntax,
+      state,
+      lineCheckboxes: format === 'plain' || format === 'markdown',
+      markdown: format === 'markdown'
+        ? { hideHeadingMarkers: options.hideMarkdownHeadingMarkers }
+        : undefined
+    });
     tokens = tokenized.tokens;
     state = tokenized.state;
+    headingLevel = tokenized.headingLevel;
     fencedCodePosition = tokenized.fencedCodePosition;
     annotateTokenOffsets(tokens, lineStartOffset);
   }

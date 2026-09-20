@@ -23,13 +23,9 @@ export interface RenderListLineLayout {
   marker: ListMarker;
   ownerLineIndex: number;
   prefixLength: number;
-}
-
-export function getRenderListIndentGuideCount(
-  layout: RenderListLineLayout,
-  tabSize: number
-): number {
-  return getIndentInfo(layout.marker.indent, tabSize).indentLevel;
+  visualIndentWidth: number;
+  prefixWidth: number;
+  indentGuideCount: number;
 }
 
 export interface RenderedLineHeightMeasurements {
@@ -49,6 +45,7 @@ interface CachedLayoutLine {
   incomingOwnerKey: string;
   outgoingOwner: ActiveListOwner | null;
   outgoingOwnerKey: string;
+  outgoingGuideCount: number;
   listLayout: RenderListLineLayout | null;
   estimatedHeight: number;
   height: number;
@@ -155,6 +152,7 @@ interface EditorLineLayoutOptions {
   content: string;
   lineStartOffsets: number[];
   contentWidth: number;
+  tabSize: number;
   fencedCodeRanges: FencedCodeBlockRange[];
   wrapEnabled: boolean;
   measurements: RenderedLineHeightMeasurements;
@@ -165,6 +163,8 @@ interface EditorLineLayoutOptions {
   measureTextWidth: (text: string) => number;
   getListContinuationIndent: (marker: ListMarker) => string;
   change?: TextChange | null;
+  /** 복합 표시 블록의 첫 줄 높이와 그 블록에 흡수된 줄의 0 높이. */
+  lineHeightOverrides?: ReadonlyMap<number, number>;
 }
 
 export function createEditorLineLayoutCache(): EditorLineLayoutCache {
@@ -266,10 +266,23 @@ function getLayoutLine(
   options: EditorLineLayoutOptions,
   lineIndex: number,
   activeOwner: ActiveListOwner | null,
-  isFencedCode: boolean
+  isFencedCode: boolean,
+  inheritedGuideCount: number
 ): CachedLayoutLine {
   const lineStart = options.lineStartOffsets[lineIndex] ?? 0;
   const lineText = getLineText(options.content, options.lineStartOffsets, lineIndex);
+  const blockHeight = options.lineHeightOverrides?.get(lineIndex);
+  if (blockHeight !== undefined) {
+    const measured = options.measurements.content === options.content
+      && options.measurements.context === options.measurementContext
+      ? options.measurements.heights[lineIndex] : undefined;
+    return {
+      text: lineText, isFencedCode: false, incomingOwnerKey: getOwnerKey(activeOwner),
+      outgoingOwner: null, outgoingOwnerKey: '', outgoingGuideCount: 0, listLayout: null,
+      estimatedHeight: blockHeight,
+      height: blockHeight === 0 ? 0 : measured ?? blockHeight
+    };
+  }
   const incomingOwnerKey = getOwnerKey(activeOwner);
   const currentListMarker = isFencedCode ? null : getListMarkerAtStart(lineText);
   let nextOwner = isFencedCode ? null : activeOwner;
@@ -291,15 +304,29 @@ function getLayoutLine(
     }
   }
 
+  // 목록은 앞선 일반 줄의 안내선만 이어받으며 중첩 목록 자체의 선은 만들지 않는다.
+  const outgoingGuideCount = isFencedCode
+    ? 0
+    : listLayoutMarker
+      ? Math.min(inheritedGuideCount, getIndentInfo(listLayoutMarker.indent, options.tabSize).indentLevel)
+      : getIndentInfo(lineText, options.tabSize).indentLevel;
   const listLayout = listLayoutMarker
-    ? { marker: listLayoutMarker, ownerLineIndex, prefixLength }
+    ? {
+      marker: listLayoutMarker,
+      ownerLineIndex,
+      prefixLength,
+      indentGuideCount: outgoingGuideCount,
+      // 원문 접두부와 별개인 표시 여백이다. 연속 줄의 구조 공백에도 더하지 않는다.
+      visualIndentWidth: Math.max(0, options.measureTextWidth('    ')),
+      prefixWidth: Math.max(1, options.measureTextWidth(`${listLayoutMarker.indent}${listLayoutMarker.marker}`))
+    }
     : null;
   const lineContentWidth = isFencedCode
     ? Math.max(1, options.contentWidth - (options.fencedCodeHorizontalPadding * 2))
     : options.contentWidth;
   const wrappedText = listLayoutMarker ? lineText.slice(prefixLength) : lineText;
-  const wrappedWidth = listLayoutMarker
-    ? Math.max(1, lineContentWidth - options.measureTextWidth(`${listLayoutMarker.indent}${listLayoutMarker.marker}`))
+  const wrappedWidth = listLayout
+    ? Math.max(1, lineContentWidth - listLayout.visualIndentWidth - listLayout.prefixWidth)
     : lineContentWidth;
   const visualLineCount = countWrappedVisualLines(
     wrappedText,
@@ -323,6 +350,7 @@ function getLayoutLine(
     incomingOwnerKey,
     outgoingOwner: nextOwner,
     outgoingOwnerKey: getOwnerKey(nextOwner),
+    outgoingGuideCount,
     listLayout,
     estimatedHeight,
     height: measuredHeight ?? estimatedHeight
@@ -335,6 +363,7 @@ function layoutLinesEqual(left: CachedLayoutLine | undefined, right: CachedLayou
     && left.isFencedCode === right.isFencedCode
     && left.incomingOwnerKey === right.incomingOwnerKey
     && left.outgoingOwnerKey === right.outgoingOwnerKey
+    && left.outgoingGuideCount === right.outgoingGuideCount
     && Math.abs(left.estimatedHeight - right.estimatedHeight) <= 0.001;
 }
 
@@ -400,7 +429,8 @@ export function getEditorLineLayout(
         const lineIndex = Number(rawLineIndex);
         const line = cache.lines[lineIndex];
         if (!line || !Number.isFinite(rawHeight)) continue;
-        const height = Math.max(options.measuredLineHeight, rawHeight);
+        const height = options.lineHeightOverrides?.get(lineIndex) === 0
+          ? 0 : Math.max(options.measuredLineHeight, rawHeight);
         line.height = height;
         cache.heights.update(lineIndex, height);
       }
@@ -416,12 +446,14 @@ export function getEditorLineLayout(
   if (!canIncrement || !options.change) {
     const lines: CachedLayoutLine[] = [];
     let activeOwner: ActiveListOwner | null = null;
+    let inheritedGuideCount = 0;
     const isFencedLine = createFencedLineLookup(options.fencedCodeRanges, 0);
     for (let lineIndex = 0; lineIndex < lineCount; lineIndex += 1) {
       const lineStart = options.lineStartOffsets[lineIndex] ?? 0;
-      const line = getLayoutLine(options, lineIndex, activeOwner, isFencedLine(lineStart));
+      const line = getLayoutLine(options, lineIndex, activeOwner, isFencedLine(lineStart), inheritedGuideCount);
       lines.push(line);
       activeOwner = line.outgoingOwner;
+      inheritedGuideCount = line.outgoingGuideCount;
       cache.visitedLineCount += 1;
     }
     cache.lines = lines;
@@ -435,6 +467,7 @@ export function getEditorLineLayout(
     );
     const sameLineCount = cache.lineStartOffsets.length === lineCount;
     let activeOwner = changedLine > 0 ? cache.lines[changedLine - 1]?.outgoingOwner ?? null : null;
+    let inheritedGuideCount = changedLine > 0 ? cache.lines[changedLine - 1]?.outgoingGuideCount ?? 0 : 0;
     const isFencedLine = createFencedLineLookup(
       options.fencedCodeRanges,
       options.lineStartOffsets[changedLine] ?? 0
@@ -444,21 +477,23 @@ export function getEditorLineLayout(
       for (let lineIndex = changedLine; lineIndex < lineCount; lineIndex += 1) {
         const previous = cache.lines[lineIndex];
         const lineStart = options.lineStartOffsets[lineIndex] ?? 0;
-        const next = getLayoutLine(options, lineIndex, activeOwner, isFencedLine(lineStart));
+        const next = getLayoutLine(options, lineIndex, activeOwner, isFencedLine(lineStart), inheritedGuideCount);
         cache.visitedLineCount += 1;
         if (lineIndex > newChangedEndLine && layoutLinesEqual(previous, next)) break;
         cache.lines[lineIndex] = next;
         cache.listLayouts[lineIndex] = next.listLayout;
         cache.heights.update(lineIndex, next.height);
         activeOwner = next.outgoingOwner;
+        inheritedGuideCount = next.outgoingGuideCount;
       }
     } else {
       const lines = cache.lines.slice(0, changedLine);
       for (let lineIndex = changedLine; lineIndex < lineCount; lineIndex += 1) {
         const lineStart = options.lineStartOffsets[lineIndex] ?? 0;
-        const next = getLayoutLine(options, lineIndex, activeOwner, isFencedLine(lineStart));
+        const next = getLayoutLine(options, lineIndex, activeOwner, isFencedLine(lineStart), inheritedGuideCount);
         lines.push(next);
         activeOwner = next.outgoingOwner;
+        inheritedGuideCount = next.outgoingGuideCount;
         cache.visitedLineCount += 1;
       }
       cache.lines = lines;

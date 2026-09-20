@@ -35,6 +35,7 @@ graph TD
 - `docs/features/render-mode.md`: 렌더 모드 표시 계약.
 - `docs/features/natural-text-editing.md`, `docs/features/natural-text-editing.en.md`: 글머리, 자동 쌍 문자, 들여쓰기, 캐럿, 실행 취소를 아우르는 자연스러운 텍스트 편집 지침 한국어판과 영어판.
 - `docs/features/delimited-table.md`: CSV/TSV 표 표시와 편집 계약.
+- `docs/features/markdown-table.md`: 공통 표 편집기를 사용하는 Markdown 본문 표와 원문 범위 보존 계약.
 - `docs/features/editor-undo.md`: 편집기 실행 취소 계약.
 - `docs/features/settings-window.md`: 독립 설정창 계약.
 - `docs/features/theme-preferences.md`: 테마와 사용자 설정 저장 계약.
@@ -46,8 +47,8 @@ graph TD
 ## 현재 기능 범위
 
 - 현재 제품 지원 형식인 일반 텍스트, Markdown, JSON/JSONC, JSON Lines, XML, Gettext PO/POT, CSV/TSV, YAML, TOML, INI 계열, ENV, Git·EditorConfig·npm·Docker 설정, REG, OpenSSH, systemd, hosts, 로그, 자막·가사 파일 열기와 저장.
-- 메인 창에 드롭한 텍스트 파일을 각각 새 탭으로 열기.
-- Explorer나 기본 앱 연결에서 파일을 다시 열 때 기존 앱의 새 탭으로 전달하는 단일 프로세스 실행.
+- 메인 창에 드롭한 텍스트 파일 중 이미 열린 파일은 기존 탭을 활성화하고, 처음 여는 파일은 각각 새 탭으로 열기.
+- Explorer나 기본 앱 연결에서 파일을 다시 열 때 기존 앱으로 전달하고, 이미 열린 파일은 기존 탭을 활성화하며 처음 여는 파일만 새 탭으로 추가하는 단일 프로세스 실행.
 - 탭을 새 편집기 창으로 분리하고 편집기 창 사이에서 드래그해 다시 도킹하기.
 - 원문 모드 편집.
 - 렌더 모드 구문 강조, 들여쓰기 가이드, 줄 번호, 가상화된 화면 렌더링.
@@ -59,6 +60,7 @@ graph TD
 - 설정 버튼을 처음 눌렀을 때 독립 설정창을 동적으로 생성하고 표시.
 - 설정창에서 파일 형식별 렌더 표시와 렌더 편집 모듈 켜기/끄기.
 - CSV/TSV 렌더 모드에서 셀 편집, 행·열 추가·제거·이동, 열 너비 조절, 첫 행 강조와 행 번호 표시.
+- Markdown 본문의 파이프 표를 같은 표 편집기로 표시하며 열 정렬, 셀·행·열 편집과 실행 취소를 지원한다. 표 밖 문장과 원문 줄바꿈을 보존한다.
 - Windows 앱 표시 이름과 번들 실행 파일 이름을 `text-pad`로 생성.
 - 현재 제품 지원 확장자를 Windows 파일 연결과 기본 앱 후보 정보로 등록해 `연결 프로그램`의 항상 사용 또는 Windows 기본 앱 설정에서 선택 가능하게 함.
 - NSIS 설치 파일에서 같은 버전 삭제를 선택하면 삭제 후 설치를 재개하지 않고 종료.
@@ -78,8 +80,10 @@ graph TD
 ## 주요 명령
 
 - `npm run validate:i18n`: 번역표 키와 치환 변수 검사.
+- `npm run validate:capabilities`: 편집기·설정창의 Tauri 명령과 최소 권한 계약 검사.
 - `npm run validate:formats`: 중앙 지원 목록, 샘플, Windows 설치 연결의 일치 검사.
-- `npm run check`: Svelte와 TypeScript 검사.
+- `npm run test:browser`: 실제 Chromium DOM에서 렌더 뷰포트 스크롤 회귀 검사. 최초 1회 `npx playwright install chromium`으로 브라우저를 준비한다.
+- `npm run check`: 정적·코어 검사와 브라우저 회귀 검사를 함께 실행한다.
 - `npm run build`: 프론트엔드 정적 빌드.
 - `npm run tauri dev`: Tauri 개발 실행.
 - `npm run tauri:build:signed`: Windows 실행 파일, MSI/NSIS 설치 파일, 업데이터 서명 생성. 최종 빌드는 이 명령만 사용한다.

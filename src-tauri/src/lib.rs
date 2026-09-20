@@ -6,8 +6,8 @@ mod instance;
 mod windows_wheel;
 
 use file_commands::{
-    get_startup_files, open_file_dialog, open_file_paths, save_file_dialog, write_file_content,
-    ApprovedFilePaths,
+    get_startup_files, open_file_dialog, open_file_paths, read_document_image, save_file_dialog,
+    write_file_content, ApprovedFilePaths,
 };
 
 use instance::{take_pending_open_files, PendingOpenFiles};
@@ -73,6 +73,7 @@ pub fn run() {
             write_file_content,
             setup_editor_window_wheel,
             take_pending_open_files,
+            read_document_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

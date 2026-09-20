@@ -10,6 +10,8 @@
 - `src-tauri/src/file_commands.rs`: 파일 읽기/쓰기 명령, 중앙 확장자 목록 기반 대화상자 필터와 파일 오류 응답.
 - `src-tauri/src/instance.rs`: 단일 앱 프로세스 유지, 두 번째 실행 인수의 대상 편집기 창 선택과 파일 열기 요청 큐.
 - `src-tauri/src/windows_wheel.rs`: Windows 가로 휠 처리.
+- `src/lib/desktop-file-service.ts`: 프론트엔드가 Rust 파일 명령의 이름과 요청·응답 직렬화 형식을 직접 다루지 않게 하는 단일 어댑터.
+- `src/lib/desktop-window-service.ts`: Tauri 창 객체, 물리 좌표와 창 간 이벤트 타입을 화면 로직 밖으로 격리하는 프론트엔드 어댑터.
 - `src-tauri/capabilities/default.json`, `src-tauri/capabilities/settings.json`: 창별 프론트엔드 명령 권한.
 - `src-tauri/tauri.conf.json`: 창 설정과 빌드 설정.
 - `.github/workflows/release.yml`: `main`의 버전 태그에서 서명된 Windows 릴리스와 업데이트 메타데이터를 만드는 작업.
@@ -18,6 +20,9 @@
 
 ## Tauri 명령
 
+- `read_document_image(document_path: String, relative_path: String) -> Result<DocumentImage, FileCommandError>`
+  - 이미 승인된 문서를 기준으로 같은 폴더 아래의 상대 이미지 경로만 읽는다. 실제 경로 확인으로 폴더 밖 이동·심볼릭 링크 이탈을 거절하고, PNG/JPEG/GIF/WebP/SVG/AVIF/BMP/ICO 및 4 MiB 제한을 적용한다.
+  - 이미지 파일 읽기는 별도 작업에서 수행하고 MIME 형식과 바이트를 반환한다. 프론트엔드는 임시 이미지 주소를 생성한 뒤 표시 수명이 끝나면 해제한다. 이미지 경로를 일반 파일 열기·쓰기 승인 목록에 추가하지 않는다.
 - `open_file_dialog(filters: Vec<DialogFilter>) -> Result<Option<OpenedFile>, FileCommandError>`
   - Rust가 파일 선택창을 열고 사용자가 고른 실제 파일만 읽는다.
   - 승인된 정규화 경로, 디코딩한 원문과 판별한 인코딩을 함께 반환한다.
@@ -40,8 +45,9 @@
   - 동적으로 만든 편집기 창에도 Windows 네이티브 가로 휠 훅을 설치한다.
 - `take_pending_open_files() -> Result<Vec<OpenedFile>, FileCommandError>`
   - 이미 실행 중인 앱에 들어온 후속 파일 열기 요청 중 현재 편집기 창을 대상으로 한 경로만 순서대로 꺼내 읽는다.
-  - 읽은 정규화 경로를 승인 목록에 추가하고, 프론트엔드는 반환된 파일을 기존 탭을 교체하지 않는 새 탭으로 연다.
+  - 읽은 정규화 경로를 승인 목록에 추가하고, 프론트엔드는 반환된 파일과 같은 경로의 탭이 있으면 그 탭을 활성화하며 처음 여는 파일만 기존 탭을 교체하지 않는 새 탭으로 연다.
 새 파일 입출력 기능을 추가할 때는 사용자가 대화상자로 선택했거나 운영체제가 파일 열기·드롭 의도로 넘긴 경로만 다루고, 실패를 `Result`로 반환한다.
+프론트엔드 화면과 설정 화면은 `invoke()`나 Rust 명령 문자열을 직접 사용하지 않고 `desktop-file-service.ts`의 형식화된 메서드만 호출한다. `npm run validate:capabilities`는 Rust 명령 명세, 이 어댑터의 명령 목록, 창별 capability와 설정 가져오기·내보내기가 사용하는 어댑터 메서드가 서로 정확히 일치하는지 검사한다.
 `FileCommandError`는 `code`와 `message`를 가진다. `code`는 오류 종류를 번역 테이블에 매핑하기 위한 짧은 코드이고, `message`는 운영체제나 파일 시스템에서 받은 상세 원문이다. 프론트엔드는 알려진 코드를 현재 표시 언어로 번역하고, 알 수 없는 오류에만 상세 원문을 fallback으로 사용한다.
 파일 원문은 UTF-8, UTF-8 BOM, UTF-16 LE/BE BOM을 지원한다. 디스크 바이트와 BOM으로 인코딩을 판별하고, BOM 없는 임의의 레거시 코드 페이지는 추측하지 않는다. 디스크에 인코딩된 크기 기준 최대 16 MiB, 디코딩한 원문 기준 최대 250,000줄까지만 열고 저장한다. 메타데이터 확인 뒤에도 제한보다 한 바이트만 더 읽어 파일 증가 경쟁에서 무제한 할당이 일어나지 않게 한다.
 열기 대화상자의 확장자와 모든 파일 필터, 저장 필터에 허용할 확장자, 설치 연결은 중앙 목록을 기준으로 한다. 확장자 없는 관례적 파일은 모든 파일 필터로 선택한 뒤 프론트엔드가 파일명·경로로 판별한다. 형식을 추가할 때 Rust 상수를 따로 수정하지 않으며, 중복·누락은 `npm run validate:formats`에서 실패해야 한다.
@@ -50,7 +56,7 @@
 ## 창과 권한
 
 접근 제어 목록(ACL)은 프론트엔드가 호출할 수 있는 Tauri 명령을 제한하는 보안 설정이다.
-콘텐츠 보안 정책(CSP)은 WebView가 불러오거나 실행할 수 있는 리소스 출처를 제한하는 보안 설정이다. 이 앱은 로컬 번들, Tauri IPC, 인라인 스타일만 허용한다.
+콘텐츠 보안 정책(CSP)은 WebView가 불러오거나 실행할 수 있는 리소스 출처를 제한하는 보안 설정이다. 스크립트와 통신은 로컬 번들과 Tauri IPC로 제한한다. 이미지는 Markdown 표시를 위해 HTTP/HTTPS와 앱에서 만든 임시 이미지 주소도 허용한다. 문서 HTML의 임의 스타일·이벤트·스크립트는 허용 목록 정리 과정에서 제거한다.
 
 - 설정창은 시작 성능을 위해 앱 실행 시 만들지 않는다.
 - 단일 인스턴스 플러그인은 다른 플러그인보다 먼저 등록한다. 두 번째 실행은 새 프로세스를 유지하지 않고 상대 경로를 해당 실행의 작업 폴더에 맞춰 해석한 뒤, 포커스된 편집기 창 또는 메인 창의 제한 큐로 실제 파일 경로를 전달한다.
@@ -59,9 +65,10 @@
 - 설정 버튼은 기존 `settings` 창을 찾고, 없으면 동적으로 만든 뒤 `show()`와 `setFocus()`를 호출한다.
 - 설정창 닫기 요청은 창을 파괴하지 않고 `hide()`로 숨긴다.
 - `src-tauri/capabilities/default.json`은 `main`과 `editor-*` 편집기 창에 파일 명령, 창 간 이벤트, 업데이트, 재시작, URL 열기, 메시지창, 창 생성과 제어 권한을 부여한다.
-- 앱 전용 파일 명령은 `build.rs`의 애플리케이션 명세가 생성한 개별 허용 권한을 편집기 창에만 연결한다.
-- `src-tauri/capabilities/settings.json`은 `settings` 창에 이벤트 수신, 기본 창 조회, 숨기기 권한만 부여한다.
-- 프론트엔드에는 파일 열기·저장 대화상자 권한을 주지 않으며, 일반 메시지 대화상자와 웹 URL 열기만 허용한다.
+- 앱 전용 파일 명령은 `build.rs`의 애플리케이션 명세가 생성한 개별 허용 권한으로만 노출하며, WebView에 운영체제 파일 시스템의 원시 접근 권한을 부여하지 않는다.
+- `src-tauri/capabilities/settings.json`은 `settings` 창에 이벤트 수신, 기본 창 조회, 숨기기 권한과 설정 JSON을 사용자가 직접 고른 경로에서 가져오거나 내보내기 위한 `open_file_dialog`, `save_file_dialog` 권한만 부여한다.
+- 설정창에는 시작 파일, 이미 승인된 임의 경로 열기·덮어쓰기, 업데이트, URL·메시지창, 새 창 생성·파괴 권한을 부여하지 않는다. `npm run validate:capabilities`는 이 최소 권한 집합과 `build.rs` 명령 명세의 불일치를 실패로 처리한다.
+- 화면 컴포넌트는 Tauri 코어의 명령·창·이벤트·좌표 API를 직접 가져오지 않는다. 파일 작업은 `desktop-file-service.ts`, 창 제어와 이벤트는 `desktop-window-service.ts`를 거치며, 권한 검증은 메인 페이지의 직접 Tauri 코어 import를 실패로 처리한다.
 
 `tauri-plugin-window-state`는 편집기 창의 위치와 크기를 복원하되 독립 설정창은 복원하지 않으므로 `settings` 창을 denylist에 둔다.
 
@@ -107,5 +114,6 @@ Windows WebView2는 일부 마우스 가로 휠 입력을 브라우저 `wheel` �
 ## 검증
 
 - 백엔드 또는 Tauri 설정 변경 후: `.agents/skills/text-pad-signed-build/SKILL.md`에 따라 `npm run tauri:build:signed`
+- 창 capability 또는 앱 명령 변경 후: `npm run validate:capabilities`
 - 지원 형식 변경 후: `npm run validate:formats`
 - 프론트엔드와 함께 바뀐 경우: `npm run check` 후 `npm run tauri:build:signed`

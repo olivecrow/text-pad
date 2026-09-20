@@ -6,6 +6,15 @@ import {
 } from './text-offset-index';
 import type { TextChange } from './text-change';
 
+export function getEditorInputMergeKey(inputType: string, hasSelection: boolean, isComposing: boolean): string | null {
+  if (isComposing) return 'composition';
+  if (hasSelection) return null;
+  if (inputType === 'insertText') return 'insert-text';
+  if (inputType === 'deleteContentBackward') return 'delete-backward';
+  if (inputType === 'deleteContentForward') return 'delete-forward';
+  return null;
+}
+
 export interface TextareaInputResult {
   snapshot: EditorSnapshot;
   change: TextChange | null;

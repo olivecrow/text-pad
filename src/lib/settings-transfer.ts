@@ -1,7 +1,10 @@
+import { additionalRenderThemeFields, type AdditionalRenderThemeField } from './render-theme-fields';
 import {
   configurableDocumentFormats,
+  isConfigurableDocumentFormatId,
   normalizeDocumentFeatureSettings,
-  type DocumentFeatureSettings
+  type DocumentFeatureSettings,
+  type DocumentFormatId
 } from './document-formats';
 import { isAppLocale, type LanguagePreference } from './i18n';
 import { normalizeAutoPairAllowedFollowingStrings } from './auto-pair';
@@ -17,7 +20,7 @@ export const maximumSettingsFileBytes = 1024 * 1024;
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 
-export interface SettingsThemePalette {
+export interface SettingsThemePalette extends Record<AdditionalRenderThemeField, string> {
   codeBg: string;
   codeText: string;
   keyStrong: string;
@@ -40,6 +43,7 @@ export interface AppSettingsSnapshot {
   general: {
     language: LanguagePreference;
     theme: ThemeMode;
+    defaultNewDocumentFormat: DocumentFormatId;
   };
   source: {
     fontSize: number;
@@ -98,7 +102,8 @@ interface ImportStatistics {
 
 type UnknownRecord = Record<string, unknown>;
 
-const colorFields = [
+export const settingsThemeColorFields = [
+  ...additionalRenderThemeFields.map(item => item.field),
   'codeBg',
   'codeText',
   'keyStrong',
@@ -115,6 +120,11 @@ const colorFields = [
   'bracket',
   'brace'
 ] as const satisfies readonly (Exclude<keyof SettingsThemePalette, 'renderFontWeight'>)[];
+
+export const settingsThemePaletteFields = [
+  ...settingsThemeColorFields,
+  'renderFontWeight'
+] as const satisfies readonly (keyof SettingsThemePalette)[];
 
 const themeWeights = new Set(['300', '400', '500', '600', '700']);
 const markdownWeights = new Set(['400', '500', '600', '700', '800']);
@@ -214,6 +224,10 @@ function normalizeTheme(value: unknown): ThemeMode | null {
   return value === 'system' || value === 'light' || value === 'dark' ? value : null;
 }
 
+function normalizeDocumentFormatId(value: unknown): DocumentFormatId | null {
+  return isConfigurableDocumentFormatId(value) ? value : null;
+}
+
 function normalizeFontFamily(value: unknown): string | null {
   return typeof value === 'string' && renderFontFamilies.has(value) ? value : null;
 }
@@ -231,8 +245,8 @@ function applyPalette(
   target: SettingsThemePalette,
   statistics: ImportStatistics
 ) {
-  markUnknownKeys(candidate, [...colorFields, 'renderFontWeight'], statistics);
-  for (const field of colorFields) {
+  markUnknownKeys(candidate, settingsThemePaletteFields, statistics);
+  for (const field of settingsThemeColorFields) {
     applyValue(candidate, field, normalizeHexColor, (value) => target[field] = value, statistics);
   }
   applyValue(
@@ -328,6 +342,7 @@ function migrateLegacySettings(candidate: UnknownRecord): UnknownRecord {
 
   assignLegacyValue(general, 'language', candidate, 'languagePreference');
   assignLegacyValue(general, 'theme', candidate, 'themeMode');
+  assignLegacyValue(general, 'defaultNewDocumentFormat', candidate, 'defaultNewDocumentFormatId');
   assignLegacyValue(source, 'fontSize', candidate, 'sourceFontSize');
   assignLegacyValue(render, 'fontSize', candidate, 'renderFontSize');
   assignLegacyValue(render, 'indentWidth', candidate, 'tabSize');
@@ -372,9 +387,16 @@ function applySettingsCandidate(
 
   const general = getSection(candidate, 'general', statistics);
   if (general) {
-    markUnknownKeys(general, ['language', 'theme'], statistics);
+    markUnknownKeys(general, ['language', 'theme', 'defaultNewDocumentFormat'], statistics);
     applyValue(general, 'language', normalizeLanguage, (value) => settings.general.language = value, statistics);
     applyValue(general, 'theme', normalizeTheme, (value) => settings.general.theme = value, statistics);
+    applyValue(
+      general,
+      'defaultNewDocumentFormat',
+      normalizeDocumentFormatId,
+      (value) => settings.general.defaultNewDocumentFormat = value,
+      statistics
+    );
   }
 
   const source = getSection(candidate, 'source', statistics);
@@ -462,18 +484,40 @@ function applySettingsCandidate(
   return { settings, statistics };
 }
 
+export function normalizeSettingsSnapshot(
+  candidate: unknown,
+  defaults: AppSettingsSnapshot
+): AppSettingsSnapshot {
+  const record = asRecord(candidate);
+  if (!record) return cloneSettings(defaults);
+  return applySettingsCandidate(migrateLegacySettings(record), defaults).settings;
+}
+
+function createSettingsDocument(
+  settings: AppSettingsSnapshot,
+  metadata?: { appVersion: string; exportedAt: string }
+) {
+  return {
+    format: settingsFileFormat,
+    schemaVersion: settingsSchemaVersion,
+    ...(metadata ?? {}),
+    settings
+  };
+}
+
+export function serializeSettingsSnapshot(settings: AppSettingsSnapshot): string {
+  return JSON.stringify(createSettingsDocument(settings));
+}
+
 export function serializeSettingsFile(
   settings: AppSettingsSnapshot,
   appVersion: string,
   exportedAt = new Date()
 ): string {
-  return JSON.stringify({
-    format: settingsFileFormat,
-    schemaVersion: settingsSchemaVersion,
+  return JSON.stringify(createSettingsDocument(settings, {
     appVersion,
-    exportedAt: exportedAt.toISOString(),
-    settings
-  }, null, 2);
+    exportedAt: exportedAt.toISOString()
+  }), null, 2);
 }
 
 export function parseSettingsFile(

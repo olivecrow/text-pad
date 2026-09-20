@@ -108,6 +108,9 @@ function canMergeTransactions(
   mergeWindowMs: number
 ): boolean {
   if (!mergeKey || previous.mergeKey !== mergeKey) return false;
+  // 조합 중에는 입력기가 직전 글자를 선택해 교체한다. 시작/종료 이벤트가
+  // 그룹을 닫으므로 선택 범위 변화나 입력 대기 시간을 새 편집으로 나누지 않는다.
+  if (mergeKey === 'composition') return true;
   if (timestamp - previous.timestamp > mergeWindowMs) return false;
   return selectionsEqual(previous.afterSelection, before.selection);
 }

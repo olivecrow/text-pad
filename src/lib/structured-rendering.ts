@@ -7,6 +7,7 @@ export interface ParsedLine {
   indentColumns: number;
   extraIndentSpaces: number;
   tokens: Token[];
+  prettyRows?: PrettyPrintRow[];
   fencedCodePosition?: FencedCodeLinePosition;
   headingLevel?: MarkdownHeadingLevel;
   lineKind?:
@@ -18,6 +19,13 @@ export interface ParsedLine {
     | 'translation-target'
     | 'translation-empty'
     | 'subject';
+}
+
+export interface PrettyPrintRow {
+  start: number;
+  end: number;
+  indentColumns: number;
+  tokens: Token[];
 }
 
 export interface DocumentLineRange {
