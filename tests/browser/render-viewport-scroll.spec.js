@@ -553,7 +553,7 @@ test('render theme settings expose comments and added colors for both themes', a
   await page.waitForLoadState('networkidle');
   await page.setContent(await readFile(new URL('./fixtures/settings-preview.html', import.meta.url), 'utf8'));
   await page.getByRole('button', { name: '모양', exact: true }).nth(1).click();
-  await expect(page.locator('input[type="color"]')).toHaveCount(34);
+  await expect(page.locator('input[type="color"]')).toHaveCount(43);
   await expect(page.locator('#color-hl-comment-window-light')).toHaveValue('#475569');
   const selection = page.locator('#color-selection-window-light');
   await expect(selection).toHaveValue('#60A5FA');
@@ -573,7 +573,7 @@ test('render theme settings expose comments and added colors for both themes', a
     }, color);
   }
   await page.getByRole('button', { name: '다크', exact: true }).click();
-  await expect(page.locator('#color-selection-window-dark')).toHaveValue('#60A5FA');
+  await expect(page.locator('#color-selection-window-dark')).toHaveValue('#BFDBFE');
   await expect(page.getByLabel('검색 결과 강조색', { exact: true })).toHaveValue('#FACC15');
   await expect(page.getByLabel('현재 검색 결과 강조색', { exact: true })).toHaveValue('#FDE047');
   await expect(page.locator('#color-hl-comment-window-dark')).toHaveValue('#64748B');
@@ -625,4 +625,168 @@ test('stored render colors reach comments, booleans, punctuation, selection and 
   await page.getByRole('button', { name: '원문 모드로 전환', exact: true }).click();
   await expect(currentResult).toHaveCSS('background-color', 'color(srgb 0 1 0 / 0.5)');
   await expect(otherResult).toHaveCSS('background-color', 'color(srgb 1 0 0 / 0.35)');
+});
+
+test('render quotes close at the nearest valid mark and apostrophes type singly after English letters', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+  const textarea = page.getByTestId('editor-textarea');
+  await textarea.fill("ABC 'DEF' G 'HI' JKLMN");
+  await expect(page.locator('.backdrop-line[data-line-index="0"] .hl-string')).toHaveCount(2);
+  await expect(page.locator('.backdrop-line[data-line-index="0"] .hl-string').first()).toHaveText("'DEF'");
+  await expect(page.locator('.backdrop-line[data-line-index="0"] .hl-string').last()).toHaveText("'HI'");
+
+  await textarea.fill('don');
+  await textarea.press("'");
+  await expect(textarea).toHaveValue("don'");
+  await textarea.press('t');
+  await expect(textarea).toHaveValue("don't");
+  await textarea.fill('ABC ');
+  await textarea.press("'");
+  await expect(textarea).toHaveValue("ABC ''");
+});
+
+test('single quotes adjoining text share their rendered and caret ranges while multilingual apostrophes stay literal', async ({ page }) => {
+  await page.goto('/');
+  const textarea = page.getByTestId('editor-textarea');
+  const source = [
+    "asdfasd 'asdfasdf'asdfasdfsdaf",
+    'asdfasd "asdfasdf"asdfasdfsdaf',
+    "don't l'homme Ankara'ya п'ять 's morgens",
+    "'don't stop'next",
+    "'l'homme arrive'ensuite",
+    "'п'ять слів'далі"
+  ].join('\n');
+  await textarea.fill(source);
+  await expect(page.locator('.backdrop-line[data-line-index="0"] .hl-string')).toHaveText("'asdfasdf'");
+  await expect(page.locator('.backdrop-line[data-line-index="1"] .hl-string')).toHaveText('"asdfasdf"');
+  await expect(page.locator('.backdrop-line[data-line-index="2"] .hl-string')).toHaveCount(0);
+  await expect(page.locator('.backdrop-line[data-line-index="3"] .hl-string')).toHaveText("'don't stop'");
+  await expect(page.locator('.backdrop-line[data-line-index="4"] .hl-string')).toHaveText("'l'homme arrive'");
+  await expect(page.locator('.backdrop-line[data-line-index="5"] .hl-string')).toHaveText("'п'ять слів'");
+  const opening = source.indexOf("'");
+  const closing = source.indexOf("'", opening + 1);
+  await textarea.evaluate((element, caret) => {
+    const input = /** @type {HTMLTextAreaElement} */ (element);
+    input.setSelectionRange(caret, caret);
+    input.dispatchEvent(new Event('select', { bubbles: true }));
+  }, closing);
+  await expect.poll(() => page.locator('.render-pair-decoration').evaluateAll(elements => elements
+    .map(element => Number(element.getAttribute('data-pair-offset'))).sort((left, right) => left - right)
+  )).toEqual([opening, closing]);
+  await expect(textarea).toHaveValue(source);
+
+  for (const prefix of ['п', 'l', 'Ankara', 'e\u0301', '2024', '𐐀']) {
+    await textarea.fill(prefix);
+    await textarea.press("'");
+    await expect(textarea).toHaveValue(`${prefix}'`);
+    await textarea.press('Control+z');
+    await expect(textarea).toHaveValue(prefix);
+    await textarea.press('Control+y');
+    await expect(textarea).toHaveValue(`${prefix}'`);
+  }
+});
+
+for (const theme of ['light', 'dark']) {
+  test(`syntax colors remain visible inside quotes and brackets in ${theme} mode`, async ({ page }) => {
+    await page.addInitScript(theme => localStorage.setItem('text-pad.settings', JSON.stringify({
+      format: 'text-pad-settings', schemaVersion: 1,
+      settings: { general: { theme, language: 'ko' }, render: { colors: { [theme]: {
+        scriptLatin: '#123456', scriptHangul: '#654321', paren: '#B01234', bracket: '#AB34CD'
+      } } } }
+    })), theme);
+    await page.goto('/');
+    const textarea = page.getByTestId('editor-textarea');
+    const source = "ABC 'DEF' G 'HI' JKLMN\n'asdfasdf'\n[dddd]\n(outer [inner] end)\nLatin 한글 'quoted 한글'";
+    await textarea.fill(source);
+    const lines = page.locator('.backdrop-line .line-content');
+    await expect(lines).toHaveCount(5);
+    const colors = await lines.evaluateAll(elements => elements.map(element => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      const characters = [];
+      let node;
+      while ((node = walker.nextNode())) {
+        const color = node.parentElement ? getComputedStyle(node.parentElement).color : '';
+        for (const text of node.textContent ?? '') characters.push({ text, color });
+      }
+      return characters;
+    }));
+    expect(colors.map(line => line.map(character => character.text).join('')).join('\n')).toBe(source);
+    /** @type {(line: number, start: number, end: number, color: string) => void} */
+    const expectRangeColor = (line, start, end, color) => {
+      expect([...new Set(colors[line].slice(start, end).map(character => character.color))]).toEqual([color]);
+    };
+    expectRangeColor(0, 0, 3, 'rgb(18, 52, 86)');
+    expectRangeColor(0, 4, 9, 'rgb(176, 18, 52)');
+    expectRangeColor(0, 10, 11, 'rgb(18, 52, 86)');
+    expectRangeColor(0, 12, 16, 'rgb(176, 18, 52)');
+    expectRangeColor(1, 0, 10, 'rgb(176, 18, 52)');
+    expectRangeColor(2, 0, 6, 'rgb(176, 18, 52)');
+    expectRangeColor(3, 0, 7, 'rgb(176, 18, 52)');
+    expectRangeColor(3, 7, 14, 'rgb(171, 52, 205)');
+    expectRangeColor(3, 14, 19, 'rgb(176, 18, 52)');
+    expectRangeColor(4, 6, 8, 'rgb(101, 67, 33)');
+    expectRangeColor(4, 9, 20, 'rgb(176, 18, 52)');
+  });
+}
+
+test('rendered words wrap together and script colors follow saved theme settings', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('text-pad.settings', JSON.stringify({
+    format: 'text-pad-settings', schemaVersion: 1,
+    settings: { general: { theme: 'light', language: 'ko' }, render: { colors: { light: {
+      scriptLatin: '#123456', scriptHangul: '#654321'
+    } } } }
+  })));
+  await page.setViewportSize({ width: 420, height: 650 });
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+  const textarea = page.getByTestId('editor-textarea');
+  await textarea.fill('ABCDEFGHIJKLMNOPQRSTUVWXY ABCDEFGHIJKLMNOPQRSTUVWXY');
+  const words = page.locator('.backdrop-line[data-line-index="0"] .hl-script-latin');
+  await expect(words).toHaveCount(2);
+  const fragments = await words.evaluateAll(elements => elements.map(element =>
+    Array.from(element.getClientRects()).map(rect => ({ top: rect.top, left: rect.left }))
+  ));
+  expect(fragments[0]).toHaveLength(1);
+  expect(fragments[1]).toHaveLength(1);
+  expect(fragments[1][0].top).toBeGreaterThan(fragments[0][0].top);
+  await expect(words.first()).toHaveCSS('color', 'rgb(18, 52, 86)');
+  await textarea.fill('ABC 한글 漢字 かなカナ Привет Γειά مرحبا नमस्ते ไทย');
+  await expect(page.locator('.hl-script-hangul').first()).toHaveCSS('color', 'rgb(101, 67, 33)');
+  for (const script of ['han', 'kana', 'cyrillic', 'greek', 'arabic', 'devanagari', 'thai']) {
+    await expect(page.locator(`.hl-script-${script}`).first()).toBeVisible();
+  }
+});
+
+test('soft wrapping keeps hyphenated words together when whitespace is available', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 650 });
+  await page.goto('/');
+  const source = 'alpha-beta '.repeat(12).trimEnd();
+  await page.getByTestId('editor-textarea').fill(source);
+  const rowsByWord = await page.locator('.backdrop-line[data-line-index="0"] .line-content').evaluate(root => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const characters = [];
+    let node;
+    while ((node = walker.nextNode())) {
+      const content = node.textContent ?? '';
+      for (let index = 0; index < content.length; index++) {
+        const range = document.createRange();
+        range.setStart(node, index);
+        range.setEnd(node, index + 1);
+        characters.push({ char: content[index], top: range.getBoundingClientRect().top });
+      }
+    }
+    const result = [];
+    let word = [];
+    for (const character of characters) {
+      if (character.char === ' ') {
+        if (word.length) result.push([...new Set(word.map(item => item.top))]);
+        word = [];
+      } else word.push(character);
+    }
+    if (word.length) result.push([...new Set(word.map(item => item.top))]);
+    return result;
+  });
+  expect(rowsByWord).toHaveLength(12);
+  for (const rows of rowsByWord) expect(rows).toHaveLength(1);
 });

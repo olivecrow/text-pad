@@ -2,6 +2,7 @@ import { getListMarkerAtStart } from './list-markers';
 import { getCheckboxMarkerAtStart } from './checkbox-markers';
 import type { MarkdownHeadingLevel } from './markdown-settings';
 import { getMarkdownInlineSpans } from './markdown-inline';
+import { canOpenQuoteAt, findClosingQuote, isEscapedAt } from './quote-boundaries';
 
 export interface Token {
   type:
@@ -80,7 +81,6 @@ export interface TokenizeLineResult {
 }
 
 const hexColorAtStartRegex = /^#[0-9a-fA-F]{6}$/;
-const wordLikeCharRegex = /[\p{L}\p{M}\p{N}]/u;
 const whitespaceRegex = /\s/u;
 const depthTrackedTypes = new Set<Token['type']>(['string', 'paren', 'bracket', 'brace']);
 
@@ -153,10 +153,6 @@ function processInlineTextInTree(tokens: Token[]) {
   }
 }
 
-function isWordLikeChar(char: string | undefined): boolean {
-  return !!char && wordLikeCharRegex.test(char);
-}
-
 function isWhitespaceChar(char: string | undefined): boolean {
   return !!char && whitespaceRegex.test(char);
 }
@@ -176,60 +172,6 @@ function getNextNonWhitespaceIndex(text: string, startIndex: number): number {
     if (!isWhitespaceChar(text[j])) return j;
   }
   return -1;
-}
-
-function isEscapedAt(text: string, index: number): boolean {
-  let slashCount = 0;
-  for (let j = index - 1; j >= 0 && text[j] === '\\'; j--) {
-    slashCount++;
-  }
-  return slashCount % 2 === 1;
-}
-
-function isLikelyApostrophe(text: string, index: number): boolean {
-  const prevChar = text[index - 1];
-  const nextChar = text[index + 1];
-
-  if (!isWordLikeChar(prevChar)) return false;
-  if (isWordLikeChar(nextChar)) return true;
-  if (!nextChar || isWhitespaceChar(nextChar)) return true;
-
-  return /[.,;:!?…)\]}]/u.test(nextChar);
-}
-
-function isSingleQuoteCloseCandidate(text: string, index: number, allowFallback: boolean): boolean {
-  if (isEscapedAt(text, index)) return false;
-
-  const prevChar = text[index - 1];
-  const nextChar = text[index + 1];
-
-  if (!prevChar || isWhitespaceChar(prevChar)) return false;
-  if (isWordLikeChar(prevChar) && isWordLikeChar(nextChar)) return false;
-
-  if (!allowFallback && isWordLikeChar(prevChar) && isWhitespaceChar(nextChar)) {
-    const nextNonWhitespaceIndex = getNextNonWhitespaceIndex(text, index + 1);
-    if (nextNonWhitespaceIndex !== -1 && isWordLikeChar(text[nextNonWhitespaceIndex])) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function findClosingQuote(text: string, openIndex: number, quoteChar: '"' | "'" | '`'): number {
-  let fallbackIndex = -1;
-
-  for (let j = openIndex + 1; j < text.length; j++) {
-    if (text[j] !== quoteChar || isEscapedAt(text, j)) continue;
-
-    if (quoteChar !== "'") return j;
-    if (isSingleQuoteCloseCandidate(text, j, false)) return j;
-    if (isSingleQuoteCloseCandidate(text, j, true)) {
-      fallbackIndex = j;
-    }
-  }
-
-  return fallbackIndex;
 }
 
 function assignDepths(tokens: Token[], parentDepth = -1) {
@@ -604,7 +546,7 @@ export function tokenizeLineWithState(line: string, options: TokenizeLineOptions
     }
 
     if (char === '"' || char === "'" || char === '`') {
-      if (char === "'" && isLikelyApostrophe(line, i)) {
+      if (!canOpenQuoteAt(line, i)) {
         addChar(char);
         i++;
         continue;

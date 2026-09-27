@@ -12,7 +12,7 @@ export interface RectLike {
 }
 
 export interface RenderedTextBoundaryIndex {
-  getBoundary(offset: number): RenderedTextBoundary | null;
+  getBoundary(offset: number, preferNextTextNode?: boolean): RenderedTextBoundary | null;
 }
 
 interface TextNodeEntry {
@@ -84,7 +84,7 @@ export function createRenderedTextBoundaryIndex(
   }
 
   return {
-    getBoundary(offset: number): RenderedTextBoundary | null {
+    getBoundary(offset: number, preferNextTextNode = false): RenderedTextBoundary | null {
       if (entries.length === 0) return null;
       const target = clampOffset(offset, Math.min(maximum, consumed));
       let low = 0;
@@ -92,7 +92,8 @@ export function createRenderedTextBoundaryIndex(
 
       while (low < high) {
         const middle = Math.floor((low + high) / 2);
-        if (target > (entries[middle]?.end ?? 0)) low = middle + 1;
+        if (target > (entries[middle]?.end ?? 0)
+          || (preferNextTextNode && target === entries[middle]?.end)) low = middle + 1;
         else high = middle;
       }
 

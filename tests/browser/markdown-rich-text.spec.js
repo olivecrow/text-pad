@@ -84,9 +84,10 @@ test('inline formatting keeps source offsets for pointer editing and undo', asyn
   await editor.fill(source);
   const rect = await page.locator('.hl-strong').first().evaluate((el) => {
     const node = [...el.querySelectorAll('span')].find((child) => child.textContent === 'bold');
-    if (!node?.firstChild) throw new Error('Missing rendered bold text');
+    const text = node && document.createTreeWalker(node, NodeFilter.SHOW_TEXT).nextNode();
+    if (!text) throw new Error('Missing rendered bold text');
     const range = document.createRange();
-    range.setStart(node.firstChild, 2); range.setEnd(node.firstChild, 2);
+    range.setStart(text, 2); range.setEnd(text, 2);
     const r = range.getBoundingClientRect(); return { x: r.x, y: r.y + r.height / 2 };
   });
   await page.mouse.click(rect.x, rect.y);
@@ -126,9 +127,10 @@ test('nested and quoted emphasis hides only valid markers and keeps editable sou
   }
   const point = await italic.evaluate((el) => {
     const text = [...el.querySelectorAll('span')].find((span) => span.textContent === '중첩 기울임');
-    if (!text?.firstChild) throw new Error('Missing emphasis text');
+    const node = text && document.createTreeWalker(text, NodeFilter.SHOW_TEXT).nextNode();
+    if (!node) throw new Error('Missing emphasis text');
     const range = document.createRange();
-    range.setStart(text.firstChild, 2); range.collapse(true);
+    range.setStart(node, 2); range.collapse(true);
     const rect = range.getBoundingClientRect();
     return { x: rect.x, y: rect.y + rect.height / 2 };
   });

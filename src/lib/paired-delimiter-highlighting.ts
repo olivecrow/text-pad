@@ -1,3 +1,5 @@
+import { canOpenQuoteAt, findClosingQuote } from './quote-boundaries';
+
 export type PairedDelimiterKind = 'paren' | 'bracket' | 'brace' | 'quote';
 
 export interface PairedDelimiterHighlight {
@@ -14,7 +16,6 @@ export interface PairedDelimiterIndex {
 }
 
 type OpeningBracket = '(' | '[' | '{';
-type QuoteCharacter = '"' | "'";
 
 interface BracketStackEntry {
   character: OpeningBracket;
@@ -27,66 +28,6 @@ const closingBrackets: Record<string, OpeningBracket> = {
   ']': '[',
   '}': '{'
 };
-const wordLikeCharacterPattern = /[\p{L}\p{M}\p{N}]/u;
-const whitespacePattern = /\s/u;
-
-function isWordLikeCharacter(character: string | undefined): boolean {
-  return !!character && wordLikeCharacterPattern.test(character);
-}
-
-function isWhitespaceCharacter(character: string | undefined): boolean {
-  return !!character && whitespacePattern.test(character);
-}
-
-function isEscapedAt(text: string, index: number): boolean {
-  let slashCount = 0;
-  for (let cursor = index - 1; cursor >= 0 && text[cursor] === '\\'; cursor -= 1) {
-    slashCount += 1;
-  }
-  return slashCount % 2 === 1;
-}
-
-function isLikelyApostrophe(text: string, index: number): boolean {
-  const previousCharacter = text[index - 1];
-  const nextCharacter = text[index + 1];
-
-  if (!isWordLikeCharacter(previousCharacter)) return false;
-  if (isWordLikeCharacter(nextCharacter)) return true;
-  if (!nextCharacter || isWhitespaceCharacter(nextCharacter)) return true;
-
-  return /[.,;:!?…)\]}]/u.test(nextCharacter);
-}
-
-function isSingleQuoteCloseCandidate(
-  text: string,
-  index: number,
-  lineEnd: number
-): boolean {
-  if (isEscapedAt(text, index)) return false;
-
-  const previousCharacter = text[index - 1];
-  const nextCharacter = index + 1 < lineEnd ? text[index + 1] : undefined;
-
-  if (!previousCharacter || isWhitespaceCharacter(previousCharacter)) return false;
-  if (isWordLikeCharacter(previousCharacter) && isWordLikeCharacter(nextCharacter)) return false;
-
-  return true;
-}
-
-function findClosingQuote(text: string, opening: number, quote: QuoteCharacter): number {
-  const lineBreak = text.indexOf('\n', opening + 1);
-  const lineEnd = lineBreak === -1 ? text.length : lineBreak;
-
-  for (let index = opening + 1; index < lineEnd; index += 1) {
-    if (text[index] !== quote || isEscapedAt(text, index)) continue;
-
-    if (quote === '"') return index;
-    if (isSingleQuoteCloseCandidate(text, index, lineEnd)) return index;
-  }
-
-  return -1;
-}
-
 function findExactOffset(offsets: readonly number[], target: number): number {
   let low = 0;
   let high = offsets.length - 1;
@@ -134,7 +75,7 @@ export function createPairedDelimiterIndex(content: string): PairedDelimiterInde
   while (offset < content.length) {
     const character = content[offset];
 
-    if ((character === '"' || character === "'") && !(character === "'" && isLikelyApostrophe(content, offset))) {
+    if ((character === '"' || character === "'") && canOpenQuoteAt(content, offset)) {
       const closingOffset = findClosingQuote(content, offset, character);
       if (closingOffset !== -1) {
         closeOpening(addOpening(offset), closingOffset);

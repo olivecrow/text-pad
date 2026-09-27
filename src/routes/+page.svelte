@@ -22,6 +22,8 @@
   } from "$lib/document-formats";
   import type { DocumentDiagnostic, DocumentFeatureSettings, DocumentFormatCategory, DocumentFormatId } from "$lib/document-formats";
   import type { Token } from "$lib/render-tokenizer";
+  import { getScriptRuns, getWrapRuns } from "$lib/script-coloring";
+  import { hasWordCharacterBefore } from "$lib/quote-boundaries";
   import MarkdownRichBlockView from '$lib/MarkdownRichBlock.svelte';
   import { getRichTextBoundary, getRichTextOffsetAtPoint, getRichSelectionRanges, getRichDeletionRange } from '$lib/markdown-rich-geometry';
   import { findMarkdownAnchorLine, type MarkdownRichBlock } from '$lib/markdown-rich-text';
@@ -4945,6 +4947,9 @@
     const { start, end } = getTextareaSelectionInContent();
     if (start !== end) return false;
 
+    // 여러 언어의 글자·결합 문자·숫자 뒤에서는 아포스트로피를 한 번만 입력한다.
+    if (event.key === "'" && hasWordCharacterBefore(fileContent, start)) return false;
+
     if (renderAutoClosingCharacters.has(event.key) && fileContent[start] === event.key) {
       event.preventDefault();
       closeActiveUndoGroup();
@@ -5940,7 +5945,10 @@
       clientY,
       textareaEl
     );
-    if (nativeOffset !== null) return pointOffsetBase + nativeOffset;
+    // 목록의 표시 여백에서는 브라우저의 기본 위치 판정이 첫 글자 뒤를 줄 수 있다.
+    if (nativeOffset !== null && !(listBody && clientX < listBody.getBoundingClientRect().left)) {
+      return pointOffsetBase + nativeOffset;
+    }
 
     const boundaries = createRenderedTextBoundaryIndex(pointRoot, pointMaximum);
     return pointOffsetBase + findClosestRenderedTextOffset(
@@ -5949,7 +5957,7 @@
       clientY,
       Math.max(liveEditorViewportWidth, 1),
       (offset) => {
-        const boundary = boundaries.getBoundary(offset);
+        const boundary = boundaries.getBoundary(offset, true);
         return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
       }
     );
@@ -6648,7 +6656,8 @@
 
 <svelte:window onkeydown={handleKeyDown} onclick={closeAllDropdown} />
 
-{#snippet renderToken(token: Token)}{#if token.children && token.children.length > 0}<span class={getTokenClass(token)}>{#each token.children as child}{@render renderToken(child)}{/each}</span>{:else if token.type === 'boolean'}<span class={getTokenClass(token)} data-token-start={token.start ?? null} data-token-end={token.end ?? null} data-boolean-start={token.start} data-boolean-end={token.end} data-boolean-value={token.text}>{token.text || ''}</span>{:else if token.type === 'color'}<span class={getTokenClass(token)} style={getColorCodeStyle(token.text || '')} data-token-start={token.start ?? null} data-token-end={token.end ?? null} data-color-start={token.start} data-color-end={token.end}>{token.text || ''}</span>{:else}<span class={getTokenClass(token)} data-token-start={token.start ?? null} data-token-end={token.end ?? null}>{token.text || ''}</span>{/if}{/snippet}
+{#snippet renderColoredText(text: string, enabled = true)}{#if enabled}{#each getScriptRuns(text) as run}{#if run.script}<span class={`hl-script-${run.script}`}>{run.text}</span>{:else}{run.text}{/if}{/each}{:else}{text}{/if}{/snippet}
+{#snippet renderToken(token: Token, useScriptColors = true)}{@const scriptColorsAllowed = useScriptColors && token.depth === undefined && ['text', 'strong', 'emphasis', 'strike'].includes(token.type)}{#if token.children && token.children.length > 0}<span class={getTokenClass(token)}>{#each token.children as child}{@render renderToken(child, scriptColorsAllowed)}{/each}</span>{:else if token.type === 'boolean'}<span class={getTokenClass(token)} data-token-start={token.start ?? null} data-token-end={token.end ?? null} data-boolean-start={token.start} data-boolean-end={token.end} data-boolean-value={token.text}>{token.text || ''}</span>{:else if token.type === 'color'}<span class={getTokenClass(token)} style={getColorCodeStyle(token.text || '')} data-token-start={token.start ?? null} data-token-end={token.end ?? null} data-color-start={token.start} data-color-end={token.end}>{token.text || ''}</span>{:else}<span class={getTokenClass(token)} data-token-start={token.start ?? null} data-token-end={token.end ?? null}>{#if token.type === 'text'}{#each getWrapRuns(token.text || '') as part}{#if part.protect}<span class="render-unbroken-word">{@render renderColoredText(part.text, scriptColorsAllowed)}</span>{:else}{@render renderColoredText(part.text, scriptColorsAllowed)}{/if}{/each}{:else}{@render renderColoredText(token.text || '', scriptColorsAllowed)}{/if}</span>{/if}{/snippet}
 
 {#if isSettingsWindow}
   <SettingsWindow
@@ -7531,6 +7540,32 @@
   :global(.hl-text) {
     color: inherit;
   }
+  :global(.render-unbroken-word) {
+    display: inline-block;
+    max-width: 100%;
+    vertical-align: baseline;
+    white-space: normal;
+    overflow-wrap: break-word;
+    word-break: keep-all;
+  }
+  :global(.hl-script-latin) { color: var(--color-script-latin); }
+  :global(.hl-script-hangul) { color: var(--color-script-hangul); }
+  :global(.hl-script-han) { color: var(--color-script-han); }
+  :global(.hl-script-kana) { color: var(--color-script-kana); }
+  :global(.hl-script-cyrillic) { color: var(--color-script-cyrillic); }
+  :global(.hl-script-greek) { color: var(--color-script-greek); }
+  :global(.hl-script-arabic) { color: var(--color-script-arabic); }
+  :global(.hl-script-devanagari) { color: var(--color-script-devanagari); }
+  :global(.hl-script-thai) { color: var(--color-script-thai); }
+  :global(::highlight(rich-script-latin)) { color: var(--color-script-latin); }
+  :global(::highlight(rich-script-hangul)) { color: var(--color-script-hangul); }
+  :global(::highlight(rich-script-han)) { color: var(--color-script-han); }
+  :global(::highlight(rich-script-kana)) { color: var(--color-script-kana); }
+  :global(::highlight(rich-script-cyrillic)) { color: var(--color-script-cyrillic); }
+  :global(::highlight(rich-script-greek)) { color: var(--color-script-greek); }
+  :global(::highlight(rich-script-arabic)) { color: var(--color-script-arabic); }
+  :global(::highlight(rich-script-devanagari)) { color: var(--color-script-devanagari); }
+  :global(::highlight(rich-script-thai)) { color: var(--color-script-thai); }
   :global(.hl-paren) {
     color: var(--color-hl-paren);
   }
@@ -8155,7 +8190,7 @@
     min-width: 0;
     white-space: normal;
     overflow-wrap: break-word;
-    word-break: break-all;
+    word-break: keep-all;
     font-family: var(--font-render-family, var(--font-notepad));
     padding: 0 12px;
     box-sizing: border-box;
@@ -8336,7 +8371,7 @@
     min-height: 1lh;
     white-space: break-spaces;
     overflow-wrap: break-word;
-    word-break: break-all;
+    word-break: keep-all;
   }
 
   .editor-textarea {
@@ -8379,7 +8414,7 @@
     font-weight: var(--font-render-weight, normal);
     white-space: break-spaces;
     overflow-wrap: break-word;
-    word-break: break-all;
+    word-break: keep-all;
     overflow: hidden;
   }
 

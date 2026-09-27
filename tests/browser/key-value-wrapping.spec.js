@@ -36,7 +36,7 @@ for (const [format, prefix, suffix] of [
 ]) {
   test(`${format} ${JSON.stringify(prefix)} aligns wrapped values without changing source`, async ({ page }) => {
     await page.setViewportSize({ width: 460, height: 650 });
-    const source = prefix + 'abcdefghij'.repeat(18) + suffix;
+    const source = prefix + 'abcdefghij '.repeat(18).trimEnd() + suffix;
     await openData(page, format, source);
     const content = page.locator('.key-value-wrapping').first();
     await expect(content).toBeVisible();
@@ -83,7 +83,7 @@ test('spaces occupy wrapped rows and support pointer editing and undo', async ({
 
 test('wrapped value keyboard navigation and resize use rendered rows', async ({ page }) => {
   await page.setViewportSize({ width: 460, height: 650 });
-  const source = 'LONG_SETTING_NAME=' + 'abcdefghij'.repeat(25);
+  const source = 'LONG_SETTING_NAME=' + 'abcdefghij '.repeat(25).trimEnd();
   await openData(page, 'ENV', source);
   const content = page.locator('.key-value-wrapping').first();
   await expect(content).toBeVisible();

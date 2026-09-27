@@ -23,7 +23,7 @@ Natural editing is not editing with the most features. It is editing that does n
 
 - During continuous window-width changes, visible text immediately wraps at the current width. Keep syntax highlighting and line numbers visible, and update line positions, the caret, and selection backgrounds from actual displayed-line heights and text coordinates. Preserve source text and selection offsets. Only offscreen estimates and full-document wrapping in the transparent input wait until width changes stop for 80ms; synchronize the input width before pointer presses, keyboard navigation, text input, or composition starts. Height-only changes must not delay the pending width update.
 
-- Render mode wraps at character boundaries to use the remaining width. Hyphens and syntax token boundaries are not separate preferred wrapping points. Source newlines remain unchanged.
+- Render mode prefers whitespace boundaries and moves a whole word to the next display row. Only a word longer than the available row width may break inside the word. Hyphens and syntax token boundaries are not separate preferred wrapping points. Source newlines remain unchanged.
 - The actual height of each displayed line determines subsequent line positions, line numbers, and scroll extent. After content or presentation changes, remeasure displayed lines even when their dimensions are unchanged. Offscreen estimates are not authoritative heights for displayed lines.
 - Clicks, Shift-clicks, and both drag endpoints map visible rendered text to source offsets. Selection does not use the transparent input element's separate wrapping geometry. Backward selection and drag autoscrolling outside the viewport are supported.
 - Double-click word selection also starts from the rendered text position. Selection backgrounds and the caret use the same rendered ranges; browsers without custom highlights use actual text rectangles for selection backgrounds.
@@ -115,6 +115,7 @@ The behavioral contract is:
 - Apply pairing only when the setting is enabled and there is a collapsed caret with no selection.
 - Create a new automatic pair only when the caret is at the end of the text or the text to its right begins with whitespace or a configured exception string. Whitespace is always an exception and cannot be removed. The default configurable exception strings are `=` and `:`; users can add or remove other strings in the render-mode editing settings.
 - In an allowed right-side context, typing one opening character inserts both characters and moves the caret between them. When disallowed text is to the right, automatic pairing does not intervene and the `textarea` default behavior inserts only the typed character.
+- When typing a single quote `'` immediately after a Unicode letter, combining mark, or number, neither automatic pair creation nor closing-quote skipping applies, regardless of the text to the right. Default input inserts just one quote. For example, typing `'` at `don|` produces `don'|`; `п|` and `2024|` also receive just one quote. This uses the existing ordinary-input Undo path.
 - If the character at the caret is the same closing bracket, quote, or backtick that the user types, leave the source unchanged and move the caret past that character. Typing `"` twice therefore leaves only `""` with the caret after the closing quote.
 - When three backticks are typed after optional indentation at the start of a line and the right-side context allows a new automatic pair, the third input expands them into an opening fence, an empty code line, a closing fence, and a following line with the same indentation, while leaving the caret inside the empty code line. A collapsed caret immediately after the closing fence maps to the first editable position on the following line instead of the hidden fence line. Preserve the existing newline convention and indentation.
 - With an active selection, the current implementation does not wrap the selection and instead uses default input behavior. Selection wrapping requires a separate behavioral contract and validation before it can be added.
@@ -133,8 +134,32 @@ In render mode, the editor shows the other end of the paired character touching 
 - With a collapsed caret and editor focus, if the supported character immediately before or after the caret belongs to a complete pair, highlight both the opening and closing character. When two adjacent pairs touch the same caret position, prefer the inner boundary immediately after an opener or immediately before a closer.
 - Brackets may match across lines, but their type and nesting order must agree. Do not guess a pair for mismatched or unclosed brackets, and do not treat brackets inside a complete quoted string as structural brackets.
 - Double and single quotation marks require a closing mark on the same line and honor backslash escapes. An apostrophe used inside a word for contraction or possession is not treated as a paired quotation mark.
+- A single-quoted span ends at its first valid closing quote. In `ABC 'DEF' G 'HI' JKLMN`, only `DEF` and `HI` are enclosed; `G` remains ordinary text.
+- Complete quoted and bracketed spans retain their existing nesting-depth colors, including the enclosed letters. Script-specific colors must not override these spans; ordinary letters outside them use their script colors.
 - Clear the pair highlight when a selection is created, the editor loses focus, or source mode is activated. Draw only ranges that are currently visible; when a virtualized opposite end enters the viewport, render it again from the same source offset.
 - This feature is presentation-only and does not change source text, the caret, the selection, or undo history.
+
+### Distinguishing single quotes from apostrophes
+
+- Outside a quotation, a `'` immediately after a Unicode letter, combining mark, or number is a word-internal or trailing apostrophe and does not open a quotation. This applies across scripts.
+- A quotation opened at a word boundary ends at its first valid closer. Letters after the closer and whitespace at the inner edges do not prevent closing. `asdfasd 'asdfasdf'asdfasdfsdaf` encloses only `'asdfasdf'`, and `' spaced 'next` encloses only `' spaced '`.
+- Inside quotations, skip apostrophes recognized through common contraction suffixes, elision prefixes, Cyrillic combinations, representative Turkish suffixes after proper names or numbers, and another closer within the same word. `'don't stop'next`, `'l'homme arrive'ensuite`, and `'п'ять слів'далі` do not close at internal apostrophes.
+- Leading elisions such as `'s morgens`, `'t huis`, `'tis`, and `'90s` do not open quotations. Immediately closed forms such as `'s'`, `'t'`, and `'90s'` are quotations.
+- Keep trailing possessives and elisions inside a quotation when a separate closer appears before a new quotation starts. Enclose all of `'dogs' collars'` and `'un po' di pane'`, but treat `'cats' and 'dogs'` as two quotations.
+- Color spans and caret-pair highlights share the same decisions. Escaped quotes are excluded as boundaries, and matching never crosses line breaks. `’` and `ʼ` are not automatically converted to straight quotes.
+- These rules do not detect languages or fully validate grammar. Recognized apostrophe forms take precedence in ambiguous text such as `'word's`, which could also be a quotation followed by letters. Dialects, names, and unfamiliar elisions may be misclassified; double quotes or whitespace can make ambiguous quotation boundaries explicit.
+
+| Representative context | Examples retained as apostrophes |
+| --- | --- |
+| English | `don't`, `John's`, `dogs'` |
+| French | `l'homme`, `aujourd'hui`, `qu'il` |
+| Italian | `l'amico`, `un'amica`, `po'` |
+| Catalan, Irish, and names | `d'acord`, `l'home`, `d'fhág`, `O'Neill` |
+| Turkish | `Ankara'ya`, `Türkiye'nin`, `2024'te` |
+| Cyrillic | `п'ять`, `об'єкт`, `аб'ект` |
+| Leading elision | `'s morgens`, `'t huis`, `'tis`, `'90s` |
+
+See [Unicode's word-boundary discussion](https://www.unicode.org/reports/tr29/tr29-49.html#Apostrophe) for apostrophe ambiguity. Representative forms are informed by [Cambridge on English contractions](https://dictionary.cambridge.org/grammar/british-grammar/contractions), [OQLF on French elision](https://vitrinelinguistique.oqlf.gouv.qc.ca/21786/lorthographe/elision-et-apostrophe/elision-facultative), [TDK on Turkish apostrophes](https://tdk.gov.tr/icerik/yazim-kurallari/kesme-isareti/), and [Taaladvies on Dutch elisions](https://taaladvies.net/s-avonds-of-s-avonds-hoofdletter/). These display rules do not implement each language's complete grammar.
 
 ## Editing Markdown headings
 

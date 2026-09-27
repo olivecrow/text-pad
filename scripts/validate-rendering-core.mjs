@@ -92,6 +92,16 @@ function createFakeRenderViewportScheduler() {
 
 try {
   const search = await server.ssrLoadModule('/src/lib/document-search.ts');
+  const scriptColoring = await server.ssrLoadModule('/src/lib/script-coloring.ts');
+  const mixedScripts = 'ABC 한글 漢字 かなカナ Привет Γειά مرحبا नमस्ते ไทย';
+  assert.equal(scriptColoring.getScriptRuns(mixedScripts).map(run => run.text).join(''), mixedScripts);
+  assert.deepEqual(
+    scriptColoring.getScriptRuns(mixedScripts).filter(run => run.script).map(run => run.script),
+    ['latin', 'hangul', 'han', 'kana', 'cyrillic', 'greek', 'arabic', 'devanagari', 'thai']
+  );
+  assert.deepEqual(scriptColoring.getScriptRuns('スーパー'), [{ text: 'スーパー', script: 'kana' }]);
+  assert.deepEqual(scriptColoring.getWrapRuns('alpha-beta other').map(run => run.text).join(''), 'alpha-beta other');
+  assert.equal(scriptColoring.getWrapRuns('alpha-beta other')[0].protect, true);
   assert.deepEqual(search.findDocumentMatches('Ouroboros\r\n**ouroboros**', 'ouroboros'), [
     { start: 0, end: 9 }, { start: 13, end: 22 }
   ]);
@@ -609,6 +619,50 @@ try {
     { opening: 0, closing: 6, kind: 'quote' },
     'separate single-quoted values use their nearest valid closing quote'
   );
+  const separatedQuotes = "ABC 'DEF' G 'HI' JKLMN";
+  const separatedTokens = tokenizer.tokenizeLine(separatedQuotes);
+  assert.equal(flattenTokens(separatedTokens), separatedQuotes);
+  assert.deepEqual(separatedTokens.filter(token => token.type === 'string').map(token => flattenTokens([token])), ["'DEF'", "'HI'"]);
+  const quoteCases = [
+    ["asdfasd 'asdfasdf'asdfasdfsdaf", ["'asdfasdf'"]],
+    ['asdfasd "asdfasdf"asdfasdfsdaf', ['"asdfasdf"']],
+    ["'hello'world 'next'tail", ["'hello'", "'next'"]],
+    ["don't John's dogs'", []],
+    ["l'homme aujourd'hui qu'il", []],
+    ["l'amico un'amica", []],
+    ["d'acord l'home d'fhág O'Neill", []],
+    ["Ankara'ya Türkiye'nin 2024'te", []],
+    ["п'ять об'єкт м'який з'їзд аб'ект надвор'е", []],
+    ["'s morgens en 't huis in '90s", []],
+    ["'tis the season 'cause we're here", []],
+    ["'don't stop'next", ["'don't stop'"]],
+    ["'l'homme arrive'ensuite", ["'l'homme arrive'"]],
+    ["'un'amica arriva'ancora", ["'un'amica arriva'"]],
+    ["'Ankara'ya gittim'sonra", ["'Ankara'ya gittim'"]],
+    ["'п'ять слів'далі", ["'п'ять слів'"]],
+    ["'dogs' collars'", ["'dogs' collars'"]],
+    ["'dogs' collars'outside", ["'dogs' collars'"]],
+    ["'un po' di pane'ancora", ["'un po' di pane'"]],
+    ["'cats' and 'dogs'", ["'cats'", "'dogs'"]],
+    ["'s' 't' '90s'", ["'s'", "'t'", "'90s'"]],
+    ["'don't", []],
+    ["'l'homme", []],
+    ["'foo\\'bar'next", ["'foo\\'bar'"]],
+    ["\\'word\\'", []],
+    ["’tis l’homme OʼNeill", []],
+    ["' spaced 'next ''", ["' spaced '", "''"]]
+  ];
+  for (const [source, expected] of quoteCases) {
+    const tokens = tokenizer.tokenizeLine(source);
+    assert.equal(flattenTokens(tokens), source);
+    assert.deepEqual(tokens.filter(token => token.type === 'string').map(token => flattenTokens([token])), expected, source);
+    const index = pairedDelimiterHighlighting.createPairedDelimiterIndex(source);
+    const pairs = index.openingOffsets.flatMap((opening, position) => {
+      const closing = index.openingMatches[position];
+      return closing < 0 ? [] : [source.slice(opening, closing + 1)];
+    });
+    assert.deepEqual(pairs, expected, `caret pair and rendered ranges agree: ${source}`);
+  }
   assert.deepEqual(
     pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
       adjacentSingleQuoteContent,
