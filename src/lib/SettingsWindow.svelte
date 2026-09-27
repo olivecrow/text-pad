@@ -1,19 +1,29 @@
 <script lang="ts">
-  import { additionalRenderThemeFields, getAdditionalRenderThemeStyle } from '$lib/render-theme-fields';
+  import { tick } from 'svelte';
+  import { getAdditionalRenderThemeStyle } from '$lib/render-theme-fields';
+  import {
+    getSettingsPages, getSettingsSearchTokens, matchesSettingsSearch, searchSettingsPages,
+    settingsColorGroups, type ColorField, type SettingsView
+  } from '$lib/settings-navigation';
   import {
     Braces,
     ChevronDown,
+    ChevronRight,
+    Check,
     Code2,
     Download,
     FileCode2,
     FileText,
     Moon,
+    Palette,
     PaintRoller,
     PenLine,
     Plus,
     Settings,
+    Search,
     Sun,
     Table2,
+    Type,
     Upload,
     X
   } from '@lucide/svelte';
@@ -55,15 +65,7 @@
 
   type FormatSettingsView = `format:${DocumentFormatId}`;
   type FormatCategorySettingsView = `category:${DocumentFormatCategoryId}`;
-  type SettingsView =
-    | 'general'
-    | 'sourceAppearance'
-    | 'renderAppearance'
-    | 'renderEditing'
-    | FormatCategorySettingsView
-    | FormatSettingsView;
   type SettingsTransferStatus = { kind: 'success' | 'warning' | 'error'; message: string };
-  type ColorField = Exclude<keyof SettingsThemePalette, 'renderFontWeight'>;
 
   interface Props {
     locale: AppLocale;
@@ -128,16 +130,25 @@
   const delimitedTableReorderDurationStepMs = 50;
 
   let activeSettingsView = $state<SettingsView>('general');
-  let isSourceSettingsExpanded = $state(true);
-  let isRenderSettingsExpanded = $state(true);
+  let searchQuery = $state('');
+  let searchInput: HTMLInputElement;
+  let settingsContent: HTMLDivElement;
+  let settingsNavigation: HTMLElement;
+  let searchTokens = $derived(getSettingsSearchTokens(searchQuery));
+  let settingsPages = $derived(getSettingsPages(locale));
+  let searchResults = $derived(searchSettingsPages(settingsPages, searchQuery));
+  let activePage = $derived(settingsPages.find(page => page.id === activeSettingsView)!);
   let expandedFormatCategories = $state<Record<DocumentFormatCategoryId, boolean>>({
-    document: true,
-    structured: true,
-    project: true,
-    table: true,
-    subtitle: true
+    document: false,
+    structured: false,
+    project: false,
+    table: false,
+    subtitle: false
   });
-  let editingTheme = $state<'light' | 'dark'>('light');
+  let selectedEditingTheme = $state<'light' | 'dark' | null>(null);
+  let editingTheme = $derived(selectedEditingTheme ?? currentTheme);
+  let expandedColorGroups = $state<string[]>(['editor']);
+  let previewColors = $derived(editingTheme === 'dark' ? darkColors : lightColors);
   let renderAutoPairAllowedFollowingStringDraft = $state('');
   let normalizedRenderAutoPairAllowedFollowingStringDraft = $derived(
     normalizeAutoPairAllowedFollowingString(renderAutoPairAllowedFollowingStringDraft)
@@ -177,15 +188,71 @@
     return configurableDocumentFormats.filter((format) => category.formatIds.includes(format.id));
   }
 
-  function selectDocumentFormatCategory(categoryId: DocumentFormatCategoryId) {
-    const categoryView = getDocumentFormatCategorySettingsView(categoryId);
-    const wasActive = activeSettingsView === categoryView;
-    activeSettingsView = categoryView;
-    expandedFormatCategories = {
-      ...expandedFormatCategories,
-      [categoryId]: wasActive ? !expandedFormatCategories[categoryId] : true
-    };
+  async function selectSettingsView(view: SettingsView) {
+    activeSettingsView = view;
+    const category = configurableDocumentFormatCategories.find(item =>
+      view === `category:${item.id}` || item.formatIds.some(id => view === `format:${id}`));
+    if (category) expandedFormatCategories[category.id] = true;
+    await tick();
+    settingsContent?.scrollTo({ top: 0 });
+    if (searchTokens.length) {
+      settingsContent?.querySelector('.search-match')?.scrollIntoView({ block: 'center' });
+    }
   }
+
+  function handleSettingsKeydown(event: KeyboardEvent) {
+    if (event.isComposing) return;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      searchInput?.focus();
+      searchInput?.select();
+    } else if (event.key === 'Escape' && searchQuery) {
+      event.preventDefault();
+      searchQuery = '';
+      searchInput?.focus();
+    }
+  }
+
+  function handleSearchKeydown(event: KeyboardEvent) {
+    if (event.isComposing || !['ArrowDown', 'Enter'].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key === 'Enter' && searchTokens.length && searchResults[0]) {
+      void selectSettingsView(searchResults[0].id);
+    }
+    settingsNavigation?.querySelector<HTMLButtonElement>('button[data-nav-item]')?.focus();
+  }
+
+  function handleNavigationKeydown(event: KeyboardEvent) {
+    if (event.isComposing || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const buttons = [...settingsNavigation.querySelectorAll<HTMLButtonElement>('button')];
+    const index = buttons.indexOf(event.target as HTMLButtonElement);
+    if (index < 0) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+      : Math.max(0, Math.min(buttons.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)));
+    buttons[next]?.focus();
+  }
+
+  function toggleColorGroup(id: string) {
+    expandedColorGroups = expandedColorGroups.includes(id)
+      ? expandedColorGroups.filter(group => group !== id) : [...expandedColorGroups, id];
+  }
+
+  // 페이지 경로로 좁힌 검색에서도 실제 일치하는 설정 행을 눈에 띄게 표시한다.
+  $effect(() => {
+    const tokens = searchTokens;
+    activeSettingsView;
+    locale;
+    let cancelled = false;
+    void tick().then(() => {
+      if (cancelled) return;
+      settingsContent?.querySelectorAll<HTMLElement>('.settings-row, .settings-check-row, .auto-pair-following-heading, .settings-category-note').forEach(row => {
+        const text = row.innerText;
+        row.classList.toggle('search-match', tokens.length > 0 && tokens.some(token => matchesSettingsSearch(text, [token])));
+      });
+    });
+    return () => { cancelled = true; };
+  });
 
   function addRenderAutoPairAllowedFollowingString() {
     const value = normalizedRenderAutoPairAllowedFollowingStringDraft;
@@ -338,7 +405,45 @@
   </div>
 {/snippet}
 
-<div class="settings-window-container" style="
+
+{#snippet navigationItem(view: SettingsView, label: string, icon: typeof Settings, nested = false)}
+  {@const Icon = icon}
+  <button type="button" class="sidebar-item" class:nested class:active={activeSettingsView === view}
+    data-nav-item aria-current={activeSettingsView === view ? 'page' : undefined} onkeydown={handleNavigationKeydown}
+    onclick={() => void selectSettingsView(view)} title={label}>
+    <Icon size={16} aria-hidden="true"/><span>{label}</span>
+  </button>
+{/snippet}
+
+{#snippet editorPreview(sourceMode = false)}
+  {@const colors = sourceMode || activeSettingsView === 'renderAppearance' ? activeColors : previewColors}
+  <section class="editor-preview" aria-label={t('settings.preview')} style:background={colors.renderBg}
+    style:color={colors.renderText} style:border-color={colors.gutterBorder}>
+    <div class="preview-heading" style:border-color={colors.gutterBorder}>
+      <span>{t('settings.preview')}</span><span>{sourceMode ? 'notes.txt' : 'example.json'}</span>
+    </div>
+    <div class="preview-document" dir="ltr"
+      style:font-family={sourceMode ? 'var(--font-notepad, Consolas, monospace)' : currentRenderFontFamilyCSS}
+      style:font-size={(sourceMode ? sourceFontSize : renderFontSize) + 'pt'}
+      style:font-weight={sourceMode ? '400' : colors.renderFontWeight}>
+      {#if sourceMode}
+        <div><span class="preview-line" style:color={colors.gutterText}>1</span><span>{t('settings.previewText')}</span></div>
+        <div><span class="preview-line" style:color={colors.gutterText}>2</span><span>ABCDEFGHIJKLMNOPQRSTUVWXYZ</span></div>
+        <div><span class="preview-line" style:color={colors.gutterText}>3</span><span>0123456789 ( ) [ ] {'{ }'}</span></div>
+      {:else}
+        <div><span class="preview-line" style:color={colors.gutterText}>1</span><span style:color={colors.brace}>{'{'}</span></div>
+        <div><span class="preview-line" style:color={colors.gutterText}>2</span><span style:padding-inline-start={tabSize + 'ch'}><span style:color={colors.keyStrong}>"name"</span><span style:color={colors.mutedSyntax}>: </span><span style:color={colors.string}>"text-pad"</span>,</span></div>
+        <div><span class="preview-line" style:color={colors.gutterText}>3</span><span style:padding-inline-start={tabSize + 'ch'}><span style:color={colors.keyStrong}>"fontSize"</span><span style:color={colors.mutedSyntax}>: </span><span style:color={colors.number}>{renderFontSize}</span>,</span></div>
+        <div><span class="preview-line" style:color={colors.gutterText}>4</span><span style:padding-inline-start={tabSize + 'ch'}><span style:color={colors.keyStrong}>"enabled"</span><span style:color={colors.mutedSyntax}>: </span><span class="preview-boolean" style:color={colors.booleanTrueText} style:background={colors.booleanTrueBg} style:border-color={colors.booleanBorder}>true</span></span></div>
+        <div><span class="preview-line" style:color={colors.gutterText}>5</span><span style:color={colors.brace}>{'}'}</span></div>
+      {/if}
+    </div>
+  </section>
+{/snippet}
+
+<svelte:window onkeydown={handleSettingsKeydown} />
+
+<div class="settings-window-container" data-theme={currentTheme} style="
   {getAdditionalRenderThemeStyle(activeColors)}
   --color-hl-code-bg: {activeColors.codeBg};
   --color-hl-code-text: {activeColors.codeText};
@@ -358,114 +463,82 @@
   --color-hl-bracket: {activeColors.bracket};
   --color-hl-brace: {activeColors.brace};
 ">
+
   <div class="settings-body window-mode">
     <aside class="settings-sidebar" aria-label={t('settings.sidebarLabel')}>
-      <button
-        type="button"
-        class="sidebar-item"
-        class:active={activeSettingsView === 'general'}
-        onclick={() => activeSettingsView = 'general'}
-      >
-        <Settings size={16} class="tab-icon"/> {t('settings.general')}
-      </button>
-
-      <div class="sidebar-tree-group">
-        <button
-          type="button"
-          class="sidebar-group"
-          aria-expanded={isSourceSettingsExpanded}
-          onclick={() => isSourceSettingsExpanded = !isSourceSettingsExpanded}
-        >
-          <ChevronDown size={14} class={isSourceSettingsExpanded ? 'tree-chevron' : 'tree-chevron collapsed'}/>
-          <FileCode2 size={16} class="tab-icon"/> {t('settings.sourceMode')}
-        </button>
-        {#if isSourceSettingsExpanded}
-          <button
-            type="button"
-            class="sidebar-item tree-child"
-            class:active={activeSettingsView === 'sourceAppearance'}
-            onclick={() => activeSettingsView = 'sourceAppearance'}
-          >
-            <PaintRoller size={15} class="tab-icon"/> {t('settings.appearance')}
-          </button>
-        {/if}
+      <div class="sidebar-heading"><Settings size={18} aria-hidden="true"/><span>{t('settings.windowTitle')}</span></div>
+      <div class="settings-search">
+        <Search size={15} aria-hidden="true"/>
+        <input bind:this={searchInput} bind:value={searchQuery} onkeydown={handleSearchKeydown}
+          type="search" aria-label={t('settings.search')} placeholder={t('settings.search')} autocomplete="off" spellcheck="false"/>
+        {#if searchQuery}
+          <button type="button" class="icon-button" aria-label={t('settings.clearSearch')}
+            onclick={() => { searchQuery = ''; searchInput.focus(); }}><X size={14} aria-hidden="true"/></button>
+        {:else}<kbd>Ctrl F</kbd>{/if}
       </div>
-
-      <div class="sidebar-tree-group">
-        <button
-          type="button"
-          class="sidebar-group"
-          aria-expanded={isRenderSettingsExpanded}
-          onclick={() => isRenderSettingsExpanded = !isRenderSettingsExpanded}
-        >
-          <ChevronDown size={14} class={isRenderSettingsExpanded ? 'tree-chevron' : 'tree-chevron collapsed'}/>
-          <PaintRoller size={16} class="tab-icon"/> {t('settings.renderMode')}
-        </button>
-        {#if isRenderSettingsExpanded}
-          <button
-            type="button"
-            class="sidebar-item tree-child"
-            class:active={activeSettingsView === 'renderAppearance'}
-            onclick={() => activeSettingsView = 'renderAppearance'}
-          >
-            <PaintRoller size={15} class="tab-icon"/> {t('settings.appearance')}
-          </button>
-          <button
-            type="button"
-            class="sidebar-item tree-child"
-            class:active={activeSettingsView === 'renderEditing'}
-            onclick={() => activeSettingsView = 'renderEditing'}
-          >
-            <PenLine size={15} class="tab-icon"/> {t('settings.editing')}
-          </button>
+      <nav class="settings-navigation" bind:this={settingsNavigation} aria-label={t('settings.sidebarLabel')}>
+        {#if searchTokens.length}
+          <p class="navigation-label" role="status">{t('settings.searchResults', { count: searchResults.length })}</p>
+          {#each searchResults as result}
+            {@const match = result.terms.find(term => matchesSettingsSearch(term, searchTokens))}
+            <button type="button" class="sidebar-item search-result" class:active={activeSettingsView === result.id}
+              data-nav-item aria-current={activeSettingsView === result.id ? 'page' : undefined} onkeydown={handleNavigationKeydown}
+              onclick={() => void selectSettingsView(result.id)}>
+              <span class="search-result-title">{result.title}</span>
+              <span class="search-result-path">{result.path.join(' › ') || t('settings.windowTitle')}</span>
+              {#if match}<span class="search-result-match">{match}</span>{/if}
+            </button>
+          {:else}
+            <div class="search-empty"><Search size={24} aria-hidden="true"/><strong>{t('settings.noResults')}</strong><p>{t('settings.searchHint')}</p></div>
+          {/each}
+        {:else}
+          {@render navigationItem('general', t('settings.general'), Settings)}
+          <p class="navigation-label">{t('settings.editor')}</p>
+          <div class="navigation-subheading"><FileCode2 size={15} aria-hidden="true"/>{t('settings.sourceMode')}</div>
+          {@render navigationItem('sourceAppearance', t('settings.fontSettings'), Type, true)}
+          <div class="navigation-subheading"><PaintRoller size={15} aria-hidden="true"/>{t('settings.renderMode')}</div>
+          {@render navigationItem('renderAppearance', t('settings.fontSettings'), Type, true)}
+          {@render navigationItem('renderColors', t('settings.colors'), Palette, true)}
+          {@render navigationItem('renderEditing', t('settings.editing'), PenLine, true)}
+          <p class="navigation-label">{t('settings.fileFormats')}</p>
           {#each configurableDocumentFormatCategories as category}
-            <div class="sidebar-tree-group format-category-group">
-              <button
-                type="button"
-                class="sidebar-item tree-child sidebar-category"
-                class:active={activeSettingsView === getDocumentFormatCategorySettingsView(category.id)}
-                aria-expanded={expandedFormatCategories[category.id]}
-                onclick={() => selectDocumentFormatCategory(category.id)}
-              >
-                <ChevronDown
-                  size={12}
-                  class={expandedFormatCategories[category.id] ? 'tree-chevron' : 'tree-chevron collapsed'}
-                />
-                {#if category.id === 'document'}
-                  <FileText size={15} class="tab-icon"/>
-                {:else if category.id === 'structured'}
-                  <Braces size={15} class="tab-icon"/>
-                {:else if category.id === 'table'}
-                  <Table2 size={15} class="tab-icon"/>
-                {:else if category.id === 'subtitle'}
-                  <FileText size={15} class="tab-icon"/>
-                {:else}
-                  <Code2 size={15} class="tab-icon"/>
-                {/if}
-                {t(category.labelKey)}
+            <div class="sidebar-category-row">
+              <button type="button" class="category-disclosure" aria-label={t('settings.toggleCategory', { category: t(category.labelKey) })}
+                aria-expanded={expandedFormatCategories[category.id]} aria-controls={'settings-category-' + category.id} onkeydown={handleNavigationKeydown}
+                onclick={() => expandedFormatCategories[category.id] = !expandedFormatCategories[category.id]}>
+                <ChevronDown size={14} class={expandedFormatCategories[category.id] ? '' : 'collapsed'} aria-hidden="true"/>
               </button>
+              {@render navigationItem(getDocumentFormatCategorySettingsView(category.id), t(category.labelKey), category.id === 'structured' ? Braces : category.id === 'table' ? Table2 : category.id === 'project' ? Code2 : FileText)}
+            </div>
+            <div id={'settings-category-' + category.id} hidden={!expandedFormatCategories[category.id]} class="format-children">
               {#if expandedFormatCategories[category.id]}
                 {#each getDocumentFormatsForCategory(category) as format}
-                  <button
-                    type="button"
-                    class="sidebar-item tree-grandchild"
-                    class:active={activeSettingsView === getDocumentFormatSettingsView(format.id)}
-                    onclick={() => activeSettingsView = getDocumentFormatSettingsView(format.id)}
-                  >
-                    <FileCode2 size={14} class="tab-icon"/> {t(format.labelKey)}
-                  </button>
+                  {@render navigationItem(getDocumentFormatSettingsView(format.id), t(format.labelKey), FileCode2, true)}
                 {/each}
               {/if}
             </div>
           {/each}
+          <div class="navigation-divider"></div>
+          {@render navigationItem('transfer', t('settings.transfer.title'), Download)}
         {/if}
-      </div>
+      </nav>
+      <div class="sidebar-footer">text-pad <span>{t('settings.preferences')}</span></div>
     </aside>
 
-    <div class="settings-main">
+    <main class="settings-main" aria-labelledby="settings-page-title">
+      <header class="settings-page-header">
+        <div class="settings-breadcrumb" aria-label={t('settings.location')}>
+          <span>{t('settings.windowTitle')}</span>
+          {#each activePage.path as part}<ChevronRight size={12} aria-hidden="true"/><span>{part}</span>{/each}
+        </div>
+        <h1 id="settings-page-title">{activePage.title}</h1>
+        <p>{activePage.description}</p>
+      </header>
+      <div class="settings-content" bind:this={settingsContent}>
+      <div class="settings-content-inner">
       {#if activeSettingsView === 'general'}
         <div class="settings-section">
-          <h4 class="section-title">{t('settings.languageSection')}</h4>
+          <h2 class="section-title">{t('settings.languageSection')}</h2>
           <div class="settings-row">
             <label for="language-select-window">{t('settings.languageLabel')}</label>
             <select id="language-select-window" bind:value={languagePreference} class="tab-size-select language-select">
@@ -478,7 +551,7 @@
           <p class="settings-category-note">{t('settings.languageDescription')}</p>
         </div>
         <div class="settings-section">
-          <h4 class="section-title">{t('settings.newDocumentSection')}</h4>
+          <h2 class="section-title">{t('settings.newDocumentSection')}</h2>
           <div class="settings-row">
             <label for="default-new-document-format-select">{t('settings.defaultNewDocumentFormat')}</label>
             <select
@@ -497,8 +570,9 @@
           </div>
           <p class="settings-category-note">{t('settings.defaultNewDocumentFormatDescription')}</p>
         </div>
+      {:else if activeSettingsView === 'transfer'}
         <div class="settings-section">
-          <h4 class="section-title">{t('settings.transfer.title')}</h4>
+          <h2 class="section-title">{t('settings.transfer.title')}</h2>
           <p class="settings-category-note">{t('settings.transfer.description')}</p>
           <div class="settings-transfer-actions">
             <button
@@ -534,7 +608,7 @@
         </div>
       {:else if activeSettingsView === 'sourceAppearance'}
         <div class="settings-section">
-          <h4 class="section-title">{t('settings.fontSettings')}</h4>
+          <h2 class="section-title">{t('settings.fontSettings')}</h2>
           <div class="settings-row">
             <label for="source-font-size-input-window">{t('settings.fontSize')}</label>
             <div class="size-control">
@@ -546,14 +620,15 @@
                 bind:value={sourceFontSize}
                 class="font-size-num"
               />
-              <button type="button" class="adjust-btn" onclick={() => sourceFontSize = Math.max(6, sourceFontSize - 1)}>-</button>
-              <button type="button" class="adjust-btn" onclick={() => sourceFontSize = Math.min(72, sourceFontSize + 1)}>+</button>
+              <button type="button" class="adjust-btn" aria-label={t('settings.decreaseFont')} onclick={() => sourceFontSize = Math.max(6, sourceFontSize - 1)}>-</button>
+              <button type="button" class="adjust-btn" aria-label={t('settings.increaseFont')} onclick={() => sourceFontSize = Math.min(72, sourceFontSize + 1)}>+</button>
             </div>
           </div>
         </div>
+        {@render editorPreview(true)}
       {:else if activeSettingsView === 'renderAppearance'}
         <div class="settings-section">
-          <h4 class="section-title">{t('settings.displayAndFont')}</h4>
+          <h2 class="section-title">{t('settings.displayAndFont')}</h2>
           <div class="settings-row">
             <label for="render-font-size-input-window">{t('settings.fontSize')}</label>
             <div class="size-control">
@@ -565,8 +640,8 @@
                 bind:value={renderFontSize}
                 class="font-size-num"
               />
-              <button type="button" class="adjust-btn" onclick={() => renderFontSize = Math.max(6, renderFontSize - 1)}>-</button>
-              <button type="button" class="adjust-btn" onclick={() => renderFontSize = Math.min(72, renderFontSize + 1)}>+</button>
+              <button type="button" class="adjust-btn" aria-label={t('settings.decreaseFont')} onclick={() => renderFontSize = Math.max(6, renderFontSize - 1)}>-</button>
+              <button type="button" class="adjust-btn" aria-label={t('settings.increaseFont')} onclick={() => renderFontSize = Math.min(72, renderFontSize + 1)}>+</button>
             </div>
           </div>
 
@@ -600,75 +675,48 @@
 
         </div>
 
-        <div class="settings-section">
-          <div class="settings-row theme-section-heading">
-            <h4 class="section-title">{t('settings.themeColors')}</h4>
-            <div class="theme-edit-toggle">
-              <button
-                type="button"
-                class="theme-toggle-btn"
-                class:active={editingTheme === 'light'}
-                onclick={() => editingTheme = 'light'}
-              >
-                <Sun size={16} class="tab-icon"/> {t('settings.themeLight')}
-              </button>
-              <button
-                type="button"
-                class="theme-toggle-btn"
-                class:active={editingTheme === 'dark'}
-                onclick={() => editingTheme = 'dark'}
-              >
-                <Moon size={16} class="tab-icon"/> {t('settings.themeDark')}
-              </button>
-            </div>
+
+        {@render editorPreview()}
+      {:else if activeSettingsView === 'renderColors'}
+        <div class="palette-toolbar">
+          <div class="theme-edit-toggle" aria-label={t('settings.editingPalette')}>
+            <button type="button" class="theme-toggle-btn" class:active={editingTheme === 'light'} aria-pressed={editingTheme === 'light'} onclick={() => selectedEditingTheme = 'light'}><Sun size={15} aria-hidden="true"/>{t('settings.themeLight')}</button>
+            <button type="button" class="theme-toggle-btn" class:active={editingTheme === 'dark'} aria-pressed={editingTheme === 'dark'} onclick={() => selectedEditingTheme = 'dark'}><Moon size={15} aria-hidden="true"/>{t('settings.themeDark')}</button>
           </div>
-
-          {@render colorSettingRow(`color-render-bg-window-${editingTheme}`, t('settings.color.renderBackground'), editingTheme, 'renderBg')}
-          {@render colorSettingRow(`color-render-text-window-${editingTheme}`, t('settings.color.renderText'), editingTheme, 'renderText')}
-
-          <div class="settings-row color-row">
-            <label for={`render-font-weight-window-${editingTheme}`}>{t('settings.fontWeight')}</label>
-            <select
-              id={`render-font-weight-window-${editingTheme}`}
-              class="tab-size-select font-weight-select"
-              value={editingTheme === 'dark' ? darkColors.renderFontWeight : lightColors.renderFontWeight}
-              onchange={(event) => updateThemeColor(editingTheme, 'renderFontWeight', (event.currentTarget as HTMLSelectElement).value)}
-            >
-              <option value="300">{t('settings.weightLight')}</option>
-              <option value="400">{t('settings.weightNormal')}</option>
-              <option value="500">{t('settings.weightMedium')}</option>
-              <option value="600">{t('settings.weightSemiBold')}</option>
-              <option value="700">{t('settings.weightBold')}</option>
-            </select>
-          </div>
-
-          {@render colorSettingRow(`color-hl-code-bg-window-${editingTheme}`, t('settings.color.codeBackground'), editingTheme, 'codeBg')}
-          {@render colorSettingRow(`color-hl-code-text-window-${editingTheme}`, t('settings.color.codeText'), editingTheme, 'codeText')}
-          {@render colorSettingRow(`color-hl-key-strong-window-${editingTheme}`, t('settings.color.keyStrong'), editingTheme, 'keyStrong')}
-          {@render colorSettingRow(`color-hl-key-medium-window-${editingTheme}`, t('settings.color.keyMedium'), editingTheme, 'keyMedium')}
-          {@render colorSettingRow(`color-hl-key-light-window-${editingTheme}`, t('settings.color.keyLight'), editingTheme, 'keyLight')}
-          {@render colorSettingRow(`color-hl-string-window-${editingTheme}`, t('settings.color.string'), editingTheme, 'string')}
-          {@render colorSettingRow(`color-hl-number-window-${editingTheme}`, t('settings.color.number'), editingTheme, 'number')}
-          {@render colorSettingRow(`color-hl-list-marker-window-${editingTheme}`, t('settings.color.listMarker'), editingTheme, 'listMarker')}
-          {@render colorSettingRow(`color-hl-comment-window-${editingTheme}`, t('settings.color.comment'), editingTheme, 'comment')}
-          {@render colorSettingRow(`color-hl-paren-window-${editingTheme}`, t('settings.color.parenthesis'), editingTheme, 'paren')}
-          {@render colorSettingRow(`color-hl-bracket-window-${editingTheme}`, t('settings.color.bracket'), editingTheme, 'bracket')}
-          {@render colorSettingRow(`color-hl-brace-window-${editingTheme}`, t('settings.color.brace'), editingTheme, 'brace')}
-          {@render colorSettingRow(`color-indent-guide-window-${editingTheme}`, t('settings.color.indentGuide'), editingTheme, 'guide')}
-
-          {#each additionalRenderThemeFields as item}
-            {@render colorSettingRow(`color-${item.field}-window-${editingTheme}`, t(item.label), editingTheme, item.field)}
+          <button type="button" class="reset-colors-btn" onclick={resetColorsToDefault}>{t('settings.resetColors')}</button>
+        </div>
+        <p class="settings-category-note">{t('settings.paletteHint')}</p>
+        {@render editorPreview()}
+        <div class="settings-row">
+          <label for={'render-font-weight-window-' + editingTheme}>{t('settings.fontWeight')}</label>
+          <select id={'render-font-weight-window-' + editingTheme} class="tab-size-select font-weight-select"
+            value={previewColors.renderFontWeight}
+            onchange={(event) => updateThemeColor(editingTheme, 'renderFontWeight', event.currentTarget.value)}>
+            <option value="300">{t('settings.weightLight')}</option><option value="400">{t('settings.weightNormal')}</option>
+            <option value="500">{t('settings.weightMedium')}</option><option value="600">{t('settings.weightSemiBold')}</option>
+            <option value="700">{t('settings.weightBold')}</option>
+          </select>
+        </div>
+        <div class="color-groups">
+          {#each settingsColorGroups as group}
+            {@const expanded = searchTokens.length > 0 || expandedColorGroups.includes(group.id)}
+            <section class="color-group">
+              <h2><button type="button" class="color-group-toggle" aria-expanded={expanded} aria-controls={'color-group-' + group.id}
+                onclick={() => toggleColorGroup(group.id)} disabled={searchTokens.length > 0}>
+                <ChevronDown size={14} class={expanded ? '' : 'collapsed'} aria-hidden="true"/>
+                <span>{t(group.label)}</span><span class="group-count">{group.fields.length}</span>
+              </button></h2>
+              <div id={'color-group-' + group.id} class="color-group-fields" hidden={!expanded}>
+                {#each group.fields as item}
+                  {@render colorSettingRow('color-' + item.id + '-window-' + editingTheme, t(item.label), editingTheme, item.field)}
+                {/each}
+              </div>
+            </section>
           {/each}
-
-          <div class="settings-action-row">
-            <button type="button" class="reset-colors-btn" onclick={resetColorsToDefault}>
-              {t('settings.resetColors')}
-            </button>
-          </div>
         </div>
       {:else if activeSettingsView === 'renderEditing'}
         <div class="settings-section">
-          <h4 class="section-title">{t('settings.autoInput')}</h4>
+          <h2 class="section-title">{t('settings.autoInput')}</h2>
           <label class="settings-check-row" for="render-auto-pair-editing-window">
             <input id="render-auto-pair-editing-window" class="settings-checkbox" type="checkbox" bind:checked={renderAutoPairEditing}/>
             <span class="settings-check-copy">
@@ -749,19 +797,19 @@
         <div class="settings-section">
           <div class="settings-format-module">
             <div class="settings-format-heading">
-              <h4 class="section-title">{t(activeSettingsCategory.labelKey)}</h4>
+              <h2 class="section-title">{t(activeSettingsCategory.labelKey)}</h2>
               <span class="settings-check-description">{t(activeSettingsCategory.descriptionKey)}</span>
             </div>
             <div class="settings-category-formats" aria-label={t('settings.categoryFormats', { category: t(activeSettingsCategory.labelKey) })}>
               {#each getDocumentFormatsForCategory(activeSettingsCategory) as format}
-                <span class="settings-format-chip">{t(format.labelKey)}</span>
+                <button type="button" class="settings-format-chip" onclick={() => void selectSettingsView(getDocumentFormatSettingsView(format.id))}>{t(format.labelKey)}<ChevronRight size={12} aria-hidden="true"/></button>
               {/each}
             </div>
           </div>
 
           {#if activeSettingsCategory.id === 'table'}
             <div class="settings-format-module">
-              <h5 class="settings-subsection-title">{t('settings.table.display')}</h5>
+              <h3 class="settings-subsection-title">{t('settings.table.display')}</h3>
               <label class="settings-check-row" for="delimited-table-highlight-header-window">
                 <input id="delimited-table-highlight-header-window" class="settings-checkbox" type="checkbox" bind:checked={delimitedTableHighlightHeader}/>
                 <span class="settings-check-copy">
@@ -779,7 +827,7 @@
             </div>
 
             <div class="settings-format-module">
-              <h5 class="settings-subsection-title">{t('settings.table.reorderSection')}</h5>
+              <h3 class="settings-subsection-title">{t('settings.table.reorderSection')}</h3>
               <label class="settings-check-row" for="delimited-table-reorder-animation-window">
                 <input id="delimited-table-reorder-animation-window" class="settings-checkbox" type="checkbox" bind:checked={delimitedTableAnimateReorder}/>
                 <span class="settings-check-copy">
@@ -815,7 +863,7 @@
         <div class="settings-section">
           <div class="settings-format-module">
             <div class="settings-format-heading">
-              <h4 class="section-title">{t(activeSettingsFormat.labelKey)}</h4>
+              <h2 class="section-title">{t(activeSettingsFormat.labelKey)}</h2>
               <span class="settings-check-description">
                 {activeSettingsFormat.extensions.length > 0
                   ? activeSettingsFormat.extensions.map((extension) => `.${extension}`).join(', ')
@@ -852,7 +900,7 @@
 
           {#if activeSettingsFormat.id === 'markdown'}
             <div class="settings-format-module">
-              <h5 class="settings-subsection-title">{t('settings.markdown.headings')}</h5>
+              <h3 class="settings-subsection-title">{t('settings.markdown.headings')}</h3>
               <label class="settings-check-row" for="markdown-hide-heading-markers-window">
                 <input
                   id="markdown-hide-heading-markers-window"
@@ -916,655 +964,202 @@
           {/if}
         </div>
       {/if}
-    </div>
+      </div>
+      </div>
+      <footer class="settings-status"><Check size={14} aria-hidden="true"/><span>{t('settings.autoApply')}</span></footer>
+    </main>
   </div>
 </div>
 
 <style>
   .settings-window-container {
-    display: flex;
-    flex-direction: column;
-    width: 100vw;
-    height: 100vh;
-    box-sizing: border-box;
-    background-color: var(--bg-editor);
+    --settings-accent: var(--accent-color);
+    width: 100%; height: 100dvh; min-height: 0; overflow: hidden;
+    background: var(--bg-editor); color: var(--text-color);
+    font-family: var(--font-ui); font-size: 13px; line-height: 1.5;
   }
-
-  .settings-body {
-    display: flex;
-    flex: 1;
-    overflow: hidden;
-  }
-
-  .settings-body.window-mode {
-    width: 100%;
-    height: 100%;
-  }
-
+  .settings-window-container[data-theme='dark'] { --settings-accent: #6cb6ff; }
+  .settings-window-container :global(*) { box-sizing: border-box; }
+  .settings-window-container :global(button), .settings-window-container :global(input),
+  .settings-window-container :global(select) { font: inherit; }
+  .settings-window-container :global(button) { color: inherit; cursor: pointer; }
+  .settings-window-container :global(button:disabled), .settings-window-container :global(input:disabled) { cursor: default; opacity: .55; }
+  .settings-window-container :global(:focus-visible) { outline: 2px solid var(--settings-accent); outline-offset: 2px; }
+  .settings-window-container :global([hidden]) { display: none !important; }
+  .settings-window-container :global(svg) { flex-shrink: 0; }
+  .settings-body { display: flex; width: 100%; height: 100%; min-height: 0; }
   .settings-sidebar {
-    width: 180px;
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 0.5rem 0;
-    overflow-y: auto;
-    border-right: 1px solid var(--border-color);
-    background-color: var(--bg-window);
-    user-select: none;
+    width: 238px; flex-shrink: 0; display: flex; flex-direction: column;
+    background: var(--bg-window); border-inline-end: 1px solid var(--border-color); user-select: none;
   }
-
-  .sidebar-tree-group {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
+  .sidebar-heading { display: flex; align-items: center; gap: 10px; padding: 22px 18px 16px; font-size: 16px; font-weight: 600; }
+  .sidebar-heading :global(svg) { color: var(--text-muted); }
+  .settings-search {
+    display: flex; align-items: center; gap: 7px; margin: 0 12px 12px; padding: 0 9px;
+    min-height: 34px; border: 1px solid var(--border-color); border-radius: 5px;
+    background: var(--bg-editor); color: var(--text-muted);
   }
-
-  .sidebar-group,
+  .settings-search:focus-within { border-color: var(--settings-accent); box-shadow: 0 0 0 1px var(--settings-accent); }
+  .settings-search input { width: 100%; min-width: 0; padding: 7px 0; border: 0; outline: none; background: transparent; color: var(--text-color); font-size: 12px; }
+  .settings-search input:focus-visible { outline: none; }
+  .settings-search input::-webkit-search-cancel-button { display: none; }
+  .settings-search kbd { white-space: nowrap; font-size: 10px; font-family: inherit; opacity: .8; }
+  .icon-button { display: flex; align-items: center; justify-content: center; padding: 2px; border: 0; border-radius: 3px; background: transparent; }
+  .icon-button:hover { background: var(--bg-menu-hover); }
+  .settings-navigation { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 9px 16px; scrollbar-width: thin; }
+  .navigation-label { margin: 18px 10px 7px; font-size: 11px; color: var(--text-muted); font-weight: 600; letter-spacing: .3px; }
+  .navigation-subheading { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 2px 10px; color: var(--text-muted); font-size: 12px; }
+  .navigation-subheading:not(:first-of-type) { margin-top: 4px; }
   .sidebar-item {
-    border: none;
-    border-left: 3px solid transparent;
-    outline: none;
-    background: transparent;
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.85rem;
-    padding: 0.6rem 1rem;
-    text-align: left;
-    cursor: pointer;
-    transition: background-color 0.1s, color 0.1s;
+    display: flex; align-items: center; gap: 9px; width: 100%; min-height: 33px;
+    padding: 6px 10px; margin: 1px 0; border: 1px solid transparent; border-radius: 4px;
+    background: transparent; text-align: start; font-size: 12px;
+  }
+  .sidebar-item > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sidebar-item :global(svg) { color: var(--text-muted); }
+  .sidebar-item.nested { padding-inline-start: 30px; }
+  .sidebar-item:hover, .category-disclosure:hover { background: var(--bg-menu-hover); }
+  .sidebar-item.active { background: color-mix(in srgb, var(--settings-accent) 13%, var(--bg-window)); color: var(--settings-accent); font-weight: 600; border-color: color-mix(in srgb, var(--settings-accent) 12%, transparent); }
+  .sidebar-item.active :global(svg) { color: var(--settings-accent); }
+  .sidebar-category-row { display: flex; align-items: center; }
+  .sidebar-category-row .sidebar-item { flex: 1; min-width: 0; padding-inline-start: 5px; }
+  .category-disclosure { display: flex; align-items: center; justify-content: center; width: 22px; height: 30px; padding: 0; border: none; border-radius: 4px; background: transparent; color: var(--text-muted); }
+  .settings-window-container :global(.collapsed) { transform: rotate(-90deg); }
+  :global([dir='rtl']) .settings-window-container :global(.collapsed) { transform: rotate(90deg); }
+  .format-children { padding-inline-start: 8px; }
+  .navigation-divider { border-top: 1px solid var(--border-color); margin: 16px 8px 10px; }
+  .sidebar-footer { display: flex; gap: 8px; align-items: center; min-height: 38px; padding: 0 18px; border-top: 1px solid var(--border-color); color: var(--text-muted); font-size: 11px; }
+  .sidebar-footer span { opacity: .7; }
+  .search-result { flex-direction: column; align-items: stretch; gap: 2px; margin-bottom: 4px; padding: 9px 10px; }
+  .search-result-title { font-weight: 600; }
+  .search-result-path, .search-result-match { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+  .search-result-match { color: var(--settings-accent); }
+  .search-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 22px 12px; color: var(--text-muted); font-size: 12px; }
+  .search-empty p { margin: 0; }
+  .settings-main { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
+  .settings-page-header { padding: 20px 28px 18px; border-bottom: 1px solid var(--border-color); }
+  .settings-breadcrumb { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; color: var(--text-muted); font-size: 11px; margin-bottom: 8px; }
+  .settings-page-header h1 { margin: 0; font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -.5px; }
+  .settings-page-header > p { margin: 7px 0 0; color: var(--text-muted); font-size: 12px; }
+  .settings-content { flex: 1; min-height: 0; overflow: auto; padding: 24px 28px; scroll-padding-block: 16px; scrollbar-width: thin; }
+  .settings-content-inner { display: flex; flex-direction: column; gap: 22px; width: 100%; max-width: 900px; margin-inline-end: auto; }
+  .settings-section { display: flex; flex-direction: column; gap: 12px; }
+  .settings-section + .settings-section { margin-top: 5px; }
+  .section-title { display: flex; align-items: center; gap: 12px; margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--text-color); }
+  .section-title::after { content: ''; flex: 1; border-top: 1px solid var(--border-color); }
+  .settings-row { display: grid; grid-template-columns: minmax(130px, 220px) minmax(0, 1fr); align-items: center; gap: 18px; min-height: 32px; font-size: 13px; border-radius: 4px; }
+  .settings-row > label { line-height: 1.45; }
+  .settings-status { display: flex; align-items: center; gap: 7px; min-height: 38px; padding: 8px 28px; border-top: 1px solid var(--border-color); color: var(--text-muted); font-size: 11px; }
+  .settings-status :global(svg) { color: #16835d; }
+  .settings-check-row { display: flex; align-items: flex-start; gap: 10px; padding: 5px 0; font-size: 13px; cursor: pointer; border-radius: 4px; }
+  .settings-checkbox { width: 15px; height: 15px; flex-shrink: 0; margin: 3px 0 0; accent-color: var(--settings-accent); }
+  .settings-check-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .settings-check-title { color: var(--text-color); font-weight: 500; }
+  .settings-check-description, .settings-category-note { color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+  .settings-category-note { margin: 0; }
+  .settings-content :global(.search-match) { background: color-mix(in srgb, #facc15 16%, var(--bg-editor)); box-shadow: 0 0 0 4px color-mix(in srgb, #facc15 16%, var(--bg-editor)); outline: 1px solid color-mix(in srgb, #eab308 40%, transparent); }
+  .tab-size-select, .font-size-num, .auto-pair-following-input { height: 32px; max-width: 100%; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-editor); color: var(--text-color); padding: 4px 9px; }
+  .tab-size-select { width: 110px; text-align: start; }
+  .wide-select, .language-select { width: 280px; }
+  .font-weight-select { width: 160px; }
+  .size-control { display: flex; align-items: center; gap: 5px; }
+  .font-size-num { width: 70px; text-align: center; }
+  .adjust-btn { display: flex; align-items: center; justify-content: center; width: 29px; height: 30px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-window); }
+  .adjust-btn:hover { background: var(--bg-menu-hover); }
+  .auto-pair-following-settings { display: flex; flex-direction: column; gap: 10px; margin: 0 0 4px 25px; padding: 12px 14px; border-inline-start: 2px solid var(--border-color); background: var(--bg-window); }
+  :global([dir='rtl']) .auto-pair-following-settings { margin-inline-start: 25px; margin-inline-end: 0; }
+  .auto-pair-following-settings.disabled, .settings-duration-row.disabled { opacity: .55; }
+  .auto-pair-following-heading { display: flex; flex-direction: column; gap: 4px; }
+  .auto-pair-following-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .auto-pair-following-chip { display: inline-flex; align-items: center; gap: 4px; min-height: 26px; max-width: 100%; padding: 2px 4px 2px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-editor); font-size: 12px; }
+  .auto-pair-following-chip.fixed { gap: 8px; padding-inline-end: 8px; }
+  .auto-pair-following-chip code { overflow-wrap: anywhere; font-family: Consolas, monospace; }
+  .auto-pair-following-fixed-label { color: var(--text-muted); font-size: 10px; }
+  .auto-pair-following-remove { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; border: 0; border-radius: 3px; background: transparent; padding: 0; }
+  .auto-pair-following-remove:hover:not(:disabled) { background: var(--bg-menu-hover); }
+  .auto-pair-following-add-row { display: flex; gap: 7px; max-width: 380px; }
+  .auto-pair-following-input { flex: 1; min-width: 0; }
+  .auto-pair-following-add, .settings-transfer-button, .reset-colors-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; padding: 5px 12px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-window); font-size: 12px; }
+  .auto-pair-following-add { white-space: nowrap; }
+  .auto-pair-following-add:hover:not(:disabled), .settings-transfer-button:hover:not(:disabled), .reset-colors-btn:hover { background: var(--bg-menu-hover); }
+  .settings-transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .settings-transfer-status { margin: 0; color: #16753c; font-size: 12px; }
+  .settings-transfer-status.warning { color: #946200; }
+  .settings-transfer-status.error { color: var(--error-text, #b91c1c); }
+  :global(.theme-dark) .settings-transfer-status { color: #86efac; }
+  :global(.theme-dark) .settings-transfer-status.warning { color: #fde68a; }
+  :global(.theme-dark) .settings-transfer-status.error { color: #fca5a5; }
+  .settings-duration-row { display: grid; grid-template-columns: auto minmax(70px, 240px) 54px; gap: 12px; align-items: center; padding-inline-start: 25px; font-size: 12px; }
+  .settings-duration-range { width: 100%; min-width: 0; margin: 0; accent-color: var(--settings-accent); }
+  .settings-duration-value { color: var(--text-muted); font-variant-numeric: tabular-nums; text-align: end; }
+  .settings-format-module { display: flex; flex-direction: column; gap: 12px; }
+  .settings-format-module + .settings-format-module { margin-top: 8px; padding-top: 20px; border-top: 1px solid var(--border-color); }
+  .settings-format-heading { display: flex; flex-direction: column; gap: 3px; }
+  .settings-subsection-title { margin: 0; font-size: 13px; font-weight: 600; }
+  .settings-category-formats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 7px; }
+  .settings-format-chip { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; text-align: start; padding: 7px 10px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-editor); font-size: 12px; }
+  .settings-format-chip:hover { background: var(--bg-window); border-color: var(--settings-accent); }
+  .settings-format-chip :global(svg) { color: var(--text-muted); }
+  .markdown-heading-settings { display: flex; flex-direction: column; border: 1px solid var(--border-color); border-radius: 5px; }
+  .markdown-heading-setting-row { display: grid; grid-template-columns: minmax(70px, 1fr) 65px 16px 96px; gap: 8px; align-items: center; padding: 8px 12px; font-size: 12px; }
+  .markdown-heading-setting-row + .markdown-heading-setting-row { border-top: 1px solid var(--border-color); }
+  .markdown-heading-setting-row label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .markdown-heading-setting-label { font-weight: 500; }
+  .markdown-heading-size-input, .markdown-heading-weight-select { width: 100%; }
+  .markdown-heading-unit { color: var(--text-muted); }
+  .palette-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+  .theme-edit-toggle { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-window); }
+  .theme-toggle-btn { display: flex; align-items: center; gap: 7px; min-height: 28px; padding: 3px 13px; border: 1px solid transparent; border-radius: 3px; background: transparent; font-size: 12px; }
+  .theme-toggle-btn.active { background: var(--bg-editor); border-color: var(--border-color); box-shadow: 0 1px 2px #0000000a; font-weight: 600; }
+  .theme-toggle-btn:hover { background: var(--bg-editor); }
+  .editor-preview { border: 1px solid; border-radius: 5px; overflow: hidden; }
+  .preview-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 7px 12px; border-bottom: 1px solid; font-family: var(--font-ui); font-size: 11px; }
+  .preview-heading > span:last-child { opacity: .7; }
+  .preview-document { padding: 13px 0; overflow: auto; max-height: 280px; line-height: 1.65; }
+  .preview-document > div { display: flex; white-space: pre; padding-inline-end: 16px; }
+  .preview-line { display: inline-block; flex-shrink: 0; width: 42px; text-align: end; padding-inline-end: 15px; font-size: 11px; user-select: none; }
+  .preview-boolean { border: 1px solid; border-radius: 3px; padding: 0 3px; }
+  .color-groups { display: flex; flex-direction: column; border: 1px solid var(--border-color); border-radius: 5px; }
+  .color-group + .color-group { border-top: 1px solid var(--border-color); }
+  .color-group h2 { margin: 0; font-size: 12px; }
+  .color-group-toggle { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 39px; padding: 9px 13px; border: 0; background: var(--bg-window); font-weight: 600; text-align: start; }
+  .color-group-toggle:disabled { opacity: 1; }
+  .group-count { margin-inline-start: auto; font-size: 11px; color: var(--text-muted); font-weight: 400; }
+  .color-group-fields { padding: 4px 14px; }
+  .color-row { grid-template-columns: minmax(0, 1fr) 96px; min-height: 42px; font-size: 12px; }
+  .color-row + .color-row { border-top: 1px solid color-mix(in srgb, var(--border-color) 65%, transparent); }
+  .color-picker-wrapper { position: relative; }
+  .color-picker-native { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .color-text-input { width: 96px; min-height: 27px; border: 1px solid #9ca3af; border-radius: 4px; padding: 3px 7px; text-align: center; cursor: pointer; }
+  .color-picker-wrapper .color-text-input { font-family: Consolas, monospace; font-size: 12px; font-weight: 600; }
+  .color-text-input:hover { outline: 1px solid var(--settings-accent); outline-offset: 1px; }
+  @media (min-width: 1200px) {
+    .settings-sidebar { width: 254px; }
+    .settings-content, .settings-page-header { padding-inline: 36px; }
+    .settings-content-inner { max-width: 820px; }
+  }
+  @media (max-width: 850px) {
+    .settings-sidebar { width: 212px; }
+    .settings-content { padding: 20px; }
+    .settings-page-header { padding: 18px 20px 16px; }
+    .settings-page-header h1 { font-size: 20px; }
+    .settings-row { grid-template-columns: minmax(100px, 170px) minmax(0, 1fr); gap: 12px; }
+    .color-row { grid-template-columns: minmax(0, 1fr) 96px; }
+    .settings-status { padding-inline: 20px; }
+  }
+  @media (max-width: 640px) {
+    .settings-sidebar { width: 178px; }
+    .sidebar-heading { padding-inline: 14px; }
+    .settings-navigation { padding-inline: 5px; }
+    .sidebar-item { font-size: 11px; gap: 7px; }
+    .sidebar-item.nested { padding-inline-start: 24px; }
+    .settings-search { margin-inline: 9px; }
+    .settings-search kbd { display: none; }
+    .settings-content, .settings-page-header { padding-inline: 16px; }
+    .settings-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .color-row { grid-template-columns: minmax(0, 1fr) 96px; }
+    .markdown-heading-setting-row { grid-template-columns: minmax(45px, 1fr) 52px 9px 65px; gap: 4px; padding-inline: 6px; }
+    .settings-status { padding-inline: 16px; }
   }
 
-  .sidebar-group {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    font-weight: 600;
-  }
-
-  .settings-sidebar :global(.tree-chevron) {
-    flex-shrink: 0;
-    transition: transform 0.1s;
-  }
-
-  .settings-sidebar :global(.tree-chevron.collapsed) {
-    transform: rotate(-90deg);
-  }
-
-  .tree-child {
-    padding-left: 2.35rem;
-  }
-
-  .tree-grandchild {
-    padding-left: 4.25rem;
-    font-size: 0.8rem;
-  }
-
-  .format-category-group {
-    gap: 0;
-  }
-
-  .sidebar-category {
-    font-weight: 500;
-  }
-
-  .sidebar-item {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-
-  .sidebar-group:hover,
-  .sidebar-item:hover {
-    background-color: var(--bg-menu-hover);
-  }
-
-  .sidebar-item.active {
-    border-left-color: var(--accent-color);
-    background-color: var(--bg-menu-active);
-    font-weight: 600;
-  }
-
-  .settings-main {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 1.25rem;
-    padding: 1rem 1.25rem;
-    overflow-y: auto;
-    background-color: var(--bg-editor);
-  }
-
-  .settings-section {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    padding-bottom: 1rem;
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  .settings-section:last-child {
-    padding-bottom: 0;
-    border-bottom: none;
-  }
-
-  .section-title {
-    margin: 0;
-    color: var(--accent-color);
-    font-size: 0.85rem;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-  }
-
-  .settings-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    min-height: 28px;
-    font-size: 0.85rem;
-  }
-
-  .theme-section-heading {
-    margin-bottom: 0.75rem;
-  }
-
-  .settings-check-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.65rem;
-    font-size: 0.85rem;
-    cursor: pointer;
-  }
-
-  .settings-checkbox {
-    flex-shrink: 0;
-    width: 16px;
-    height: 16px;
-    margin-top: 2px;
-    accent-color: var(--accent-color);
-  }
-
-  .settings-check-copy {
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-    line-height: 1.35;
-  }
-
-  .auto-pair-following-heading {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-
-  .settings-check-title {
-    color: var(--text-color);
-    font-weight: 500;
-  }
-
-  .settings-check-description {
-    color: var(--text-muted);
-    font-size: 0.78rem;
-  }
-
-  .auto-pair-following-settings {
-    display: flex;
-    flex-direction: column;
-    gap: 0.55rem;
-    margin: -0.1rem 0 0.15rem 26px;
-    padding: 0.65rem 0.75rem;
-    border-left: 2px solid var(--border-color);
-    background: var(--bg-window);
-  }
-
-  .auto-pair-following-settings.disabled {
-    opacity: 0.55;
-  }
-
-  .auto-pair-following-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-  }
-
-  .auto-pair-following-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    max-width: 100%;
-    min-height: 24px;
-    padding: 0.1rem 0.2rem 0.1rem 0.5rem;
-    border: 1px solid var(--border-color);
-    border-radius: 999px;
-    background: var(--bg-editor);
-    color: var(--text-color);
-    font-size: 0.76rem;
-  }
-
-  .auto-pair-following-chip.fixed {
-    gap: 0.4rem;
-    padding-right: 0.5rem;
-  }
-
-  .auto-pair-following-chip code {
-    overflow-wrap: anywhere;
-    font-family: "Cascadia Mono", Consolas, monospace;
-    font-size: 0.76rem;
-  }
-
-  .auto-pair-following-fixed-label {
-    color: var(--text-muted);
-    font-size: 0.68rem;
-  }
-
-  .auto-pair-following-remove {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    border: none;
-    border-radius: 50%;
-    background: transparent;
-    color: var(--text-muted);
-    cursor: pointer;
-  }
-
-  .auto-pair-following-remove:hover:not(:disabled) {
-    background: var(--bg-menu-hover);
-    color: var(--text-color);
-  }
-
-  .auto-pair-following-add-row {
-    display: flex;
-    gap: 0.4rem;
-    max-width: 360px;
-  }
-
-  .auto-pair-following-input {
-    flex: 1;
-    min-width: 0;
-    height: 28px;
-    box-sizing: border-box;
-    padding: 0.25rem 0.5rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    outline: none;
-    background: var(--bg-editor);
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.78rem;
-  }
-
-  .auto-pair-following-input:focus {
-    border-color: var(--accent-color);
-    box-shadow: 0 0 0 1px var(--accent-color);
-  }
-
-  .auto-pair-following-add {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.25rem;
-    min-width: 62px;
-    height: 28px;
-    padding: 0 0.55rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    background: var(--bg-editor);
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.76rem;
-    cursor: pointer;
-  }
-
-  .auto-pair-following-add:hover:not(:disabled) {
-    background: var(--bg-menu-hover);
-  }
-
-  .auto-pair-following-add:disabled,
-  .auto-pair-following-remove:disabled,
-  .auto-pair-following-input:disabled {
-    cursor: not-allowed;
-  }
-
-  .settings-duration-row {
-    display: grid;
-    grid-template-columns: 64px minmax(120px, 240px) 52px;
-    align-items: center;
-    gap: 0.6rem;
-    padding-left: 26px;
-    color: var(--text-color);
-    font-size: 0.8rem;
-  }
-
-  .settings-duration-row.disabled {
-    opacity: 0.45;
-  }
-
-  .settings-duration-range {
-    width: 100%;
-    min-width: 0;
-    margin: 0;
-    accent-color: var(--accent-color);
-  }
-
-  .settings-duration-value {
-    color: var(--text-muted);
-    font-size: 0.78rem;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-  }
-
-  .settings-format-module {
-    display: flex;
-    flex-direction: column;
-    gap: 0.65rem;
-    padding-top: 0.25rem;
-  }
-
-  .settings-format-module + .settings-format-module {
-    padding-top: 0.85rem;
-    border-top: 1px solid var(--border-color);
-  }
-
-  .markdown-heading-settings {
-    display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
-  }
-
-  .markdown-heading-setting-row {
-    display: grid;
-    grid-template-columns: 72px 82px 58px 18px 88px minmax(92px, 120px);
-    align-items: center;
-    gap: 0.45rem;
-    color: var(--text-color);
-    font-size: 0.78rem;
-  }
-
-  .markdown-heading-setting-label {
-    font-weight: 600;
-  }
-
-  .markdown-heading-size-input {
-    width: 58px;
-  }
-
-  .markdown-heading-unit {
-    color: var(--text-muted);
-  }
-
-  .markdown-heading-weight-select {
-    width: 100%;
-  }
-
-  .settings-format-heading {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    min-height: 20px;
-  }
-
-  .settings-subsection-title {
-    margin: 0 0 0.1rem;
-    color: var(--text-color);
-    font-size: 0.8rem;
-    font-weight: 600;
-  }
-
-  .settings-category-formats {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-  }
-
-  .settings-transfer-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-
-  .settings-format-chip {
-    padding: 0.15rem 0.45rem;
-    border: 1px solid var(--border-color);
-    border-radius: 999px;
-    background: var(--bg-window);
-    color: var(--text-muted);
-    font-size: 0.72rem;
-  }
-
-  .settings-category-note {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: 0.8rem;
-    line-height: 1.45;
-  }
-
-  .settings-transfer-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.4rem;
-    min-height: 30px;
-    padding: 0.35rem 0.75rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    background: var(--bg-window);
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.8rem;
-    cursor: pointer;
-  }
-
-  .settings-transfer-button:hover:not(:disabled) {
-    background: var(--bg-menu-hover);
-  }
-
-  .settings-transfer-button:focus-visible {
-    outline: 2px solid var(--accent-color);
-    outline-offset: 2px;
-  }
-
-  .settings-transfer-button:disabled {
-    cursor: wait;
-    opacity: 0.55;
-  }
-
-  .settings-transfer-status {
-    margin: 0;
-    color: #16753c;
-    font-size: 0.78rem;
-    line-height: 1.4;
-  }
-
-  .settings-transfer-status.warning {
-    color: #946200;
-  }
-
-  .settings-transfer-status.error {
-    color: var(--error-text, #b91c1c);
-  }
-
-  :global(.theme-dark) .settings-transfer-status {
-    color: #86efac;
-  }
-
-  :global(.theme-dark) .settings-transfer-status.warning {
-    color: #fde68a;
-  }
-
-  :global(.theme-dark) .settings-transfer-status.error {
-    color: #fca5a5;
-  }
-
-  .color-picker-wrapper {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .color-picker-native {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .color-text-input {
-    width: 92px;
-    min-height: 28px;
-    box-sizing: border-box;
-    padding: 0;
-    border: 1px solid #9ca3af;
-    border-radius: 4px;
-    outline: none;
-    font-family: Consolas, "Courier New", monospace;
-    font-size: 0.8rem;
-    font-weight: 600;
-    line-height: 26px;
-    text-align: center;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: box-shadow 0.1s, transform 0.1s;
-  }
-
-  .color-text-input:hover {
-    box-shadow: 0 0 0 1px rgba(156, 163, 175, 0.45);
-  }
-
-  .color-text-input:focus {
-    border-color: #9ca3af;
-    outline: 2px solid var(--accent-color);
-    outline-offset: 2px;
-  }
-
-  .color-text-input:active {
-    transform: translateY(1px);
-  }
-
-  .color-text-input::selection {
-    background: rgba(255, 255, 255, 0.35);
-  }
-
-  .settings-action-row {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: 0.5rem;
-  }
-
-  .reset-colors-btn {
-    padding: 0.4rem 0.8rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    outline: none;
-    background-color: var(--bg-window);
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: background-color 0.1s;
-  }
-
-  .reset-colors-btn:hover {
-    background-color: var(--bg-menu-hover);
-  }
-
-  .size-control {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-  }
-
-  .font-size-num {
-    width: 50px;
-    padding: 0.2rem 0.4rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    outline: none;
-    background-color: var(--bg-editor);
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.85rem;
-    text-align: center;
-  }
-
-  .adjust-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    outline: none;
-    background-color: var(--bg-menu-hover);
-    color: var(--text-color);
-    font-weight: bold;
-    cursor: pointer;
-  }
-
-  .adjust-btn:hover {
-    background-color: var(--bg-menu-active);
-  }
-
-  .theme-edit-toggle {
-    display: flex;
-    gap: 4px;
-    padding: 2px;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    background-color: var(--bg-window);
-  }
-
-  .theme-toggle-btn {
-    padding: 4px 12px;
-    border: none;
-    border-radius: 4px;
-    outline: none;
-    background: transparent;
-    color: var(--text-color);
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: background 0.1s;
-  }
-
-  .theme-toggle-btn:hover {
-    background-color: var(--bg-menu-hover);
-  }
-
-  .theme-toggle-btn.active {
-    background-color: var(--bg-editor);
-    font-weight: 600;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  }
-
-  .tab-size-select {
-    width: 100px;
-    padding: 0.2rem 0.4rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    outline: none;
-    background-color: var(--bg-editor);
-    color: var(--text-color);
-    font-family: var(--font-ui);
-    font-size: 0.85rem;
-    text-align: center;
-  }
-
-  .wide-select {
-    width: 195px;
-  }
-
-  .centered-select {
-    text-align-last: center;
-  }
-
-  .font-weight-select {
-    width: 140px;
-  }
 </style>

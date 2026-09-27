@@ -552,7 +552,7 @@ test('render theme settings expose comments and added colors for both themes', a
   await page.goto('/');
   await page.waitForLoadState('networkidle');
   await page.setContent(await readFile(new URL('./fixtures/settings-preview.html', import.meta.url), 'utf8'));
-  await page.getByRole('button', { name: '모양', exact: true }).nth(1).click();
+  await page.getByRole('button', { name: '색상', exact: true }).click();
   await expect(page.locator('input[type="color"]')).toHaveCount(43);
   await expect(page.locator('#color-hl-comment-window-light')).toHaveValue('#475569');
   const selection = page.locator('#color-selection-window-light');

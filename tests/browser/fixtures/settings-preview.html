@@ -1,15 +1,26 @@
 <!doctype html>
 <html lang="ko">
 <head><meta charset="utf-8"><title>설정 화면 검증</title>
-<style>html,body{margin:0;height:100%;font-family:Arial,sans-serif}body{--bg-editor:#fff;--bg-window:#f8fafc;--text-color:#111;--text-muted:#666;--border-color:#ddd;--accent-color:#0078d4;--font-ui:Arial;--bg-menu-hover:#eee;--bg-menu-active:#e0efff}</style></head>
+<style>
+html,body{margin:0;height:100%;font-family:'Segoe UI','Malgun Gothic',sans-serif}
+body{--bg-editor:#fff;--bg-window:#f3f3f3;--text-color:#1c1c1c;--text-muted:#5f5f5f;--border-color:#e5e5e5;--accent-color:#0078d4;--font-ui:'Segoe UI','Malgun Gothic',sans-serif;--font-notepad:Consolas,'Malgun Gothic',monospace;--bg-menu-hover:#e5e5e5;--bg-menu-active:#eaeaea}
+body.theme-dark{--bg-editor:#1b1b1b;--bg-window:#1e1e1e;--text-color:#e3e3e3;--text-muted:#9f9f9f;--border-color:#2c2c2c;--bg-menu-hover:#2d2d2d;--bg-menu-active:#323232;color-scheme:dark}
+</style></head>
 <body><script type="module">
 import { mount } from '/node_modules/.vite/deps/svelte.js';
 import SettingsWindow from '/src/lib/SettingsWindow.svelte';
 import { getSystemDefaultColors } from '/src/lib/theme-colors.ts';
 import { normalizeDocumentFeatureSettings } from '/src/lib/document-formats.ts';
 import { createDefaultMarkdownRenderSettings } from '/src/lib/markdown-settings.ts';
+import { supportedLanguages } from '/src/lib/i18n/index.ts';
+const params = new URLSearchParams(location.search);
+const locale = supportedLanguages.find(language => language.code === params.get('locale'))?.code ?? 'ko';
+const currentTheme = params.get('theme') === 'dark' ? 'dark' : 'light';
+document.documentElement.lang = locale;
+document.documentElement.dir = locale === 'ar' ? 'rtl' : 'ltr';
+document.body.classList.toggle('theme-dark', currentTheme === 'dark');
 mount(SettingsWindow, {target: document.body, props: {
-  locale: 'ko', systemLocale: 'ko', currentTheme: 'light', currentRenderFontFamilyCSS: 'Arial',
+  locale, systemLocale: 'ko', currentTheme, currentRenderFontFamilyCSS: 'Consolas, monospace',
   languagePreference: 'ko', defaultNewDocumentFormat: 'markdown', sourceFontSize: 11, renderFontSize: 11,
   tabSize: 4, renderFontFamily: 'notepad', renderAutoPairEditing: true, renderAutoPairAllowedFollowingStrings: ['=', ':'],
   renderAutoSymbolSubstitution: true, renderPreserveIndentOnEnter: true,
