@@ -4738,6 +4738,26 @@
     return true;
   }
 
+  function getEarlierListItemAtIndent(
+    lineStart: number,
+    indent: string
+  ): { marker: ListMarker; lineStart: number } | null {
+    const targetColumns = getEditorIndentColumns(indent);
+    let previousLine = getPreviousLineBounds(fileContent, lineStart);
+    while (previousLine) {
+      const text = fileContent.slice(previousLine.start, previousLine.end);
+      if (/^[ \t]*$/.test(text)) return null;
+      const marker = getListMarkerAtStart(text);
+      const columns = getEditorIndentColumns(marker?.indent ?? getLeadingWhitespace(text));
+      if (columns < targetColumns) return null;
+      if (columns === targetColumns) {
+        return marker ? { marker, lineStart: previousLine.start } : null;
+      }
+      previousLine = getPreviousLineBounds(fileContent, previousLine.start);
+    }
+    return null;
+  }
+
   function handleRenderExitEmptyListEnter(event: KeyboardEvent): boolean {
     if (!textareaEl || event.isComposing) return false;
     if (event.key !== 'Enter') return false;
@@ -4755,10 +4775,33 @@
     const markerEnd = markerStart + currentMarker.marker.length;
     if (start !== lineEnd || markerEnd !== lineEnd) return false;
 
+    const nextIndent = currentMarker.indent.slice(getRenderOutdentCount(currentMarker.indent));
+    let replacement = nextIndent;
+    let nextContent = fileContent;
+    if (currentMarker.indent.length > 0) {
+      const earlier = getEarlierListItemAtIndent(lineStart, nextIndent);
+      if (earlier && (earlier.marker.separator === 'unordered') === (currentMarker.separator === 'unordered')) {
+        const previous = getEarlierListItemAtIndent(earlier.lineStart, nextIndent);
+        const previousLabel = previous?.marker.separator === earlier.marker.separator
+          ? previous.marker.label : null;
+        const nextLabel = getNextListMarkerLabel(earlier.marker.label, previousLabel);
+        if (nextLabel) {
+          replacement = `${nextIndent}${formatListMarker(nextLabel, earlier.marker.separator, earlier.marker.spacing)}`;
+          const followingLineStart = getNextLineStartOffset(fileContent, lineEnd);
+          if (followingLineStart !== null) {
+            nextContent = renumberFollowingListMarkerSequence(
+              fileContent, followingLineStart, earlier.marker, previousLabel, nextLabel, editorIndentUnit.length
+            );
+          }
+        }
+      }
+    }
+
     event.preventDefault();
-    commitRenderEditorEdit(`${fileContent.slice(0, markerStart)}${fileContent.slice(markerEnd)}`, {
-      start: markerStart,
-      end: markerStart
+    const nextCaret = lineStart + replacement.length;
+    commitRenderEditorEdit(`${nextContent.slice(0, lineStart)}${replacement}${nextContent.slice(lineEnd)}`, {
+      start: nextCaret,
+      end: nextCaret
     });
     return true;
   }
@@ -4896,6 +4939,16 @@
     const lineEnd = getLineEndOffset(fileContent, start);
     const lineIndent = getLeadingWhitespace(fileContent.slice(lineStart, lineEnd));
     if (lineIndent.length === 0) return false;
+
+    if (!event.shiftKey && start === end && start === lineEnd && lineStart + lineIndent.length === lineEnd) {
+      const nextIndent = lineIndent.slice(getRenderOutdentCount(lineIndent));
+      const nextCaret = lineStart + nextIndent.length;
+      event.preventDefault();
+      commitRenderEditorEdit(`${fileContent.slice(0, lineStart)}${nextIndent}${fileContent.slice(lineEnd)}`, {
+        start: nextCaret, end: nextCaret
+      });
+      return true;
+    }
 
     const insertText = `${getPreferredNewline(fileContent, start)}${lineIndent}`;
 

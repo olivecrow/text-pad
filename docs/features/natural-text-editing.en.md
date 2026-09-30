@@ -290,9 +290,9 @@ When tabs and spaces are mixed, calculate visual indentation using four-column t
 ### Create the next item with Enter
 
 - Apply automatic continuation only when the selection is collapsed and the caret is after the complete list marker.
-- When the current line is an empty item containing only leading indentation and a list marker, with the caret at the line end, plain `Enter` ends the list by removing the marker and its following whitespace instead of creating another item.
-- Ending the list does not insert another newline. A top-level item becomes an empty ordinary line; a nested item keeps only its existing leading indentation and places the caret after it.
-- The resulting empty ordinary line is an automatic-sequence boundary, so existing following markers keep their numbers. `Shift+Enter` still creates a marker-free continuation line instead.
+- When the current line is an empty item containing only leading indentation and a list marker, with the caret at the line end, plain `Enter` does not insert a newline. A nested item loses one indentation level; a top-level item becomes an empty ordinary line by removing its marker and following whitespace.
+- When an earlier marker exists at the target depth, immediately restore its style, following whitespace, and next number on the same line, with the caret after the marker. Unordered lists restore the earlier symbol. Skip deeper items and continuation lines, but stop at a blank line, an ordinary paragraph at the same or shallower depth, or a shallower item, and do not mix ordered and unordered families.
+- Repeated plain `Enter` on the empty item removes one level at a time on the same line. If no earlier target-depth marker or safe next label exists, keep only the reduced indentation. Top-level list exit preserves following numbers; restoring an earlier depth also renumbers following items within the existing automatic-sequence boundaries. `Shift+Enter` still creates a marker-free continuation line.
 - Preserve the current indentation, delimiter, and whitespace following the marker.
 - Increment decimal numbers, Latin letters, and Roman numerals to their next value.
 - For an unordered list, reuse the current symbol for the next item at the same depth.
@@ -364,7 +364,18 @@ Result after Enter:
 3. after
 ```
 
-Continuing the list, moving trailing body text, and renumbering following items together form one Undo action. Removing the marker from an empty item is a separate single Undo action.
+Restoring an earlier depth from a nested empty item:
+
+```text
+1. parent
+    A. child
+        1. grandchild
+        2. |
+```
+
+Successive Enter presses change the fourth line to `    B. |`, `2. |`, and `|`. The line count stays unchanged.
+
+Continuing the list, moving trailing body text, and renumbering following items together form one Undo action. Each Enter that removes one indentation level and restores a marker, or removes a top-level marker, is a separate single Undo action.
 
 ### Break a line inside the same item with Shift+Enter
 
@@ -415,11 +426,12 @@ Creating a `Shift+Enter` continuation line and later pressing plain `Enter` on t
 Indented lines that are not list items should also retain their context when a new line is created.
 
 - When the preserve-indentation-on-Enter setting is enabled, copy the current line's leading spaces and tabs to the new line.
+- With that setting enabled and a collapsed caret at the end of an ordinary line containing only spaces or tabs, plain `Enter` removes one leading tab or up to four spaces on the same line instead of inserting a newline. Repeated Enter removes one level per press; `Shift+Enter` creates a new line with the indentation preserved.
 - With an active selection, replace the selection with the newline and indentation in one operation.
 - Pressing Backspace at the end of an otherwise empty, automatically indented line joins it to the previous line and moves the caret to the end of that line.
 - Joining an empty indented line takes precedence over deleting one indentation level.
 - A list `Shift+Enter` continuation takes precedence over automatic list continuation.
-- Ending a list with plain `Enter` on an empty marker item takes precedence over automatic list continuation.
+- Removing one level and restoring a marker, or exiting a top-level list, with plain `Enter` on an empty item takes precedence over automatic list continuation.
 - Plain `Enter` on a list continuation line is first evaluated as creating the owning marker's next item.
 - Direct list continuation, continuation-line item creation, and following-item renumbering take precedence over general indentation preservation.
 - Each assisted Enter operation and empty-line join is its own single Undo action.
@@ -536,11 +548,11 @@ Each editing-assistance command registers a unique identifier and a non-duplicat
 6. Move to the previous line end with ArrowLeft from the body start of a list continuation line
 7. Create a marker-free list continuation line with Shift+Enter
 8. Continue a checkbox item or end an empty checkbox item with Enter
-9. End the list with Enter on an empty marker item
+9. Remove one level and restore a marker, or exit a top-level list, with Enter on an empty item
 10. Continue a list marker and renumber following items on Enter
 11. Create the next item and renumber following items from a list continuation line on Enter
 12. Expand a structural JSON or JSONC delimiter pair with Enter
-13. Preserve indentation on Enter for a general line
+13. Preserve indentation on Enter for a general line, or remove one level from an empty line
 14. Remove the marker-tail character with Backspace at a list body start
 15. Join a list continuation line with Backspace at its body start
 16. Join an otherwise empty automatically indented line on Backspace
