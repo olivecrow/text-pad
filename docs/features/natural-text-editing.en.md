@@ -43,6 +43,7 @@ Natural editing is not editing with the most features. It is editing that does n
 
 - In render mode, lines recognized by the syntax parser as a key, separator, and value align subsequent display rows with the value start. This also applies to ENV `export API_URL = value`, INI, Properties, TOML, and JSON/YAML key/value rows. Do not reinterpret `=` or `:` inside strings or comments as separators.
 - Measure actual displayed widths, including fonts, tabs, and separator spacing, and remeasure after width or setting changes. Use ordinary wrapping if the value does not start on the first display row or the prefix exceeds 80% of the row width.
+- Apply the first-row hanging indent for value alignment only to the outer display row. Unquoted URLs and words between numeric or Boolean value segments must not shift over the key or appear twice; the caret and selection follow the actual displayed glyph positions.
 - Consecutive and trailing spaces each occupy width and wrap onto subsequent display rows. Added display indentation and soft wraps do not change source text, copying, saving, or undo history. Clicks, drags, Up/Down, Home/End, and Shift selection follow actual displayed positions. Preserve default source-mode editing.
 
 ## Display-only formatting of structured data

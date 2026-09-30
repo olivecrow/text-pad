@@ -28,6 +28,58 @@ async function characters(locator) {
   });
 }
 
+for (const format of ['ENV', 'INI/CFG', 'Properties']) {
+  test(`${format} unquoted value segments never overlap and keep caret source positions`, async ({ page }) => {
+    const lines = [
+      'URL=https://example.test/api',
+      'URL_WITH_PORT=http://localhost:1420/api',
+      'MIXED=server-1420/path?enabled=true # comment',
+      'TEXT=ordinary',
+      'QUOTED="ordinary"'
+    ];
+    const source = lines.join('\n');
+    await openData(page, format, source);
+    const input = page.getByTestId('editor-textarea');
+    let sourceStart = 0;
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex];
+      const content = page.locator('.line-content').nth(lineIndex);
+      await expect(content).toHaveText(line);
+      // 내부 글자 좌표를 검사해 바깥 상자의 폭은 정상이어도 글자가 당겨지는 회귀를 잡는다.
+      await expect.poll(async () => {
+        const chars = await characters(content);
+        return chars.every((char, index) => index === 0
+          || (Math.abs(char.y - chars[index - 1].y) < 1
+            && char.x >= chars[index - 1].x + chars[index - 1].width - 0.5));
+      }).toBe(true);
+      const chars = await characters(content);
+      const offsets = [1, line.indexOf('=') + 1, line.length - 1];
+      // 숫자 토큰 뒤의 일반 단어도 동일한 원문 위치로 클릭된다.
+      if (line.includes('/api')) offsets.push(line.lastIndexOf('/api') + 1);
+      for (const offset of offsets) {
+        const char = chars[offset];
+        await page.mouse.click(char.x + 0.1, char.y + char.height / 2);
+        await expect.poll(() => input.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart))
+          .toBe(sourceStart + offset);
+        await expect.poll(async () => {
+          const caret = await page.locator('.steady-editor-caret').boundingBox();
+          return caret ? Math.abs(caret.x - char.x) : Infinity;
+        }).toBeLessThan(1);
+        await input.press('ArrowRight');
+        await expect.poll(() => input.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart))
+          .toBe(sourceStart + offset + 1);
+      }
+      sourceStart += line.length + 1;
+    }
+    await expect(input).toHaveValue(source);
+    await input.press('Shift+ArrowLeft');
+    await input.press('Z');
+    await expect(input).toHaveValue(source.slice(0, -1) + 'Z');
+    await input.press('Control+z');
+    await expect(input).toHaveValue(source);
+  });
+}
+
 for (const [format, prefix, suffix] of [
   ['ENV', 'export API_URL = ', ''], ['ENV', '\tAPI_URL\t=\t', ''],
   ['INI/CFG', 'endpoint = ', ''], ['Properties', 'endpoint: ', ''],

@@ -7595,6 +7595,8 @@
   }
   :global(.render-unbroken-word) {
     display: inline-block;
+    /* 키/값 줄의 내어쓰기는 바깥 표시 줄에만 적용한다. */
+    text-indent: 0;
     max-width: 100%;
     vertical-align: baseline;
     white-space: normal;
