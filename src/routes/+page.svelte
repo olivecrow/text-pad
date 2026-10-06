@@ -4037,11 +4037,13 @@
   function handleEditorFocus() {
     isEditorFocused = true;
     if (isRenderMode && pendingRenderCaretPointerDown && !pendingRenderCaretPointerDown.moved) return;
-    updateCursorPosition();
+    // 창 이동 뒤 포커스만 복원된 경우에는 사용자가 보고 있던 스크롤을 유지한다.
+    syncCursorState(false);
   }
 
   function handleEditorBlur() {
     isEditorFocused = false;
+    renderViewportController?.cancelCaretReveal();
     markdownHeadingReplacementCaret = null;
     closeActiveUndoGroup();
     updateEditorSelectionState();
@@ -5244,6 +5246,7 @@
   async function handleTitlebarMouseDown(event: MouseEvent) {
     if (!hasTauriRuntime() || event.buttons !== 1 || event.detail > 2) return;
     event.preventDefault();
+    renderViewportController?.cancelCaretReveal();
     const appWindow = desktopWindows.current();
 
     if (event.detail === 2) {

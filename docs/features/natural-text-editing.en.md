@@ -18,6 +18,8 @@ Natural editing is not editing with the most features. It is editing that does n
 
 ## Rendered layout and pointer selection
 
+- Moving the window or restoring editor focus alone must not scroll back to the caret. Window interaction and focus loss cancel any pending caret reveal while preserving source text and selection. Subsequent actual keyboard navigation, clicks, and edits reveal the input position again.
+
 - When measured visible-line heights increase the document height at the scroll bottom, preserve the bottom position. Do not force a return to the bottom after the user scrolls upward or the editor viewport changes.
 - When rendered lines or tables enter or leave the viewport during scrolling, browser selection notifications must not scroll back to the caret if the source selection range is unchanged. Wheel input anywhere in the editor, including table cells, also cancels a pending caret reveal after editing. Subsequent actual keyboard navigation, clicks, and edits reveal the input position again.
 

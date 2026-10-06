@@ -2,6 +2,38 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 
+test('restoring editor focus preserves manual scroll until actual caret navigation', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+  const textarea = page.getByTestId('editor-textarea');
+  const viewport = page.getByTestId('editor-viewport');
+  const content = Array.from({ length: 180 }, (_, index) => `행 ${index + 1} 창 이동 스크롤 유지`).join('\n');
+  await textarea.fill(content);
+  await textarea.press('Control+Home');
+  await viewport.hover();
+  await page.mouse.wheel(0, 1800);
+  await expect.poll(() => viewport.evaluate(element => element.scrollTop)).toBeGreaterThan(1000);
+  const previousScrollTop = await viewport.evaluate(element => element.scrollTop);
+
+  // 네이티브 창 이동 뒤처럼 선택을 바꾸지 않고 편집기 포커스만 복원한다.
+  await textarea.evaluate(element => {
+    element.blur();
+    element.focus({ preventScroll: true });
+  });
+  await expect.poll(() => viewport.evaluate(element => element.scrollTop)).toBe(previousScrollTop);
+  await page.waitForTimeout(250);
+  expect(await viewport.evaluate(element => element.scrollTop)).toBe(previousScrollTop);
+  expect(await textarea.evaluate(element => element instanceof HTMLTextAreaElement
+    ? [element.selectionStart, element.selectionEnd] : null)).toEqual([0, 0]);
+  await expect(textarea).toHaveValue(content);
+
+  await textarea.press('ArrowRight');
+  await expect.poll(() => viewport.evaluate(element => element.scrollTop)).toBeLessThan(32);
+  await expect(page.locator('.backdrop-line[data-line-index="0"]')).toBeVisible();
+  expect(await textarea.evaluate(element => element instanceof HTMLTextAreaElement
+    ? element.selectionStart : null)).toBe(1);
+});
+
 function createWrappedFencedCodeDocument() {
   const longValue = 'rendered-code-width-'.repeat(14);
   const codeLines = Array.from(
