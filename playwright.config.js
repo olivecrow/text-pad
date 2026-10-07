@@ -5,6 +5,8 @@ const browserTestPort = 4173;
 export default defineConfig({
   testDir: './tests/browser',
   fullyParallel: false,
+  // 큰 문서의 화면 측정과 스크롤 시험이 서로 CPU를 과도하게 점유하지 않게 한다.
+  workers: 2,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   reporter: 'list',
