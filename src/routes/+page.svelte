@@ -523,7 +523,6 @@
     height: number;
   }
   let renderedPairDecorations = $state<RenderPairDecoration[]>([]);
-  let steadyEditorCaretTimer: ReturnType<typeof setTimeout> | null = null;
   let steadyEditorCaretBlinkKey = $state<number>(0);
   let isEditorFocused = $state<boolean>(false);
   let editorTextMeasureCanvas: HTMLCanvasElement | null = null;
@@ -2690,12 +2689,8 @@
       return;
     }
 
-    const lineIndex = Math.max(0, cursorLine - 1);
-    const lineStart = lineStartOffsets[lineIndex] ?? 0;
-    const linePrefix = fileContent.slice(lineStart, start);
-    steadyEditorCaretLeft = 12 + measureEditorTextWidth(linePrefix) - scrollLeft;
-    steadyEditorCaretTop = 8 + lineIndex * measuredLineHeight - scrollTop;
-    steadyEditorCaretHeight = measuredLineHeight;
+    // 원문 모드는 자동 줄바꿈 경계까지 아는 입력 요소의 기본 캐럿을 사용한다.
+    steadyEditorCaretVisible = false;
   }
 
   function restartSteadyEditorCaretBlink() {
@@ -2704,10 +2699,6 @@
 
   function hideSteadyEditorCaret() {
     steadyEditorCaretVisible = false;
-    if (steadyEditorCaretTimer) {
-      clearTimeout(steadyEditorCaretTimer);
-      steadyEditorCaretTimer = null;
-    }
   }
 
   function keepEditorCaretVisibleDuringEdit() {
@@ -2716,20 +2707,7 @@
       return;
     }
 
-    if (!isBrowser || !textareaEl) {
-      hideSteadyEditorCaret();
-      return;
-    }
-
-    steadyEditorCaretVisible = true;
-    syncSteadyEditorCaretPosition();
-    if (steadyEditorCaretTimer) {
-      clearTimeout(steadyEditorCaretTimer);
-    }
-    steadyEditorCaretTimer = setTimeout(() => {
-      steadyEditorCaretVisible = false;
-      steadyEditorCaretTimer = null;
-    }, 700);
+    hideSteadyEditorCaret();
   }
 
   function syncEditorCaretVisibilityForCurrentMode() {
@@ -3449,9 +3427,9 @@
     if (!surface) return;
     const clip = getSearchClipRect(surface);
     let matches = searchMatches;
-    if (!shouldShowDelimitedTableEditor) {
-      const firstLine = shouldRenderHighlightLayer ? startLine : Math.max(0, Math.floor((textareaEl?.scrollTop ?? 0) / measuredLineHeight) - 1);
-      const lastLine = shouldRenderHighlightLayer ? endLine : Math.min(lineCount - 1, firstLine + Math.ceil(clip.height / measuredLineHeight) + 2);
+    if (!shouldShowDelimitedTableEditor && shouldRenderHighlightLayer) {
+      const firstLine = startLine;
+      const lastLine = endLine;
       let start = lineStartOffsets[firstLine] ?? 0;
       let end = lineStartOffsets[lastLine + 1] ?? fileContent.length;
       // 표·복합 서식은 첫 원문 줄에 전체 표시 높이를 모으므로 내부의 높이 0인 줄도 검색한다.
@@ -7251,7 +7229,7 @@
             class="editor-textarea"
             data-testid="editor-textarea"
             style="height: {isRenderMode && isEnhancedDocumentWithinBudget ? `${renderEditorScrollHeight}px` : '100%'}; font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode && isEnhancedDocumentWithinBudget ? editorCursorStyle : 'text'};"
-            wrap={isRenderMode && isEnhancedDocumentWithinBudget ? 'soft' : 'off'}
+            wrap="soft"
             style:transform={isRenderMode && isEnhancedDocumentWithinBudget ? `scaleX(${liveEditorViewportWidth / Math.max(1, editorViewportWidth)})` : null}
             value={textareaDisplayContent}
             onkeydown={handleEditorKeyDown}
@@ -8448,8 +8426,9 @@
     padding: 8px 12px;
     box-sizing: border-box;
     overflow: auto;
-    white-space: pre;
-    word-wrap: normal;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: keep-all;
     z-index: 2;
     letter-spacing: normal;
     word-spacing: normal;

@@ -26,6 +26,7 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "Tauri build failed with exit code $LASTEXITCODE."
         }
+        & (Join-Path $PSScriptRoot 'register-development-app.ps1') -RefreshOnly
     } finally {
         Pop-Location
     }

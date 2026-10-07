@@ -1521,6 +1521,11 @@
 
   .embedded .table-scroll-region {
     flex: none;
+    /* 본문 표는 전체 높이로 펼치고, 넘치는 열만 가로로 스크롤한다. */
+    overflow-x: auto;
+    overflow-y: hidden;
+    /* 마지막 행 추가 버튼과 초점 테두리까지 표 높이에 포함한다. */
+    padding-bottom: 12px;
   }
 
   .drag-preview-layer {

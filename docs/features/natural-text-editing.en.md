@@ -16,6 +16,12 @@ Natural editing is not editing with the most features. It is editing that does n
 - When an assistance rule does not apply, the editor must safely fall back to the operating system and input element's default behavior.
 - The rendered layer must never normalize or rewrite source text without an explicit edit from the user.
 
+## Display-only wrapping in source mode
+
+- Source mode also wraps at the window width. Prefer whitespace boundaries and break within a word when that word exceeds the available width. Display wrapping does not change source text, copying, saving, dirty state, or Undo history. For example, `가나다 abcdef` remains `가나다 abcdef` in the source even when a narrow window displays it across several rows.
+- Preserve source selection offsets when changing the window width or mode. The input element's native caret, clicks, dragging, Up/Down arrows, and Home/End follow wrapped display rows. The input element draws the source caret directly, and search highlights use the same font, display width, and scroll position.
+- Render-only editing assistance, including automatic pairs and indentation continuation, does not apply in source mode. Preserve spaces, tabs, and newlines entered by the user.
+
 ## Rendered layout and pointer selection
 
 - Moving the window or restoring editor focus alone must not scroll back to the caret. Window interaction and focus loss cancel any pending caret reveal while preserving source text and selection. Subsequent actual keyboard navigation, clicks, and edits reveal the input position again.
@@ -179,6 +185,8 @@ See [Unicode's word-boundary discussion](https://www.unicode.org/reports/tr29/tr
 - Links, emphasis, and inline code inside a heading keep their exact source ranges, and saved text never receives display-only size, weight, color, or divider data.
 
 ## Markdown tables
+
+- Body tables must not have an internal vertical scrollbar. Tables and multiline cells display their full height and scroll vertically with the document. Tables wider than the available width may scroll horizontally within the table; the final row's insertion button and focus outline must remain unclipped.
 
 - The shared CSV/TSV and Markdown table editor starts with no cell selected. Highlight a cell and its row/column only after a click or keyboard entry, and clear the selection highlight when focus leaves. Moving to another cell selects only that cell. Keep the header's normal styling independent of selection highlights.
 - Render body tables with consecutive header and pipe-delimiter rows using the same cell, row, and column editor as CSV/TSV. Place the table directly in the document without a separate format label, toolbar, or enclosing border. Rendering and mode changes do not modify source text. Keep tables inside code, comments, or lists, and tables exceeding the budget, as source text; display tables inside blockquotes as part of their preview.

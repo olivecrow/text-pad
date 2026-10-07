@@ -87,6 +87,7 @@ graph TD
 - `npm run build`: 프론트엔드 정적 빌드.
 - `npm run tauri dev`: Tauri 개발 실행.
 - `npm run tauri:build:signed`: Windows 실행 파일, MSI/NSIS 설치 파일, 업데이터 서명 생성. 최종 빌드는 이 명령만 사용한다.
+- `npm run tauri:register:development`: 서명 빌드 뒤 개발 실행 파일 사본을 `text-pad (개발용)`으로 Windows 연결 프로그램과 기본 앱 후보에 등록한다. 설치본은 `text-pad`로 유지된다. 등록 이후 서명 빌드는 개발 사본도 갱신한다.
 - `npm run tauri build -- --no-bundle`: 빠른 컴파일 진단 전용. 최종 빌드 완료로 간주하지 않는다.
 
 ## 공통 기준

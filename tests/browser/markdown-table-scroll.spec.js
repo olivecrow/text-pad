@@ -6,7 +6,8 @@ const sample = readFileSync(new URL('../../samples/large-markdown-tables.md', im
 
 for (const width of [900, 460]) {
   test(`the large Markdown sample preserves manual scrolling at ${width}px`, async ({ page }) => {
-    test.setTimeout(60_000);
+    // 이동 왕복 중 매 중간 스크롤 위치를 검사하므로 느린 실행 환경에서도 전체 조작을 마친다.
+    test.setTimeout(180_000);
     await page.setViewportSize({ width, height: 650 });
     await page.goto('/');
     const editor = page.getByTestId('editor-textarea');

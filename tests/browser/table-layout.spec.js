@@ -21,6 +21,48 @@ async function openTable(page, format, rows) {
   if (format !== 'Markdown') await page.locator('.render-mode-toggle').click();
 }
 
+test('Markdown tables expand vertically and only scroll overflowing columns', async ({ page }) => {
+  for (const [width, columns, bodyRows] of [[900, 2, 1], [460, 12, 1], [700, 3, 45]]) {
+    await page.setViewportSize({ width, height: 650 });
+    const rows = [Array(columns).fill('머리글'), ...Array.from({ length: bodyRows }, (_, index) =>
+      Array(columns).fill(`행 ${index + 1}<br>둘째 줄`))];
+    await openTable(page, 'Markdown', rows);
+    const region = page.locator('.table-editor.embedded .table-scroll-region');
+    await expect(region).toHaveCSS('overflow-y', 'hidden');
+    await expect(region).toHaveCSS('overflow-x', 'auto');
+    const metrics = () => region.evaluate(element => {
+      const table = element.querySelector('.data-table');
+      const lastRow = element.querySelector('tbody tr:last-child');
+      const insertionZone = element.querySelector('.row-insert-after');
+      if (!table || !lastRow || !insertionZone) throw new Error('표 배치 요소를 찾을 수 없습니다.');
+      const bounds = element.getBoundingClientRect();
+      return {
+        verticalOverflow: element.scrollHeight - element.clientHeight,
+        horizontalOverflow: element.scrollWidth - element.clientWidth,
+        tableBottom: table.getBoundingClientRect().bottom,
+        rowBottom: lastRow.getBoundingClientRect().bottom,
+        controlBottom: insertionZone.getBoundingClientRect().bottom,
+        regionBottom: bounds.bottom,
+        height: bounds.height
+      };
+    });
+    await expect.poll(async () => (await metrics()).verticalOverflow).toBeLessThanOrEqual(1);
+    const measured = await metrics();
+    expect(measured.tableBottom).toBeLessThanOrEqual(measured.regionBottom);
+    expect(measured.rowBottom).toBeLessThanOrEqual(measured.regionBottom);
+    // 2px의 초점 테두리도 마지막 행 추가 버튼 아래에 들어가야 한다.
+    expect(measured.controlBottom + 2).toBeLessThanOrEqual(measured.regionBottom);
+    if (columns === 12) {
+      expect(measured.horizontalOverflow).toBeGreaterThan(0);
+      const initialScrollLeft = await region.evaluate(element => element.scrollLeft);
+      await region.hover();
+      await page.mouse.wheel(initialScrollLeft > 0 ? -600 : 600, 0);
+      await expect.poll(() => region.evaluate(element => element.scrollLeft)).not.toBe(initialScrollLeft);
+    }
+    if (bodyRows === 45) expect(measured.height).toBeGreaterThan(650);
+  }
+});
+
 for (const format of ['Markdown', 'CSV', 'TSV']) {
   test(`${format} starts unselected and clears cell highlights when focus leaves`, async ({ page }) => {
     const rows = [['Name', 'Count'], ['Pencil', '2']];
