@@ -84,6 +84,7 @@
 Tauri 업데이트 서명 개인키는 저장소 밖에 두고 GitHub Actions 비밀 값으로 전달한다. 공개키만 `tauri.conf.json`에 포함한다.
 개인키를 변경하면 이전 설치본이 새 업데이트를 검증하지 못하므로 키를 임의로 재생성하지 않는다.
 세부 사용자 흐름과 릴리스 절차는 `docs/features/app-updates.md`를 따른다.
+Windows 제작자 서명은 Tauri 업데이트 서명과 별개이며, `docs/features/code-signing.md`의 범위와 승인 정책을 따른다. SignPath 지원은 신청 단계이고 실제 배포 연결은 `docs/signpath-setup.md`의 완료 기준을 충족한 뒤 적용한다.
 
 ## Windows 설치 파일
 

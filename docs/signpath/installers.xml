@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 신청 준비용 초안. 두 설치 파일은 서명된 실행 파일로 먼저 패키징한다. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="text-pad_${version}_x64-setup.exe" product-name="text-pad" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <msi-file path="text-pad_${version}_x64_en-US.msi">
+      <pe-file path="text-pad.exe" product-name="text-pad" product-version="${version}">
+        <authenticode-verify />
+      </pe-file>
+      <authenticode-sign />
+    </msi-file>
+  </zip-file>
+</artifact-configuration>

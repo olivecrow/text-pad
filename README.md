@@ -24,6 +24,12 @@ Download the latest Windows installer from [GitHub Releases](https://github.com/
 
 Version `0.2.0` is the first release with the built-in updater. If you are upgrading from `0.1.0`, install `0.2.0` manually once; later releases can be installed from inside the app.
 
+## Code signing policy (코드 서명 정책)
+
+Windows 제작자 서명은 [코드 서명 정책](docs/features/code-signing.md)을 따른다. 현재 공개 설치 파일에는 Tauri 업데이트 무결성 서명만 적용되며, SignPath Foundation 지원은 신청 단계다. 재단 승인과 서명 검증을 마친 파일에만 SignPath 서명이 적용됐다고 표시한다.
+
+유지보수와 서명 승인 담당자는 [olivecrow](https://github.com/olivecrow)다. 외부 통신과 로컬 데이터 처리는 [개인정보 처리 및 외부 통신 안내](docs/features/privacy.md)를 참고한다.
+
 ## Development
 
 Install dependencies and start the Tauri development app:

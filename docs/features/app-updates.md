@@ -35,7 +35,7 @@
 - 개인키는 저장소에 넣지 않고, 로컬의 암호화된 키 파일과 GitHub Actions의 `TAURI_SIGNING_PRIVATE_KEY` 비밀 값으로 관리한다.
 - 개인키 암호는 로컬에서 Windows DPAPI로 보호하고, GitHub Actions에서는 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 비밀 값으로 관리한다.
 - 개인키를 잃으면 기존 앱이 새 서명키로 만든 업데이트를 신뢰할 수 없으므로 안전한 별도 백업이 필요하다.
-- Windows 코드 서명(AuthentiCode)은 업데이트 서명과 별개다. 현재 자체 업데이트의 무결성 검증에는 Tauri 서명을 사용하며, SmartScreen 평판용 코드 서명 인증서는 별도 범위다.
+- 제작자의 신원을 인증하는 Windows 코드 서명(Authenticode)은 업데이트 서명과 별개다. 현재 자체 업데이트의 무결성 검증에는 Tauri 서명을 사용하며, 재단의 제작자 서명 지원은 신청 단계다. 범위와 승인 기준은 [코드 서명 정책](code-signing.md), 외부 요청 안내는 [개인정보 처리 및 외부 통신 안내](privacy.md)를 따른다.
 
 `.github/workflows/release.yml`은 다음 계약을 따른다.
 

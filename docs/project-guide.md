@@ -41,6 +41,9 @@ graph TD
 - `docs/features/theme-preferences.md`: 테마와 사용자 설정 저장 계약.
 - `docs/features/localization.md`: 지원 언어, 선택 우선순위와 번역표 관리 계약.
 - `docs/features/app-updates.md`: 시작 확인, 도움말 메뉴, 서명된 GitHub Release 업데이트와 라이선스 고지 계약.
+- `docs/features/code-signing.md`: Windows 제작자 서명 범위, 담당자와 승인 정책.
+- `docs/features/privacy.md`: 로컬 데이터 처리, 업데이트 확인과 외부 이미지 요청 안내.
+- `docs/signpath-setup.md`: SignPath 무료 지원 신청과 승인 뒤 배포 연결 기준.
 - `docs/features/supported-text-formats.md`: 프로그래밍 언어를 제외한 제품 지원 범위, 형식군별 렌더 전략과 제외 기준.
 - `docs/implementation-checklist.md`: 남은 기능과 완료 기준.
 
