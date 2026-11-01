@@ -290,7 +290,8 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
         : mapped('\u200b', [inlineOffsets[0], inlineOffsets[0]]);
     } else if (token.type === 'hr' && token.map) {
       const start = starts[token.map[0]];
-      html += mapped('\u200b', [start, start]) + renderer.renderToken(tokens, i, parser.options);
+      const end = start + (lines[token.map[0]] ?? '').length;
+      html += mapped('\u200b', [start, end]) + renderer.renderToken(tokens, i, parser.options);
     } else if (renderer.rules[token.type]) html += renderer.rules[token.type](tokens, i, parser.options, environment, renderer);
     else {
       html += renderer.renderToken(tokens, i, parser.options);

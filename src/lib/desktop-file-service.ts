@@ -42,7 +42,6 @@ export interface DesktopFileService {
   openFilePaths(paths: readonly string[]): Promise<OpenedTextFile[]>;
   saveFileDialog(options: SaveTextFileOptions): Promise<SavedTextFile | null>;
   setupEditorWindowWheel(): Promise<void>;
-  takePendingOpenFiles(): Promise<OpenedTextFile[]>;
   writeFileContent(options: WriteTextFileOptions): Promise<void>;
 }
 
@@ -53,7 +52,6 @@ export const desktopFileCommands = {
   openFilePaths: 'open_file_paths',
   saveFileDialog: 'save_file_dialog',
   setupEditorWindowWheel: 'setup_editor_window_wheel',
-  takePendingOpenFiles: 'take_pending_open_files',
   writeFileContent: 'write_file_content'
 } as const;
 
@@ -80,10 +78,6 @@ export function createDesktopFileService(invokeCommand: DesktopInvoke): DesktopF
 
     setupEditorWindowWheel(): Promise<void> {
       return invokeCommand(desktopFileCommands.setupEditorWindowWheel);
-    },
-
-    takePendingOpenFiles(): Promise<OpenedTextFile[]> {
-      return invokeCommand(desktopFileCommands.takePendingOpenFiles);
     },
 
     writeFileContent(options: WriteTextFileOptions): Promise<void> {

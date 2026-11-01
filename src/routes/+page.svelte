@@ -31,7 +31,7 @@
   import { replaceMarkdownSelection, repairMarkdownInput } from '$lib/markdown-edit';
   import { getEditorInputMergeKey } from '$lib/editor-input';
   import { openUrl } from '@tauri-apps/plugin-opener';
-  import { getCheckboxEnterEdit } from "$lib/checkbox-markers";
+  import { getCheckboxEnterEdit, getCheckboxMarkerAtStart } from "$lib/checkbox-markers";
   import {
     formatListMarker,
     getListContinuationIndent,
@@ -139,7 +139,9 @@
   import { BoundedLruCache, BoundedRecentSet } from "$lib/bounded-collections";
   import {
     canInsertAutoPairAt,
-    createDefaultAutoPairAllowedFollowingStrings
+    createDefaultAutoPairAllowedFollowingStrings,
+    hasOpenQuoteBeforeCaret,
+    hasSymmetricRepeatedQuoteAtCaret
   } from "$lib/auto-pair";
   import { getTextChange, type TextChange } from "$lib/text-change";
   import {
@@ -284,7 +286,6 @@
   const tabTransferAcceptedEvent = 'text-pad-tab-transfer-accepted';
   const tabPointerDragMoveEvent = 'text-pad-tab-pointer-move';
   const tabPointerDragDropEvent = 'text-pad-tab-pointer-drop';
-  const openFilesRequestedEvent = 'text-pad-open-files-requested';
   const tabTransferIdQueryKey = 'tabTransferId';
   const tabTransferSourceQueryKey = 'tabTransferSource';
   let systemLocale = $state<AppLocale>(resolveSystemLocale(isBrowser ? navigator.languages : []));
@@ -492,7 +493,6 @@
   let hasLoadedStartupFiles = false;
   let hasCheckedForUpdateOnStartup = false;
   let startupUpdateTimer: ReturnType<typeof setTimeout> | null = null;
-  let pendingInstanceOpenChain: Promise<void> = Promise.resolve();
   let transientStatusTimer: ReturnType<typeof setTimeout> | null = null;
   let isWindowMaximized = $state<boolean>(false);
   let transientStatusMessage = $state<string | null>(null);
@@ -1815,7 +1815,7 @@
   async function confirmCloseTab(tabId: string): Promise<boolean> {
     captureActiveEditorView();
     const tab = tabs.find((item) => item.id === tabId);
-    if (!tab || !tab.isDirty) return true;
+    if (!tab || !tab.isDirty || (!tab.filePath && tab.fileContent.length === 0)) return true;
 
     if (activeTabId !== tabId) {
       activateTab(tabId);
@@ -2796,58 +2796,6 @@
       isLoading = false;
     }
   }
-
-  async function openPendingInstanceFiles() {
-    if (isSettingsWindow) return;
-
-    try {
-      const openedFiles = await desktopFiles.takePendingOpenFiles();
-      if (!openedFiles.length) return;
-
-      isLoading = true;
-      errorMsg = null;
-      captureActiveEditorView();
-      for (const openedFile of openedFiles) {
-        openFile(openedFile, false);
-      }
-    } catch (err: any) {
-      errorMsg = localizeError('error.readFile', err);
-    } finally {
-      isLoading = false;
-    }
-  }
-
-  function schedulePendingInstanceFilesOpen() {
-    pendingInstanceOpenChain = pendingInstanceOpenChain
-      .then(openPendingInstanceFiles)
-      .catch((error) => {
-        console.error('Failed to open files from another app launch:', error);
-      });
-  }
-
-  $effect(() => {
-    if (!isBrowser || !hasTauriRuntime() || isSettingsWindow) return;
-
-    let isDisposed = false;
-    let unlistenOpenRequest: UnlistenFn | undefined;
-    desktopWindows.current().listen(openFilesRequestedEvent, schedulePendingInstanceFilesOpen)
-      .then((unlisten) => {
-        if (isDisposed) {
-          unlisten();
-        } else {
-          unlistenOpenRequest = unlisten;
-          schedulePendingInstanceFilesOpen();
-        }
-      })
-      .catch((err) => {
-        console.error('Failed to listen for files from another app launch:', err);
-      });
-
-    return () => {
-      isDisposed = true;
-      unlistenOpenRequest?.();
-    };
-  });
 
   $effect(() => {
     if (!isBrowser || !hasTauriRuntime() || isSettingsWindow) return;
@@ -3978,6 +3926,8 @@
         pendingNativeInput = null;
         return;
       }
+      if (!event.isComposing && event.inputType.startsWith('delete') && start < end
+        && handleSelectedListItemDeletion(event, start, end)) return;
     }
 
     pendingNativeInput = {
@@ -3986,6 +3936,25 @@
       isComposing: event.isComposing || isComposingEditorText
     };
     syncEditorCaretVisibilityForCurrentMode();
+  }
+
+  function handleSelectedListItemDeletion(event: InputEvent, start: number, end: number): boolean {
+    if (start !== getLineStartOffset(fileContent, start) || isLineInsideFencedCodeBlock(start)) return false;
+    const lineEnd = getLineEndOffset(fileContent, start);
+    const nextStart = getNextLineStartOffset(fileContent, lineEnd);
+    if (end !== lineEnd && end !== nextStart) return false;
+    const removed = getListMarkerAtStart(fileContent.slice(start, lineEnd));
+    if (!removed || removed.separator === 'unordered' || nextStart === null) return false;
+    const previous = getPreviousListMarker(fileContent, start, removed);
+    if (previous && getNextListMarkerLabel(previous.label) !== removed.label) return false;
+    const renumbered = renumberFollowingListMarkerSequence(
+      fileContent, nextStart, removed, previous?.label ?? null, previous?.label ?? removed.label, tabSize, 'remove'
+    );
+    if (renumbered === fileContent) return false;
+    event.preventDefault();
+    pendingNativeInput = null;
+    commitRenderEditorEdit(renumbered.slice(0, start) + renumbered.slice(end), { start, end: start });
+    return true;
   }
 
   function handleEditorCompositionStart() {
@@ -4058,6 +4027,19 @@
     const root = block && getRichRoot(offset);
     if (!block || !root) return false;
     if (event.key === 'Enter') {
+      const ruleLineStart = getLineStartOffset(fileContent, selection.start);
+      const ruleLineEnd = getLineEndOffset(fileContent, selection.start);
+      const ruleLine = fileContent.slice(ruleLineStart, ruleLineEnd);
+      if (selection.start === selection.end && root.querySelector('hr')
+        && /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/u.test(ruleLine)) {
+        const position = selection.start <= ruleLineStart ? ruleLineStart : ruleLineEnd;
+        const newline = getPreferredNewline(fileContent, position);
+        const caret = position + newline.length;
+        event.preventDefault();
+        commitRenderEditorEdit(fileContent.slice(0, position) + newline + fileContent.slice(position),
+          { start: caret, end: caret });
+        return true;
+      }
       const boundary = getRichTextBoundary(root, selection.start - block.start);
       const inCode = !!boundary?.node.parentElement?.closest('pre');
       const lineStart = lineStartOffsets[findLineIndexForOffset(selection.start)] ?? 0;
@@ -4983,7 +4965,14 @@
     // 여러 언어의 글자·결합 문자·숫자 뒤에서는 아포스트로피를 한 번만 입력한다.
     if (event.key === "'" && hasWordCharacterBefore(fileContent, start)) return false;
 
-    if (renderAutoClosingCharacters.has(event.key) && fileContent[start] === event.key) {
+    const lineStart = getLineStartOffset(fileContent, start);
+    const line = fileContent.slice(lineStart, getLineEndOffset(fileContent, start));
+    const localCaret = start - lineStart;
+    const adjacentPair = renderAutoClosingCharacters.has(event.key) && fileContent[start] === event.key
+      ? getPairedDelimiterHighlightAtCaret(line, localCaret, createPairedDelimiterIndex(line)) : null;
+    const isExistingCloser = adjacentPair?.closing === localCaret
+      || (event.key === '`' && hasOpenQuoteBeforeCaret(fileContent, start, '`'));
+    if (renderAutoClosingCharacters.has(event.key) && fileContent[start] === event.key && isExistingCloser) {
       event.preventDefault();
       closeActiveUndoGroup();
       const nextCaret = start + event.key.length;
@@ -4992,6 +4981,9 @@
       keepEditorCaretVisibleDuringEdit();
       return true;
     }
+
+    if ((event.key === '"' || event.key === "'" || event.key === '`')
+      && hasOpenQuoteBeforeCaret(fileContent, start, event.key)) return false;
 
     if (!canInsertAutoPairAt(fileContent, start, renderAutoPairAllowedFollowingStrings)) return false;
 
@@ -5033,11 +5025,6 @@
     return true;
   }
 
-  function isIncompleteRepeatedPairContext(openingChar: string, closingChar: string, caretOffset: number): boolean {
-    if (fileContent[caretOffset - 2] !== openingChar) return false;
-    return fileContent[caretOffset + 1] !== closingChar;
-  }
-
   function handleRenderAutoPairBackspace(event: KeyboardEvent): boolean {
     if (!renderAutoPairEditing) return false;
     if (!textareaEl || event.isComposing) return false;
@@ -5050,7 +5037,15 @@
     const openingChar = fileContent[start - 1];
     const closingChar = renderAutoClosingPairs[openingChar];
     if (!closingChar || fileContent[start] !== closingChar) return false;
-    if (isIncompleteRepeatedPairContext(openingChar, closingChar, start)) return false;
+    const lineStart = getLineStartOffset(fileContent, start);
+    const lineEnd = getLineEndOffset(fileContent, start);
+    const line = fileContent.slice(lineStart, lineEnd);
+    const index = createPairedDelimiterIndex(line);
+    const pair = getPairedDelimiterHighlightAtCaret(line, start - lineStart, index);
+    const repeatedQuote = (openingChar === '"' || openingChar === "'")
+      && hasSymmetricRepeatedQuoteAtCaret(fileContent, start, openingChar);
+    if (openingChar !== '`' && !repeatedQuote
+      && (pair?.opening !== start - lineStart - 1 || pair.closing !== start - lineStart)) return false;
 
     event.preventDefault();
 
@@ -5060,6 +5055,29 @@
       end: start - 1
     });
 
+    return true;
+  }
+
+  function handleRenderCheckboxDeletion(event: KeyboardEvent): boolean {
+    if (!textareaEl || event.isComposing || event.ctrlKey || event.altKey || event.metaKey
+      || (event.key !== 'Backspace' && event.key !== 'Delete')
+      || !isActiveDocumentRenderEnabled || !isActiveDocumentEditEnabled
+      || (activeDocumentFormat.id !== 'plain' && activeDocumentFormat.id !== 'markdown')) return false;
+    const { start, end } = getTextareaSelectionInContent();
+    if (start !== end) return false;
+    const lineStart = getLineStartOffset(fileContent, start);
+    if (isLineInsideFencedCodeBlock(lineStart)) return false;
+    const marker = getCheckboxMarkerAtStart(fileContent.slice(lineStart, getLineEndOffset(fileContent, start)));
+    if (!marker) return false;
+    const markerStart = lineStart + marker.indent.length;
+    const markerEnd = markerStart + marker.marker.length;
+    if (event.key === 'Backspace'
+      ? start !== markerEnd && start !== markerEnd + 1
+      : start !== markerStart) return false;
+    event.preventDefault();
+    const caret = markerStart + (start === markerEnd + 1 ? 1 : 0);
+    commitRenderEditorEdit(fileContent.slice(0, markerStart) + fileContent.slice(markerEnd),
+      { start: caret, end: caret });
     return true;
   }
 
@@ -5137,6 +5155,7 @@
     { id: 'fenced-code-selection-guard', priority: 10, execute: handleRenderFencedCodeSelectionEdit },
     { id: 'fenced-code-block-backspace', priority: 20, execute: handleRenderFencedCodeBlockBackspace },
     { id: 'fenced-code-boundary-deletion-guard', priority: 30, execute: handleRenderFencedCodeBoundaryDeletion },
+    { id: 'checkbox-deletion', priority: 34, execute: handleRenderCheckboxDeletion },
     { id: 'auto-pair-backspace', priority: 35, execute: handleRenderAutoPairBackspace },
     { id: 'rich-text-edit', priority: 37, execute: handleRichTextKey },
     { id: 'list-boundary-arrow-left', priority: 40, execute: handleRenderListBoundaryArrowLeft },
@@ -6108,7 +6127,6 @@
     const backward = textareaEl.selectionDirection === 'backward';
     const offset = backward ? selection.start : selection.end;
     // 이웃한 원문 줄에서 펼친 줄로 들어갈 때도 입력창의 원래 줄 높이를 쓰지 않는다.
-    if (!markdownRichBlocks.length && !parsedLines.some(line => line.prettyRows || getKeyValueStart(line.tokens) !== null)) return false;
     const caret = getRenderedCaretRectForOffset(offset);
     if (!caret || !editorViewportEl) return false;
     const viewport = editorViewportEl.getBoundingClientRect();
@@ -7422,6 +7440,7 @@
     position: relative;
     display: inline-block;
     width: 1em;
+    white-space: nowrap;
     color: transparent;
     -webkit-text-fill-color: transparent;
     text-shadow: none;

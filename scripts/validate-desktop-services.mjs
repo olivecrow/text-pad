@@ -21,7 +21,6 @@ try {
     [desktopFileModule.desktopFileCommands.openFilePaths, [openedFile]],
     [desktopFileModule.desktopFileCommands.saveFileDialog, savedFile],
     [desktopFileModule.desktopFileCommands.setupEditorWindowWheel, undefined],
-    [desktopFileModule.desktopFileCommands.takePendingOpenFiles, [openedFile]],
     [desktopFileModule.desktopFileCommands.writeFileContent, undefined]
   ]);
   const files = desktopFileModule.createDesktopFileService(async (command, args) => {
@@ -46,7 +45,6 @@ try {
   assert.deepEqual(await files.openFilePaths([openedFile.path]), [openedFile]);
   assert.deepEqual(await files.saveFileDialog(saveOptions), savedFile);
   assert.equal(await files.setupEditorWindowWheel(), undefined);
-  assert.deepEqual(await files.takePendingOpenFiles(), [openedFile]);
   assert.equal(await files.writeFileContent(writeOptions), undefined);
   assert.deepEqual(await files.readDocumentImage(openedFile.path, './image.png'), { mimeType: 'image/png', bytes: [137, 80, 78, 71] });
 
@@ -56,7 +54,6 @@ try {
     { command: 'open_file_paths', args: { paths: [openedFile.path] } },
     { command: 'save_file_dialog', args: saveOptions },
     { command: 'setup_editor_window_wheel', args: undefined },
-    { command: 'take_pending_open_files', args: undefined },
     { command: 'write_file_content', args: writeOptions },
     { command: 'read_document_image', args: { documentPath: openedFile.path, relativePath: './image.png' } }
   ]);

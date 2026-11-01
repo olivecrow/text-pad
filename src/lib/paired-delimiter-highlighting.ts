@@ -75,6 +75,12 @@ export function createPairedDelimiterIndex(content: string): PairedDelimiterInde
   while (offset < content.length) {
     const character = content[offset];
 
+    if (character === '\n' || character === '\r') {
+      bracketStack.length = 0;
+      offset += 1;
+      continue;
+    }
+
     if ((character === '"' || character === "'") && canOpenQuoteAt(content, offset)) {
       const closingOffset = findClosingQuote(content, offset, character);
       if (closingOffset !== -1) {

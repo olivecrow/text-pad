@@ -60,8 +60,7 @@ const expectedGeneratedCommands = [
   'open_file_paths',
   'save_file_dialog',
   'write_file_content',
-  'setup_editor_window_wheel',
-  'take_pending_open_files'
+  'setup_editor_window_wheel'
 ];
 assertExactSet(generatedCommands, expectedGeneratedCommands, 'Tauri app command manifest');
 

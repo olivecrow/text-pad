@@ -271,7 +271,8 @@ export function renumberFollowingListMarkerSequence(
   currentMarker: ListMarker,
   previousLabel: string | null,
   insertedLabel: string,
-  tabSize = 4
+  tabSize = 4,
+  operation: 'insert' | 'remove' = 'insert'
 ): string {
   if (firstLineStart < 0 || firstLineStart >= text.length) return text;
 
@@ -283,6 +284,7 @@ export function renumberFollowingListMarkerSequence(
   let offset = firstLineStart;
   let transformed = '';
   let changed = false;
+  let firstRenumberedItem = true;
 
   while (offset < text.length) {
     const newlineIndex = text.indexOf('\n', offset);
@@ -310,11 +312,11 @@ export function renumberFollowingListMarkerSequence(
       );
       if (marker.label !== expectedOriginalLabel) break;
 
-      const nextRenumberedLabel = getNextListMarkerLabel(
-        renumberedPreviousLabel,
-        renumberedPreviousPreviousLabel
-      );
+      const nextRenumberedLabel = operation === 'remove' && firstRenumberedItem
+        ? currentMarker.label
+        : getNextListMarkerLabel(renumberedPreviousLabel, renumberedPreviousPreviousLabel);
       if (!nextRenumberedLabel) break;
+      firstRenumberedItem = false;
 
       const bodyStart = marker.indent.length + marker.marker.length;
       nextLineText = `${marker.indent}${formatListMarker(

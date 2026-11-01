@@ -1,7 +1,5 @@
 mod file_commands;
 
-mod instance;
-
 #[cfg(target_os = "windows")]
 mod windows_wheel;
 
@@ -9,11 +7,6 @@ use file_commands::{
     get_startup_files, open_file_dialog, open_file_paths, read_document_image, save_file_dialog,
     write_file_content, ApprovedFilePaths,
 };
-
-use instance::{take_pending_open_files, PendingOpenFiles};
-
-#[cfg(desktop)]
-use instance::handle_second_instance;
 
 #[tauri::command]
 fn setup_editor_window_wheel(window: tauri::WebviewWindow) -> Result<(), String> {
@@ -37,12 +30,8 @@ pub fn run() {
         | tauri_plugin_window_state::StateFlags::FULLSCREEN;
 
     let builder = tauri::Builder::default();
-    #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(handle_second_instance));
-
     builder
         .manage(ApprovedFilePaths::default())
-        .manage(PendingOpenFiles::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
@@ -72,7 +61,6 @@ pub fn run() {
             save_file_dialog,
             write_file_content,
             setup_editor_window_wheel,
-            take_pending_open_files,
             read_document_image,
         ])
         .run(tauri::generate_context!())

@@ -205,6 +205,7 @@ test('render checkboxes continue on Enter and keep one final visual width', asyn
 
     const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
     let itemLeft = Number.NaN;
+    let itemTop = Number.NaN;
     // 숫자 강조로 본문이 여러 노드로 나뉘어도 원문에서 같은 글자의 위치를 찾는다.
     const itemIndex = line.textContent?.indexOf('item1') ?? -1;
     let textOffset = 0;
@@ -215,7 +216,9 @@ test('render checkboxes continue on Enter and keep one final visual width', asyn
         const range = document.createRange();
         range.setStart(node, itemIndex - textOffset);
         range.setEnd(node, itemIndex - textOffset + 1);
-        itemLeft = range.getBoundingClientRect().left;
+        const itemRect = range.getBoundingClientRect();
+        itemLeft = itemRect.left;
+        itemTop = itemRect.top;
         break;
       }
       textOffset += textLength;
@@ -226,6 +229,7 @@ test('render checkboxes continue on Enter and keep one final visual width', asyn
     return {
       checkboxWidth: checkboxRect.width,
       itemLeft,
+      relativeTop: itemTop - checkboxRect.top,
       gap: itemLeft - checkboxRect.right
     };
   }));
@@ -236,6 +240,7 @@ test('render checkboxes continue on Enter and keep one final visual width', asyn
   if (!uncheckedMetrics || !checkedMetrics) return;
   expect(Math.abs(uncheckedMetrics.checkboxWidth - checkedMetrics.checkboxWidth)).toBeLessThanOrEqual(0.1);
   expect(Math.abs(uncheckedMetrics.itemLeft - checkedMetrics.itemLeft)).toBeLessThanOrEqual(0.1);
+  expect(Math.abs(uncheckedMetrics.relativeTop - checkedMetrics.relativeTop)).toBeLessThanOrEqual(0.1);
   expect(Math.abs(uncheckedMetrics.gap - checkedMetrics.gap)).toBeLessThanOrEqual(0.1);
 
   await textarea.fill('[V] item');

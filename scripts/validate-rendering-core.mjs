@@ -678,13 +678,13 @@ try {
 
   const multilineDelimiterContent = '(\r\n  [value]\r\n)';
   const multilineDelimiterIndex = pairedDelimiterHighlighting.createPairedDelimiterIndex(multilineDelimiterContent);
-  assert.deepEqual(
+  assert.equal(
     pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
       multilineDelimiterContent,
       multilineDelimiterContent.length,
       multilineDelimiterIndex
     ),
-    { opening: 0, closing: multilineDelimiterContent.length - 1, kind: 'paren' }
+    null
   );
   const mismatchedDelimiterContent = '([)]';
   const mismatchedDelimiterIndex = pairedDelimiterHighlighting.createPairedDelimiterIndex(mismatchedDelimiterContent);
