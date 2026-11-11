@@ -1,6 +1,6 @@
 [package]
 name = "text-pad"
-version = "1.1.5"
+version = "1.1.6"
 description = "text-pad"
 authors = ["you"]
 edition = "2021"
