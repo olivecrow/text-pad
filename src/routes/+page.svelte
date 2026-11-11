@@ -584,7 +584,7 @@
   let pendingNativeInput: { before: EditorSnapshot; inputType: string; isComposing: boolean } | null = null;
   let isComposingEditorText = false;
   let multiCaret = $state<MultiCaretSelection | null>(null);
-  let multiCaretDecorations = $state<Array<{ left: number; top: number; height: number; offset: number }>>([]);
+  let multiCaretDecorations = $state<Array<{ left: number; top: number; height: number; offset: number; primary: boolean }>>([]);
   let multiSourceSelectionDecorations = $state<SearchRect[]>([]);
   const multiCaretController = new MultiCaretController({
     input: () => textareaEl,
@@ -933,11 +933,10 @@
     if (!geometry) return;
     try {
       multiCaretDecorations = multiCaret.ranges.flatMap((range, index) => {
-        if (index === multiCaret?.primary) return [];
         const rect = geometry.rectAt(range.head);
         if (!rect || rect.bottom <= viewport.top || rect.top >= viewport.bottom) return [];
         return [{ left: rect.left - viewport.left, top: rect.top - viewport.top + scroll,
-          height: rect.height, offset: range.head }];
+          height: rect.height, offset: range.head, primary: index === multiCaret?.primary }];
       });
       if (!shouldRenderHighlightLayer) {
         const index = getTextOffsetIndex(fileContent);
@@ -3769,7 +3768,7 @@
     });
     updateEditorCaretColor(pos);
     syncSteadyEditorCaretPosition(revealCaret);
-    if (isRenderMode && isCollapsed && pos !== previousCaretOffset && steadyEditorCaretVisible) {
+    if (pos !== previousCaretOffset && (multiCaret || isRenderMode && isCollapsed && steadyEditorCaretVisible)) {
       restartSteadyEditorCaretBlink();
     }
     setLastEditorSnapshot(getCurrentEditorSnapshot());
@@ -7467,7 +7466,7 @@
             class="editor-textarea"
             data-testid="editor-textarea"
             data-caret-count={multiCaret?.ranges.length ?? 1}
-            style="height: {isRenderMode && isEnhancedDocumentWithinBudget ? `${renderEditorScrollHeight}px` : '100%'}; font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode && isEnhancedDocumentWithinBudget ? editorCursorStyle : 'text'};"
+            style="height: {isRenderMode && isEnhancedDocumentWithinBudget ? `${renderEditorScrollHeight}px` : '100%'}; font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {multiCaret || isRenderMode && isActiveDocumentRenderEnabled || steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode && isEnhancedDocumentWithinBudget ? editorCursorStyle : 'text'};"
             wrap="soft"
             style:transform={isRenderMode && isEnhancedDocumentWithinBudget ? `scaleX(${liveEditorViewportWidth / Math.max(1, editorViewportWidth)})` : null}
             value={textareaDisplayContent}
@@ -7500,11 +7499,18 @@
             <span class="render-selection-decoration" aria-hidden="true"
               style="left: {decoration.left}px; top: {decoration.top}px; width: {decoration.width}px; height: {decoration.height}px;"></span>
           {/each}
-          {#each multiCaretDecorations as decoration}
-            <div class="steady-editor-caret multi-editor-caret" aria-hidden="true" data-caret-offset={decoration.offset}
-              style="left: {decoration.left}px; top: {decoration.top}px; height: {decoration.height}px;"></div>
-          {/each}
-          {#if steadyEditorCaretVisible && steadyEditorCaretCollapsed}
+          {#if multiCaret}
+            {#key steadyEditorCaretBlinkKey}
+              <div class="multi-caret-layer" aria-hidden="true">
+                {#each multiCaretDecorations as decoration}
+                  <div class="steady-editor-caret multi-editor-caret" data-caret-offset={decoration.offset}
+                    style="left: {decoration.left}px; top: {decoration.top}px; height: {decoration.height}px;"
+                    style:background-color={decoration.primary ? (isRenderMode ? editorCaretColor : 'var(--text-color)') : undefined}></div>
+                {/each}
+              </div>
+            {/key}
+          {/if}
+          {#if !multiCaret && steadyEditorCaretVisible && steadyEditorCaretCollapsed}
             {#key steadyEditorCaretBlinkKey}
               <div
                 class="steady-editor-caret"
@@ -8758,8 +8764,17 @@
     animation: editorCaretBlink 1s step-end infinite;
   }
 
+  .multi-caret-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+    animation: editorCaretBlink 1s step-end infinite;
+  }
+
   .multi-editor-caret {
     background-color: var(--color-caret, var(--text-color));
+    animation: none;
   }
 
   @keyframes editorCaretBlink {

@@ -20,7 +20,7 @@ for (const sourceMode of [false, true]) {
     const editor = await openEditor(page, sourceMode);
     await editor.fill('alpha\nbeta\ngamma');
     await addCarets(editor, 3);
-    await expect(page.locator('.multi-editor-caret')).toHaveCount(2);
+    await expect(page.locator('.multi-editor-caret')).toHaveCount(3);
     await editor.press('Alt+ArrowUp');
     await expect(editor).toHaveAttribute('data-caret-count', '3');
     await editor.pressSequentially('XY');

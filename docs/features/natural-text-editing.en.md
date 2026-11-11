@@ -31,6 +31,7 @@ Natural editing is not editing with the most features. It is editing that does n
 
 ## Multiple-caret editing
 
+- In both source and render modes, the primary and additional carets share one blink cycle and turn on and off together. Adding a caret later or redisplaying it after a screen update never shifts its phase; restarting the blink after movement or input applies to every caret together.
 - In source and rendered document text, `Alt+ArrowUp` or `Alt+ArrowDown` adds a caret at the primary caret's horizontal position on the preceding or following visual row, making the new caret primary. Soft wraps count as visual rows. Clamp short rows to their end and never duplicate an existing position. Keep existing table input inside table cells.
 - Hold the middle mouse button and drag up or down to create a caret on each visual row crossed from the starting row. Moving horizontally also creates a rectangular selection between the starting and current horizontal positions on each row. Retain the carets and selections after release, and scroll when dragging beyond the editing viewport.
 - Apply text insertion, Backspace/Delete, Enter/Tab, and paste to all carets or selections together. Insert the requested strings literally during multiple-caret editing, without chaining single-caret automatic pairing, list continuation, or substitutions. Render mode uses allowed display boundaries and preserves hidden formatting outside the selected text. Delete emoji and combining sequences as whole graphemes and preserve LF/CRLF source line endings.
