@@ -1,7 +1,32 @@
 import type { EditorSelection, EditorSnapshot } from './editor-undo';
 import type { MarkdownRichBlock } from './markdown-rich-text';
-import { renderMappedMarkdown } from './markdown-source-renderer';
+import { renderMappedMarkdown, type MappedMarkdown } from './markdown-source-renderer';
 import type { TextChange } from './text-change';
+
+const deletionMaps = new WeakMap<MarkdownRichBlock, { showHeadingMarkers: boolean; mapped: MappedMarkdown }>();
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+/** 화면 밖으로 가상화된 블록도 표시 문자 단위로 지운다. 반환 위치는 블록 내부 기준이다. */
+export function getMarkdownDeletionRange(region: MarkdownRichBlock, offset: number, direction: -1 | 1,
+  showHeadingMarkers = false): EditorSelection | null {
+  let cached = deletionMaps.get(region);
+  if (!cached || cached.showHeadingMarkers !== showHeadingMarkers) {
+    cached = { showHeadingMarkers, mapped: renderMappedMarkdown(region.source, region.environment, { showHeadingMarkers }) };
+    deletionMaps.set(region, cached);
+  }
+  let best: EditorSelection | null = null;
+  const mapped = cached.mapped;
+  mapped.texts.forEach((text, index) => {
+    const offsets = mapped.maps[index];
+    for (const segment of graphemes.segment(text)) {
+      const start = offsets[segment.index];
+      const end = offsets[segment.index + segment.segment.length];
+      if (end <= start || (direction < 0 ? end > offset : start < offset)) continue;
+      if (!best || (direction < 0 ? end > best.end : start < best.start)) best = { start, end };
+    }
+  });
+  return best;
+}
 
 /** 브라우저가 교체한 범위의 숨긴 서식을 복원하되 실제 선택 의도를 유지한다. */
 export function repairMarkdownInput(before: EditorSnapshot, after: EditorSnapshot, change: TextChange | null,

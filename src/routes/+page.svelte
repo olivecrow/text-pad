@@ -28,7 +28,7 @@
   import { getRichTextBoundary, getRichTextOffsetAtPoint, getRichSelectionRanges, getRichDeletionRange } from '$lib/markdown-rich-geometry';
   import { findMarkdownAnchorLine, type MarkdownRichBlock } from '$lib/markdown-rich-text';
   import { MarkdownPresentationCache } from '$lib/markdown-presentation';
-  import { replaceMarkdownSelection, repairMarkdownInput } from '$lib/markdown-edit';
+  import { replaceMarkdownSelection, repairMarkdownInput, getMarkdownDeletionRange } from '$lib/markdown-edit';
   import { getEditorInputMergeKey } from '$lib/editor-input';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { getCheckboxEnterEdit, getCheckboxMarkerAtStart } from "$lib/checkbox-markers";
@@ -43,6 +43,10 @@
     type ListMarker
   } from "$lib/list-markers";
   import { EditorUndoHistory, EditorUndoWindowBudget, type EditorSelection, type EditorSnapshot, type EditorUndoHistoryState } from "$lib/editor-undo";
+  import { adjacentTextOffset, caretSelection, cloneMultiCaret, normalizeMultiCaret, type CaretRange,
+    type CaretReplacement, type MultiCaretSelection } from '$lib/multi-caret';
+  import { MultiCaretController, type CaretGeometry } from '$lib/multi-caret-controller';
+  import { createTextareaGeometry } from '$lib/textarea-geometry';
   import {
     activateEditorTab as activateEditorSessionTab,
     createEditorSession,
@@ -579,6 +583,24 @@
   let isRenderWrapSettling = $state<boolean>(false);
   let pendingNativeInput: { before: EditorSnapshot; inputType: string; isComposing: boolean } | null = null;
   let isComposingEditorText = false;
+  let multiCaret = $state<MultiCaretSelection | null>(null);
+  let multiCaretDecorations = $state<Array<{ left: number; top: number; height: number; offset: number }>>([]);
+  let multiSourceSelectionDecorations = $state<SearchRect[]>([]);
+  const multiCaretController = new MultiCaretController({
+    input: () => textareaEl,
+    scroller: () => shouldRenderHighlightLayer ? editorViewportEl : textareaEl,
+    read: getCurrentEditorSnapshot,
+    select: setMultiCaretSelection,
+    apply: (before, after, mergeKey) => commitEditorEdit(before, after, { mergeKey, keepRenderCaretVisible: true }),
+    geometry: createMultiCaretGeometry,
+    safe: safeMultiCaretOffset,
+    replacement: getMultiCaretReplacement,
+    deletion: getMultiCaretDeletion,
+    closeGroup: closeActiveUndoGroup,
+    lineHeight: () => measuredLineHeight,
+    tabText: () => isRenderMode ? editorIndentUnit : '\t',
+    enabled: () => !!textareaEl && !shouldShowDelimitedTableEditor && !isComposingEditorText
+  });
   let markdownComposition: { tabId: string; before: EditorSnapshot; regions: MarkdownRichBlock[]; showHeadingMarkers: boolean } | null = null;
 
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
@@ -797,14 +819,147 @@
   function getCurrentEditorSnapshot(): EditorSnapshot {
     return {
       content: fileContent,
-      selection: getCurrentEditorSelection()
+      selection: getCurrentEditorSelection(),
+      ...(multiCaret ? { multiCaret: cloneMultiCaret(multiCaret) } : {})
     };
   }
+
+  function safeMultiCaretOffset(offset: number, direction: -1 | 0 | 1): number | null {
+    if (!shouldRenderHighlightLayer) return offset;
+    if (markdownTableByLine.has(findLineIndexForOffset(offset))) return null;
+    return getSafeRenderedCaretOffset(offset, direction);
+  }
+
+  function createMultiCaretGeometry(): CaretGeometry | null {
+    if (!textareaEl) return null;
+    if (shouldRenderHighlightLayer) return {
+      rectAt: getRenderedCaretRectForOffset,
+      offsetAt: getRenderedCaretOffsetAtPoint,
+      dispose: () => {}
+    };
+    const geometry = createTextareaGeometry(textareaEl);
+    const index = getTextOffsetIndex(fileContent);
+    return {
+      rectAt: offset => geometry.rectAt(contentOffsetToTextareaOffset(index, offset)),
+      offsetAt: (x, y) => textareaOffsetToContentOffset(index, geometry.offsetAt(x, y)),
+      dispose: geometry.dispose
+    };
+  }
+
+  function setMultiCaretSelection(value: MultiCaretSelection) {
+    if (!textareaEl) return;
+    const normalized = normalizeMultiCaret(value, fileContent.length);
+    const primary = normalized.ranges[normalized.primary];
+    if (!primary) return;
+    multiCaret = normalized.ranges.length > 1 ? normalized : null;
+    const selection = caretSelection(primary);
+    setTextareaSelectionFromContent(selection.start, selection.end);
+    textareaEl.setSelectionRange(textareaEl.selectionStart, textareaEl.selectionEnd,
+      primary.head < primary.anchor ? 'backward' : 'forward');
+    prettyPrintCaretAffinity = null;
+    updateCursorPosition();
+    if (!shouldRenderHighlightLayer) {
+      const geometry = createMultiCaretGeometry();
+      const rect = geometry?.rectAt(primary.head);
+      const viewport = textareaEl.getBoundingClientRect();
+      if (rect && (rect.top < viewport.top || rect.bottom > viewport.bottom)) {
+        textareaEl.scrollTop += rect.top < viewport.top ? rect.top - viewport.top : rect.bottom - viewport.bottom;
+      }
+      geometry?.dispose();
+    }
+  }
+
+  function getMultiCaretReplacement(selection: EditorSelection, text: string): CaretReplacement | null {
+    if (shouldRenderHighlightLayer && shouldBlockPartialFencedCodeSelectionEdit(selection.start, selection.end)) return null;
+    if (!shouldRenderHighlightLayer || activeDocumentFormat.id !== 'markdown' || selection.start === selection.end
+      || !markdownRichBlocks.some(block => block.start < selection.end && block.end > selection.start)) {
+      return { ...selection, text };
+    }
+    const result = getRenderSelectionEdit(fileContent, selection, text);
+    // 공통 문자열의 반복 때문에 교체 위치가 다른 캐럿 너머로 이동하지 않게 선택 범위에 고정한다.
+    let start = 0;
+    while (start < selection.start && fileContent[start] === result.content[start]) start++;
+    let suffix = 0;
+    while (suffix < fileContent.length - selection.end && suffix < result.content.length - start
+      && fileContent[fileContent.length - 1 - suffix] === result.content[result.content.length - 1 - suffix]) suffix++;
+    return { start, end: fileContent.length - suffix, text: result.content.slice(start, result.content.length - suffix),
+      caret: result.selection.end - start };
+  }
+
+  function getMultiCaretDeletion(range: CaretRange, direction: -1 | 1, word: boolean): EditorSelection | null {
+    const selection = caretSelection(range);
+    if (selection.start !== selection.end) return selection;
+    if (shouldRenderHighlightLayer) {
+      const block = markdownRichByLine.get(findLineIndexForOffset(range.head));
+      if (block && !word) {
+        try {
+          const deletion = getMarkdownDeletionRange(block, range.head - block.start, direction, !markdownRenderSettings.hideHeadingMarkers);
+          return deletion ? { start: block.start + deletion.start, end: block.start + deletion.end } : selection;
+        } catch { return null; }
+      }
+    }
+    const adjacent = adjacentTextOffset(fileContent, range.head, direction, word);
+    return { start: Math.min(range.head, adjacent), end: Math.max(range.head, adjacent) };
+  }
+
+  function handleMultiCaretCopy(event: ClipboardEvent) {
+    const text = multiCaretController.copyText();
+    if (text === null || !event.clipboardData) return;
+    event.preventDefault();
+    event.clipboardData.setData('text/plain', text);
+  }
+
+  function handleMultiCaretCut(event: ClipboardEvent) {
+    const text = multiCaretController.copyText();
+    if (text === null || !event.clipboardData) return;
+    event.preventDefault();
+    event.clipboardData.setData('text/plain', text);
+    multiCaretController.cut();
+  }
+
+  function handleMultiCaretPaste(event: ClipboardEvent) {
+    if (!multiCaret || !event.clipboardData) return;
+    event.preventDefault();
+    multiCaretController.insert(event.clipboardData.getData('text/plain'), null, true);
+  }
+
+  function syncMultiCaretDecorations() {
+    multiCaretDecorations = [];
+    multiSourceSelectionDecorations = [];
+    if (!multiCaret || !textareaEl || !editorViewportEl || !isEditorFocused) return;
+    const viewport = editorViewportEl.getBoundingClientRect();
+    const scroll = editorViewportEl.scrollTop;
+    const geometry = createMultiCaretGeometry();
+    if (!geometry) return;
+    try {
+      multiCaretDecorations = multiCaret.ranges.flatMap((range, index) => {
+        if (index === multiCaret?.primary) return [];
+        const rect = geometry.rectAt(range.head);
+        if (!rect || rect.bottom <= viewport.top || rect.top >= viewport.bottom) return [];
+        return [{ left: rect.left - viewport.left, top: rect.top - viewport.top + scroll,
+          height: rect.height, offset: range.head }];
+      });
+      if (!shouldRenderHighlightLayer) {
+        const index = getTextOffsetIndex(fileContent);
+        const ranges = multiCaret.ranges.filter((_, index) => index !== multiCaret?.primary).map(caretSelection);
+        multiSourceSelectionDecorations = measureTextareaMatches(textareaEl, ranges.map(range => ({
+          start: contentOffsetToTextareaOffset(index, range.start), end: contentOffsetToTextareaOffset(index, range.end)
+        }))).flat().filter(rect => rect.width > 0 && rect.top < viewport.bottom && rect.top + rect.height > viewport.top)
+          .map(rect => ({ ...rect, left: rect.left - viewport.left, top: rect.top - viewport.top + scroll }));
+      }
+    } finally { geometry.dispose(); }
+  }
+
+  $effect(() => {
+    void [multiCaret, fileContent, isEditorFocused, scrollTop, scrollLeft, measuredLineHeight, liveEditorViewportWidth];
+    untrack(scheduleRenderedHighlights);
+  });
 
   function setLastEditorSnapshot(snapshot: EditorSnapshot) {
     lastEditorSnapshot = {
       content: snapshot.content,
-      selection: { ...snapshot.selection }
+      selection: { ...snapshot.selection },
+      ...(snapshot.multiCaret ? { multiCaret: cloneMultiCaret(snapshot.multiCaret) } : {})
     };
   }
 
@@ -866,6 +1021,8 @@
   }
 
   function loadTabIntoEditor(tab: EditorTab) {
+    multiCaretController.reset();
+    multiCaret = null;
     const history = getUndoHistoryForTab(tab);
     const nextIsDirty = history.isDirty();
     const nextTab = nextIsDirty === tab.isDirty
@@ -3099,9 +3256,9 @@
   }
 
   function updateEditorSelectionState() {
-    hasEditorSelection = textareaEl
+    hasEditorSelection = multiCaret?.ranges.some(range => range.anchor !== range.head) || (textareaEl
       ? textareaEl.selectionStart !== textareaEl.selectionEnd
-      : false;
+      : false);
   }
 
   function clearRenderedSelectionHighlight() {
@@ -3207,7 +3364,9 @@
       return;
     }
 
-    const ranges = getVisibleRenderedSelectionRanges(getTextareaSelectionInContent());
+    const ranges = multiCaret
+      ? multiCaret.ranges.flatMap(range => getVisibleRenderedSelectionRanges(caretSelection(range)))
+      : getVisibleRenderedSelectionRanges(getTextareaSelectionInContent());
     if (ranges.length === 0) {
       clearRenderedSelectionHighlight();
       return;
@@ -3283,10 +3442,12 @@
       syncRenderedSelectionHighlight();
       syncRenderedPairHighlight();
       syncDocumentSearchHighlights();
+      syncMultiCaretDecorations();
     });
   }
 
   async function openDocumentSearch() {
+    multiCaretController.clear();
     closeAllDropdown();
     const selection = getCurrentEditorSelection();
     const selected = fileContent.slice(selection.start, selection.end);
@@ -3624,6 +3785,7 @@
     suppliedChange?: TextChange | null,
     suppliedOffsetIndex?: TextOffsetIndex
   ) {
+    multiCaret = cloneMultiCaret(snapshot.multiCaret) ?? null;
     const contentChange = suppliedChange === undefined
       ? getTextChange(fileContent, snapshot.content)
       : suppliedChange;
@@ -3667,6 +3829,9 @@
     if (textareaEl) {
       textareaEl.value = getTextOffsetIndex(snapshot.content).textareaValue;
       setTextareaSelectionFromContent(snapshot.selection.start, snapshot.selection.end, snapshot.content);
+      const primary = snapshot.multiCaret?.ranges[snapshot.multiCaret.primary];
+      if (primary) textareaEl.setSelectionRange(textareaEl.selectionStart, textareaEl.selectionEnd,
+        primary.head < primary.anchor ? 'backward' : 'forward');
       textareaEl.focus({ preventScroll: true });
     }
     void tick().then(() => {
@@ -3783,6 +3948,8 @@
   }
 
   function updateMarkdownTableSelection(block: MarkdownTableBlock, selection: TableCellSelection) {
+    multiCaretController.reset();
+    multiCaret = null;
     const cell = block.cells[selection.row]?.[selection.column];
     if (!cell || !textareaEl) return;
     const start = cell.offsets[Math.min(selection.start, cell.offsets.length - 1)];
@@ -3876,6 +4043,7 @@
       target.selectionStart,
       target.selectionEnd
     );
+    inputResult.snapshot = multiCaretController.compositionSnapshot(inputResult.snapshot);
     if (!isComposingEditorText && !pendingInput?.isComposing
       && isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown') {
       const safe = repairMarkdownInput(before, inputResult.snapshot, inputResult.change,
@@ -3918,6 +4086,7 @@
       performRedo();
       return;
     }
+    if (multiCaretController.beforeInput(event)) { pendingNativeInput = null; return; }
 
     if (isRenderMode && isActiveDocumentRenderEnabled && textareaEl) {
       const { start, end } = getTextareaSelectionInContent();
@@ -3960,6 +4129,7 @@
   function handleEditorCompositionStart() {
     syncInputWidthBeforeEditing();
     closeActiveUndoGroup();
+    multiCaretController.startComposition();
     isComposingEditorText = true;
     pendingNativeInput = null;
     const before = getCurrentEditorSnapshot();
@@ -3970,6 +4140,11 @@
 
   function handleEditorCompositionEnd() {
     isComposingEditorText = false;
+    if (multiCaretController.finishComposition()) {
+      markdownComposition = null;
+      closeActiveUndoGroup();
+      return;
+    }
     const composition = markdownComposition;
     markdownComposition = null;
     if (composition && composition.tabId === activeTabId) {
@@ -4109,6 +4284,13 @@
     if (pendingRenderCaretPointerDown && !pendingRenderCaretPointerDown.moved) return;
 
     const selection = getTextareaSelectionInContent();
+    if (multiCaret && !isComposingEditorText) {
+      const primary = caretSelection(multiCaret.ranges[multiCaret.primary]);
+      if (selection.start !== primary.start || selection.end !== primary.end) {
+        multiCaretController.reset();
+        multiCaret = null;
+      }
+    }
     // 가상화로 DOM이 바뀌어도 selectionchange가 발생할 수 있다.
     // 원문 선택이 그대로라면 사용자 이동으로 취급해 캐럿까지 스크롤하지 않는다.
     if (selection.start === activeTab?.selectionStart && selection.end === activeTab?.selectionEnd) return;
@@ -4149,6 +4331,7 @@
   });
 
   onDestroy(() => {
+    multiCaretController.reset();
     stopRenderDragScroll();
     renderViewportController?.dispose();
     documentDiagnosticWorkerClient?.dispose();
@@ -5178,6 +5361,7 @@
 
   function handleEditorKeyDown(event: KeyboardEvent) {
     syncInputWidthBeforeEditing();
+    if (multiCaretController.keydown(event)) return;
     if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Shift'].includes(event.key)
       || event.ctrlKey || event.metaKey) prettyPrintCaretAffinity = null;
     if (editorMovementKeys.has(event.key)) {
@@ -5399,6 +5583,7 @@
     const dateStr = now.toLocaleDateString(locale, { year: 'numeric', month: '2-digit', day: '2-digit' });
 
     const formatted = `${timeStr} ${dateStr}`;
+    if (multiCaretController.insert(formatted)) { closeAllDropdown(); return; }
 
     const before = fileContent.substring(0, start);
     const after = fileContent.substring(end);
@@ -5426,6 +5611,14 @@
 
   async function handleCut() {
     if (!textareaEl) return;
+    const multiText = multiCaretController.copyText();
+    if (multiText !== null) {
+      const snapshot = getCurrentEditorSnapshot();
+      await navigator.clipboard.writeText(multiText);
+      if (snapshot.content === fileContent && JSON.stringify(snapshot.multiCaret) === JSON.stringify(multiCaret)) multiCaretController.cut();
+      closeAllDropdown();
+      return;
+    }
     const { start, end } = getTextareaSelectionInContent();
     if (start === end) return;
     if (isRenderMode && isActiveDocumentRenderEnabled && shouldBlockPartialFencedCodeSelectionEdit(start, end)) {
@@ -5444,6 +5637,8 @@
 
   async function handleCopy() {
     if (!textareaEl) return;
+    const multiText = multiCaretController.copyText();
+    if (multiText !== null) { await navigator.clipboard.writeText(multiText); closeAllDropdown(); return; }
     const { start, end } = getTextareaSelectionInContent();
     if (start === end) return;
 
@@ -5456,6 +5651,7 @@
     if (!textareaEl) return;
     try {
       const text = await navigator.clipboard.readText();
+      if (multiCaretController.insert(text, null, true)) { closeAllDropdown(); return; }
       const { start, end } = getTextareaSelectionInContent();
       if (isRenderMode && isActiveDocumentRenderEnabled && shouldBlockPartialFencedCodeSelectionEdit(start, end)) {
         closeAllDropdown();
@@ -5473,6 +5669,7 @@
 
   function handleDelete() {
     if (!textareaEl) return;
+    if (multiCaretController.delete(1)) { closeAllDropdown(); return; }
     const { start, end } = getTextareaSelectionInContent();
     if (isRenderMode && isActiveDocumentRenderEnabled) {
       const blocksProtectedBoundary = start === end && fencedCodeBlocks.some((block) => (
@@ -5502,6 +5699,7 @@
   }
 
   function handleSelectAll() {
+    multiCaretController.clear();
     closeActiveUndoGroup();
     if (textareaEl) {
       textareaEl.focus();
@@ -5625,6 +5823,7 @@
 
   // 글로벌 키보드 단축키 감지
   function handleKeyDown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && multiCaret && !isComposingEditorText) multiCaretController.clear();
     if (isAboutDialogOpen) return;
 
     const key = e.key.toLowerCase();
@@ -6400,6 +6599,14 @@
   }
 
   function handleEditorPointerDown(event: PointerEvent) {
+    if (multiCaretController.pointerDown(event)) return;
+    if (event.button === 0 && multiCaret) {
+      // 클릭한 위치를 읽기 전에 화면 밖의 이전 주 캐럿으로 스크롤하지 않는다.
+      multiCaretController.reset();
+      multiCaret = null;
+      closeActiveUndoGroup();
+      syncCursorState(false);
+    }
     // 너비 동기화가 스크롤 위치를 보정하기 전에 사용자가 누른 글자의 원문 위치를 확보한다.
     const richOffset = (event.target as Element).closest('[data-markdown-rich]')
       ? getRenderedCaretOffsetAtPoint(event.clientX, event.clientY) : null;
@@ -6497,6 +6704,7 @@
   }
 
   function handleEditorPointerCancel() {
+    multiCaretController.stopDrag();
     stopRenderDragScroll();
     pendingRenderCaretPointerDown = null;
   }
@@ -6534,6 +6742,7 @@
   }
 
   function handleEditorPointerUp(event: PointerEvent) {
+    if (multiCaretController.pointerUp(event)) return;
     stopRenderDragScroll();
     if (!isRenderMode || !isActiveDocumentRenderEnabled || !textareaEl || event.button !== 0) return;
     if (suppressNextEditorClickAfterRenderAction) {
@@ -6564,6 +6773,7 @@
   }
 
   function trackRenderCaretPointerMove(event: PointerEvent) {
+    if (multiCaretController.pointerMove(event)) return;
     const pointerDown = pendingRenderCaretPointerDown;
     if (!pointerDown || event.buttons !== 1) return;
     if (pointerDown.anchor !== undefined) {
@@ -6666,6 +6876,8 @@
   }
 
   function toggleRenderMode() {
+    multiCaretController.reset();
+    multiCaret = null;
     isRenderMode = !isRenderMode;
     editorCursorStyle = 'text';
     hideSteadyEditorCaret();
@@ -7254,6 +7466,7 @@
             bind:this={textareaEl}
             class="editor-textarea"
             data-testid="editor-textarea"
+            data-caret-count={multiCaret?.ranges.length ?? 1}
             style="height: {isRenderMode && isEnhancedDocumentWithinBudget ? `${renderEditorScrollHeight}px` : '100%'}; font-size: {currentFontSize}pt; line-height: {measuredLineHeight}px; tab-size: {tabSize}; -moz-tab-size: {tabSize}; caret-color: {isRenderMode && isActiveDocumentRenderEnabled ? 'transparent' : steadyEditorCaretVisible ? 'transparent' : 'var(--text-color)'}; cursor: {isRenderMode && isEnhancedDocumentWithinBudget ? editorCursorStyle : 'text'};"
             wrap="soft"
             style:transform={isRenderMode && isEnhancedDocumentWithinBudget ? `scaleX(${liveEditorViewportWidth / Math.max(1, editorViewportWidth)})` : null}
@@ -7261,6 +7474,10 @@
             onkeydown={handleEditorKeyDown}
             onbeforeinput={handleEditorBeforeInput}
             oninput={handleInput}
+            oncopy={handleMultiCaretCopy}
+            oncut={handleMultiCaretCut}
+            onpaste={handleMultiCaretPaste}
+            onauxclick={(event) => { if (event.button === 1) event.preventDefault(); }}
             oncompositionstart={handleEditorCompositionStart}
             oncompositionend={handleEditorCompositionEnd}
             onscroll={handleScroll}
@@ -7279,6 +7496,14 @@
             spellcheck="false"
             dir="auto"
           ></textarea>
+          {#each multiSourceSelectionDecorations as decoration}
+            <span class="render-selection-decoration" aria-hidden="true"
+              style="left: {decoration.left}px; top: {decoration.top}px; width: {decoration.width}px; height: {decoration.height}px;"></span>
+          {/each}
+          {#each multiCaretDecorations as decoration}
+            <div class="steady-editor-caret multi-editor-caret" aria-hidden="true" data-caret-offset={decoration.offset}
+              style="left: {decoration.left}px; top: {decoration.top}px; height: {decoration.height}px;"></div>
+          {/each}
           {#if steadyEditorCaretVisible && steadyEditorCaretCollapsed}
             {#key steadyEditorCaretBlinkKey}
               <div
@@ -8531,6 +8756,10 @@
     z-index: 3;
     pointer-events: none;
     animation: editorCaretBlink 1s step-end infinite;
+  }
+
+  .multi-editor-caret {
+    background-color: var(--color-caret, var(--text-color));
   }
 
   @keyframes editorCaretBlink {

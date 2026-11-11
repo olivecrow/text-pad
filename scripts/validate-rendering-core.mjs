@@ -244,6 +244,29 @@ try {
   const renderViewport = await server.ssrLoadModule('/src/lib/render-viewport-controller.ts');
   const boundedCollections = await server.ssrLoadModule('/src/lib/bounded-collections.ts');
   const editorUndo = await server.ssrLoadModule('/src/lib/editor-undo.ts');
+  const multiCaret = await server.ssrLoadModule('/src/lib/multi-caret.ts');
+  const multiBefore = multiCaret.multiCaretSnapshot('abc\r\ndef', {
+    ranges: [{ anchor: 1, head: 1 }, { anchor: 6, head: 6 }], primary: 1
+  });
+  const multiAfter = multiCaret.replaceAtCarets(multiBefore.content, multiBefore.multiCaret,
+    [{ start: 1, end: 1, text: '한' }, { start: 6, end: 6, text: '한' }]);
+  assert.equal(multiAfter.content, 'a한bc\r\nd한ef');
+  assert.deepEqual(multiAfter.multiCaret.ranges, [{ anchor: 2, head: 2 }, { anchor: 8, head: 8 }]);
+  const multiHistory = new editorUndo.EditorUndoHistory(multiBefore);
+  multiHistory.record(multiBefore, multiAfter);
+  const restoredMultiHistory = editorUndo.EditorUndoHistory.fromState(multiAfter, multiHistory.exportState());
+  assert.deepEqual(restoredMultiHistory.undo(multiAfter), multiBefore);
+  assert.deepEqual(restoredMultiHistory.redo(multiBefore), multiAfter);
+  assert.deepEqual(multiCaret.normalizeMultiCaret({
+    ranges: [{ anchor: 1, head: 3 }, { anchor: 4, head: 2 }, { anchor: 6, head: 6 }, { anchor: 6, head: 6 }], primary: 1
+  }, 7), { ranges: [{ anchor: 4, head: 1 }, { anchor: 6, head: 6 }], primary: 0 });
+  assert.equal(multiCaret.adjacentTextOffset('a👨‍👩‍👧b', 9, -1), 1);
+  assert.equal(multiCaret.adjacentTextOffset('a\r\nb', 3, -1), 1);
+  assert.equal(multiCaret.adjacentTextOffset('\na', 0, 1), 1);
+  assert.deepEqual(multiCaret.splitCaretPaste('one\r\ntwo', 2), ['one', 'two']);
+  assert.deepEqual(multiCaret.splitCaretPaste('one\ntwo', 3), ['one\ntwo', 'one\ntwo', 'one\ntwo']);
+  assert.equal(multiCaret.replaceAtCarets('abcdef', multiBefore.multiCaret,
+    [{ start: 1, end: 4, text: '' }, { start: 2, end: 5, text: '' }]).content, 'af');
   const diagnosticClient = await server.ssrLoadModule('/src/lib/document-diagnostic-client.ts');
   const autoPair = await server.ssrLoadModule('/src/lib/auto-pair.ts');
   const jsonPairEnter = await server.ssrLoadModule('/src/lib/json-pair-enter.ts');
@@ -253,7 +276,7 @@ try {
   const tokenizer = await server.ssrLoadModule('/src/lib/render-tokenizer.ts');
   const markdownRich = await server.ssrLoadModule('/src/lib/markdown-rich-text.ts');
   const { MarkdownPresentationCache } = await server.ssrLoadModule('/src/lib/markdown-presentation.ts');
-  const { replaceMarkdownSelection } = await server.ssrLoadModule('/src/lib/markdown-edit.ts');
+  const { replaceMarkdownSelection, getMarkdownDeletionRange } = await server.ssrLoadModule('/src/lib/markdown-edit.ts');
   const { renderMappedMarkdown } = await server.ssrLoadModule('/src/lib/markdown-source-renderer.ts');
   {
     const source = '<p><b>abc</b><i>def</i></p>';
@@ -267,6 +290,10 @@ try {
     assert.ok(renderMappedMarkdown('<b> </b>', {}).html.includes('<b>'));
     assert.ok(!renderMappedMarkdown('`<b></b>`', {}).html.includes('<b>'));
     assert.ok(renderMappedMarkdown('[](https://example.com)', {}).html.includes('[](https://example.com)'));
+    const richSource = '<b>&amp;👨‍👩‍👧</b>';
+    const richRegion = new MarkdownPresentationCache().get(richSource, [0]).regions[0];
+    assert.deepEqual(getMarkdownDeletionRange(richRegion, 3, 1), { start: 3, end: 8 });
+    assert.deepEqual(getMarkdownDeletionRange(richRegion, 16, -1), { start: 8, end: 16 });
     assert.equal(editorInput.getEditorInputMergeKey('insertFromPaste', false, false), null);
     assert.equal(editorInput.getEditorInputMergeKey('insertText', false, false), 'insert-text');
     assert.equal(editorInput.getEditorInputMergeKey('insertCompositionText', true, true), 'composition');

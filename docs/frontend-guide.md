@@ -18,6 +18,9 @@
 - `src/lib/text-offset-index.ts`: 원문 줄 시작과 CRLF 위치 인덱스, 원문과 `textarea` 선택 위치의 이진 탐색 변환.
 - `src/lib/text-change.ts`, `src/lib/editor-input.ts`: 한 번 계산한 국소 변경 범위와 원문·`textarea` 위치 인덱스를 입력, 실행 취소, 렌더 캐시가 함께 쓰게 하는 편집 입력 모듈.
 - `src/lib/editor-command-pipeline.ts`: 키 입력 명령의 고유 식별자와 명시적 우선순위를 검증하고 첫 적용 명령만 실행하는 공통 파이프라인.
+- `src/lib/multi-caret.ts`: 다중 선택 정규화, 겹침 병합, 동시 원문 교체, 문자 단위 이동과 붙여넣기 배분 계산.
+- `src/lib/multi-caret-controller.ts`: 원문·렌더 모드 공통의 다중 캐럿 키 입력, 휠 버튼 사각 선택, 클립보드 편집과 조합 입력 수명. 페이지가 제공하는 좌표·서식 경계·단일 편집 기록 계약을 사용한다.
+- `src/lib/textarea-geometry.ts`: 원문 입력창과 동일한 폭·글꼴·줄바꿈을 가진 임시 측정층으로 다중 캐럿 좌표를 계산한다. 렌더 모드는 기존 실제 표시 글자 좌표를 사용한다.
 - `src/lib/editor-session.ts`: 탭 목록과 활성 탭 식별자의 불변 조건, 탭 활성화·교체·갱신을 소유하는 단일 문서 세션 모듈.
 - `src/lib/desktop-file-service.ts`: 파일 열기·저장·시작 파일·후속 실행 파일·동적 창 휠 초기화의 Tauri 명령 이름과 직렬화 형식을 숨기는 프론트엔드 어댑터.
 - `src/lib/desktop-window-service.ts`: 현재 창 제어, 동적 창 생성, 창 간 이벤트와 좌표 타입을 일반 TypeScript 계약으로 바꾸는 Tauri 창 어댑터.

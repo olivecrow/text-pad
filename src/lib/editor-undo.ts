@@ -1,4 +1,5 @@
 import { getTextChange, type TextChange } from './text-change';
+import { cloneMultiCaret, type MultiCaretSelection } from './multi-caret';
 
 export interface EditorSelection {
   start: number;
@@ -8,6 +9,7 @@ export interface EditorSelection {
 export interface EditorSnapshot {
   content: string;
   selection: EditorSelection;
+  multiCaret?: MultiCaretSelection;
 }
 
 export interface EditorUndoTransaction {
@@ -16,6 +18,8 @@ export interface EditorUndoTransaction {
   afterText: string;
   beforeSelection: EditorSelection;
   afterSelection: EditorSelection;
+  beforeMultiCaret?: MultiCaretSelection;
+  afterMultiCaret?: MultiCaretSelection;
   mergeKey: string | null;
   timestamp: number;
 }
@@ -54,7 +58,9 @@ function cloneTransaction(transaction: EditorUndoTransaction): EditorUndoTransac
   return {
     ...transaction,
     beforeSelection: cloneSelection(transaction.beforeSelection),
-    afterSelection: cloneSelection(transaction.afterSelection)
+    afterSelection: cloneSelection(transaction.afterSelection),
+    beforeMultiCaret: cloneMultiCaret(transaction.beforeMultiCaret),
+    afterMultiCaret: cloneMultiCaret(transaction.afterMultiCaret)
   };
 }
 
@@ -73,6 +79,8 @@ function createTransaction(
     ...changedRange,
     beforeSelection: cloneSelection(before.selection),
     afterSelection: cloneSelection(after.selection),
+    beforeMultiCaret: cloneMultiCaret(before.multiCaret),
+    afterMultiCaret: cloneMultiCaret(after.multiCaret),
     mergeKey,
     timestamp
   };
@@ -85,7 +93,8 @@ function applyForward(snapshot: EditorSnapshot, transaction: EditorUndoTransacti
       snapshot.content.slice(0, transaction.rangeStart) +
       transaction.afterText +
       snapshot.content.slice(transaction.rangeStart + beforeLength),
-    selection: cloneSelection(transaction.afterSelection)
+    selection: cloneSelection(transaction.afterSelection),
+    ...(transaction.afterMultiCaret ? { multiCaret: cloneMultiCaret(transaction.afterMultiCaret) } : {})
   };
 }
 
@@ -96,7 +105,8 @@ function applyBackward(snapshot: EditorSnapshot, transaction: EditorUndoTransact
       snapshot.content.slice(0, transaction.rangeStart) +
       transaction.beforeText +
       snapshot.content.slice(transaction.rangeStart + afterLength),
-    selection: cloneSelection(transaction.beforeSelection)
+    selection: cloneSelection(transaction.beforeSelection),
+    ...(transaction.beforeMultiCaret ? { multiCaret: cloneMultiCaret(transaction.beforeMultiCaret) } : {})
   };
 }
 
@@ -112,7 +122,8 @@ function canMergeTransactions(
   // 그룹을 닫으므로 선택 범위 변화나 입력 대기 시간을 새 편집으로 나누지 않는다.
   if (mergeKey === 'composition') return true;
   if (timestamp - previous.timestamp > mergeWindowMs) return false;
-  return selectionsEqual(previous.afterSelection, before.selection);
+  return selectionsEqual(previous.afterSelection, before.selection)
+    && JSON.stringify(previous.afterMultiCaret) === JSON.stringify(before.multiCaret);
 }
 
 function mergeSequentialTransactions(
@@ -164,9 +175,16 @@ function mergeSequentialTransactions(
     afterText,
     beforeSelection: cloneSelection(previous.beforeSelection),
     afterSelection: cloneSelection(current.afterSelection),
+    beforeMultiCaret: cloneMultiCaret(previous.beforeMultiCaret),
+    afterMultiCaret: cloneMultiCaret(current.afterMultiCaret),
     mergeKey: current.mergeKey,
     timestamp: current.timestamp
   };
+}
+
+function transactionBytes(transaction: EditorUndoTransaction): number {
+  return ((transaction.beforeText.length + transaction.afterText.length) * 2) + 64
+    + ((transaction.beforeMultiCaret?.ranges.length ?? 0) + (transaction.afterMultiCaret?.ranges.length ?? 0)) * 32;
 }
 
 export class EditorUndoHistory {
@@ -186,7 +204,7 @@ export class EditorUndoHistory {
 
   getEstimatedBytes(): number {
     return this.transactions.reduce(
-      (total, transaction) => total + ((transaction.beforeText.length + transaction.afterText.length) * 2) + 64,
+      (total, transaction) => total + transactionBytes(transaction),
       0
     );
   }
@@ -218,7 +236,7 @@ export class EditorUndoHistory {
     }
 
     return removed
-      ? ((removed.beforeText.length + removed.afterText.length) * 2) + 64
+      ? transactionBytes(removed)
       : 0;
   }
 

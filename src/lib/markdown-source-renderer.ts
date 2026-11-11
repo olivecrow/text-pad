@@ -89,6 +89,7 @@ export interface MappedMarkdown {
   html: string;
   attribute: string;
   maps: number[][];
+  texts: string[];
 }
 
 export function renderMappedMarkdown(source: string, environment: Record<string, unknown>, options: { inline?: boolean; showHeadingMarkers?: boolean } = {}): MappedMarkdown {
@@ -104,6 +105,7 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
   let length = 0;
   for (const line of lines) { starts.push(length); length += line.length + 1; }
   const maps: number[][] = [];
+  const texts: string[] = [];
   const attribute = `data-rich-${crypto.randomUUID()}`;
   const escape = parser.utils.escapeHtml;
   function mapped(text: string, offsets: number[]): string {
@@ -112,6 +114,7 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
       throw new Error('Markdown source boundary mismatch');
     }
     const id = maps.push(offsets.map(pos => originalOffsets[Math.min(pos, normalized.length)])) - 1;
+    texts.push(text);
     return `<span ${attribute}="${id}">${escape(text)}</span>`;
   }
   // 블록 해석기가 제거한 인용·목록 접두부와 들여쓰기를 줄 단위로 복원한다.
@@ -305,5 +308,5 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
       }
     }
   }
-  return { html, attribute, maps };
+  return { html, attribute, maps, texts };
 }

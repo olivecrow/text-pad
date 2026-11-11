@@ -98,7 +98,7 @@ export function renderMarkdownRichText(source: string, environment: Record<strin
     try { mapped = renderMappedMarkdown(source, environment, { inline, showHeadingMarkers }); }
     catch {
       // 해석기가 제공하지 못한 경계를 추측하지 않는다. 이 블록만 편집 가능한 원문으로 표시한다.
-      mapped = { html: '', attribute: `data-rich-${crypto.randomUUID()}`, maps: [Array.from({ length: source.length + 1 }, (_, i) => i)] };
+      mapped = { html: '', attribute: `data-rich-${crypto.randomUUID()}`, maps: [Array.from({ length: source.length + 1 }, (_, i) => i)], texts: [source] };
       mapped.html = `<pre><span ${mapped.attribute}="0">${markdown.utils.escapeHtml(source)}</span></pre>`;
     }
   }
