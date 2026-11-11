@@ -22,6 +22,13 @@ Natural editing is not editing with the most features. It is editing that does n
 - Preserve source selection offsets when changing the window width or mode. The input element's native caret, clicks, dragging, Up/Down arrows, and Home/End follow wrapped display rows. The input element draws the source caret directly, and search highlights use the same font, display width, and scroll position.
 - Render-only editing assistance, including automatic pairs and indentation continuation, does not apply in source mode. Preserve spaces, tabs, and newlines entered by the user.
 
+## Arrow-key boundaries outside tables
+
+- When there is no preceding visual row, `ArrowUp` moves to the first reachable caret position on the current row; when there is no following visual row, `ArrowDown` moves to its last reachable position. Source mode uses the input element's native behavior, while render mode uses actual visual rows and allowed source boundaries.
+- For a rendered list, the first position is the body start after its marker and structural whitespace. Do not place the caret inside hidden code fences or hidden rich-formatting markers. For example, from `- ab|cd`, Up moves to `- |abcd` and Down moves to `- abcd|`.
+- Preserve ordinary vertical movement while another visual row exists through soft wrapping or display-only structural expansion. Apply the boundary movement only after reaching the first or last visual row.
+- With `Shift`, extend the selection to the same boundary while preserving its anchor. Do not change source text, dirty state, or Undo history. Do not intercept IME composition, Ctrl/Alt/Meta combinations, or movement inside tables with this rule.
+
 ## Rendered layout and pointer selection
 
 - Moving the window or restoring editor focus alone must not scroll back to the caret. Window interaction and focus loss cancel any pending caret reveal while preserving source text and selection. Subsequent actual keyboard navigation, clicks, and edits reveal the input position again.
@@ -269,7 +276,7 @@ The current recognized forms are:
 - The visual inset contains no characters that a caret can visit or a selection can include. Clicking it maps to the body start of that visual row. On marker and continuation lines, draw only the outer indentation guides inherited from the preceding ordinary line; list nesting alone never creates guides. Deeper list items add no guides, while shallower items end the levels they leave. An unindented blank line or fenced code block ends inheritance, and the next ordinary line establishes its own indentation context. Inherited guides use the same document-left origin as ordinary lines. Draw all guides using the configured theme color at 50% opacity. Do not create a guide for the inset itself. Both off-screen height estimates and the actual body cell subtract this inset from the available wrapping width, while caret and selection placement follow the final rendered text geometry.
 - If the browser reports a collapsed range at a soft-wrap boundary as the end of the preceding row, use the next glyph's left edge for caret and click geometry when that glyph actually starts the next visual row. Clicking the inset must not skip the first character.
 - First-line body text, soft-wrapped display rows, and `Shift+Enter` continuation lines all use the same left edge of the body cell. Leading whitespace on a continuation line remains only as source-compatible structure and is neither editable body whitespace nor an indentation level in render mode, so it does not produce an indentation guide. Only outer guides inherited from the preceding ordinary line remain visible.
-- Clicking the marker cell or the structural area of a continuation line clamps a collapsed caret to the body start. A collapsed caret cannot remain in that structural area, and `ArrowLeft` at a continuation body start moves to the previous line end without traversing structural spaces.
+- Clicking the marker cell or the structural area of a continuation line clamps a collapsed caret to the body start. A collapsed caret cannot remain in that structural area, and unmodified `ArrowLeft` at the body start of a list item or continuation line moves to the previous line's last reachable position without traversing markers or structural spaces. If there is no previous line, keep the caret at the body start.
 - Pressing `Backspace` at the body start of a marker line removes the marker's last visible character together with its following structural gap. Therefore `1. body` removes the period first and becomes `1body`, ending list treatment, while `• body` becomes `body` in one action.
 - Pressing `Backspace` at a continuation body start removes the preceding newline and continuation structure together, joining the body to the previous line.
 - Removing a marker-tail character and joining a continuation line are each one Undo action.
@@ -560,7 +567,7 @@ Each editing-assistance command registers a unique identifier and a non-duplicat
 3. Block single-character deletion across a newline adjacent to a fenced-code delimiter
 4. Delete an empty automatic pair with Backspace
 5. Move, delete, or insert Enter at rich-formatting display boundaries
-6. Move to the previous line end with ArrowLeft from the body start of a list continuation line
+6. Move to the previous line end with ArrowLeft from the body start of a list item or continuation line
 7. Create a marker-free list continuation line with Shift+Enter
 8. Continue a checkbox item or end an empty checkbox item with Enter
 9. Remove one level and restore a marker, or exit a top-level list, with Enter on an empty item

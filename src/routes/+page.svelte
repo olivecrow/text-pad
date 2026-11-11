@@ -4305,7 +4305,7 @@
 
     const lineIndex = findLineIndexForOffset(start);
     const layout = getRenderListLineLayout(lineIndex);
-    if (!layout || layout.ownerLineIndex === lineIndex || layout.prefixLength === 0) return false;
+    if (!layout || layout.prefixLength === 0) return false;
     if (start !== getRenderListBodyStart(lineIndex, layout)) return false;
 
     const previousLine = getPreviousLineBounds(fileContent, lineStartOffsets[lineIndex] ?? 0);
@@ -6122,7 +6122,7 @@
     const vertical = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key);
     if (!vertical) prettyPrintNavigationX = null;
     if ((!vertical && event.key !== 'Home' && event.key !== 'End')
-      || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || !textareaEl) return false;
+      || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || isComposingEditorText || !textareaEl) return false;
     const selection = getTextareaSelectionInContent();
     const backward = textareaEl.selectionDirection === 'backward';
     const offset = backward ? selection.start : selection.end;
@@ -6137,9 +6137,17 @@
     if (vertical && (prettyPrintNavigationX === null || prettyPrintNavigationOffset !== offset)) {
       prettyPrintNavigationX = caret.left;
     }
+    // 첫/마지막 표시 줄에서는 같은 가로 위치를 다시 찾지 않고 이동 가능한 줄 경계로 간다.
+    // 원문 줄 수 대신 실제 좌표를 비교해야 자동 줄바꿈과 숨긴 코드 울타리도 같은 규칙을 따른다.
+    const documentEdge = vertical && !event.key.startsWith('Page')
+      ? getRenderedCaretRectForOffset(getSafeRenderedCaretOffset(direction < 0 ? 0 : fileContent.length, direction < 0 ? 1 : -1))
+      : null;
+    const atDocumentEdge = documentEdge !== null
+      && documentEdge.top < caret.bottom - 0.5 && documentEdge.bottom > caret.top + 0.5;
     const target = getRenderedCaretOffsetAtPoint(
-      vertical ? prettyPrintNavigationX ?? caret.left : event.key === 'Home' ? viewport.left : viewport.right,
-      caret.top + caret.height / 2 + (vertical ? direction * step : 0)
+      atDocumentEdge ? (direction < 0 ? viewport.left : viewport.right)
+        : vertical ? prettyPrintNavigationX ?? caret.left : event.key === 'Home' ? viewport.left : viewport.right,
+      caret.top + caret.height / 2 + (vertical && !atDocumentEdge ? direction * step : 0)
     );
     if (target === null) return false;
     event.preventDefault();
