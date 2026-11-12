@@ -4087,8 +4087,14 @@
 
   function syncInputWidthBeforeEditing() {
     if (!isRenderMode) return;
-    // 방향키와 조합 입력의 기본 동작 전에 투명 입력층의 줄바꿈도 맞춘다.
-    flushSync(() => renderViewportController?.flushPendingViewportWidth());
+    // scroll 이벤트가 아직 전달되지 않았어도 현재 화면과 가상화 범위를 먼저 맞춘다.
+    // 이전 화면의 줄을 클릭하거나 빠른 연속 키 입력을 누락하지 않도록 한다.
+    flushSync(() => {
+      if (shouldRenderHighlightLayer && editorViewportEl) {
+        updateActiveTab({ scrollTop: editorViewportEl.scrollTop, scrollLeft: editorViewportEl.scrollLeft });
+      }
+      renderViewportController?.flushPendingViewportWidth();
+    });
   }
 
   function handleEditorBeforeInput(event: InputEvent) {
@@ -5373,6 +5379,11 @@
 
   function handleEditorKeyDown(event: KeyboardEvent) {
     syncInputWidthBeforeEditing();
+    if (shouldRenderHighlightLayer && editorMovementKeys.has(event.key)) {
+      // Ctrl+Home 직후 selectionchange보다 다음 키가 먼저 와도 새 이동점의 좌표를 확보한다.
+      ensureRenderedCaretLineVisible(selectionCaret(getTextareaSelectionInContent()).head);
+      flushSync();
+    }
     if (multiCaretController.keydown(event)) return;
     if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Shift'].includes(event.key)
       || event.ctrlKey || event.metaKey) prettyPrintCaretAffinity = null;
