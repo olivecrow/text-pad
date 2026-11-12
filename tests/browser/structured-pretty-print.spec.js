@@ -139,12 +139,14 @@ for (const fontFamily of ['default', 'Arial', 'Consolas', 'Courier New', 'paddin
     if (fontFamily === 'padding-hit') {
       // 일부 Windows 글리프 배치에서 들여쓰기 여백의 기본 판정이 첫 문자 뒤를 반환한다.
       await page.evaluate(() => {
-        const original = document.caretPositionFromPoint.bind(document);
-        document.caretPositionFromPoint = (x, y) => {
+        const caretDocument = /** @type {Document & { caretPositionFromPoint: (x: number, y: number) => { offsetNode: Node, offset: number } | null }} */ (document);
+        const original = caretDocument.caretPositionFromPoint.bind(document);
+        caretDocument.caretPositionFromPoint = (x, y) => {
           const row = Array.from(document.querySelectorAll('.pretty-print-row'))
             .find(element => element.textContent === '<c/>');
           if (row) {
             const text = document.createTreeWalker(row, NodeFilter.SHOW_TEXT).nextNode();
+            if (!(text instanceof Text)) throw new Error('표시 행의 첫 문자 누락');
             const range = document.createRange();
             range.setStart(text, 0);
             range.setEnd(text, 1);
