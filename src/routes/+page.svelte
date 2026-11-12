@@ -6190,7 +6190,13 @@
       const rowEnd = Number(closest.dataset.sourceEnd);
       const lineStart = lineStartOffsets[Number(lineElement.dataset.lineIndex)] ?? 0;
       const maximum = rowEnd - rowStart;
-      const native = getNativeCaretTextOffsetAtPoint(closest, maximum, clientX, clientY, textareaEl);
+      const firstBoundary = getTextNodeBoundary(closest, 0, true);
+      const firstCaret = firstBoundary ? getRenderedCaretRectAtBoundary(firstBoundary) : null;
+      // 표시용 들여쓰기 여백은 첫 문자 앞이다. 일부 글꼴의 기본 판정은 첫 문자 뒤를 준다.
+      // 자동 줄바꿈된 다음 행은 별도 위치를 가지므로 첫 표시 행에서만 이 경계를 적용한다.
+      const inLeadingPadding = firstCaret && clientX <= firstCaret.left && clientY <= firstCaret.bottom;
+      const native = inLeadingPadding ? 0
+        : getNativeCaretTextOffsetAtPoint(closest, maximum, clientX, clientY, textareaEl);
       const offset = native ?? findClosestRenderedTextOffset(maximum, clientX, clientY,
         Math.max(liveEditorViewportWidth, 1), offset => {
           const boundary = getTextNodeBoundary(closest, offset, true);

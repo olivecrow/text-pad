@@ -132,15 +132,44 @@ test('long pretty data measures scroll extent and wraps at a narrow viewport', a
   await expect(textarea).toHaveValue(source);
 });
 
-test('arrows cross from existing source lines into adjacent expanded display rows', async ({ page }) => {
-  const source = '<root>\n<a><b/><c/></a>\n</root>';
-  await openData(page, 'XML', source);
-  const textarea = page.getByTestId('editor-textarea');
-  await textarea.press('Control+End');
-  await textarea.press('Home');
-  await textarea.press('ArrowUp');
-  expect((await selection(page)).start).toBe(source.indexOf('</a>'));
-  await textarea.press('ArrowUp');
-  expect((await selection(page)).start).toBe(source.indexOf('<c/>'));
-  await expect(textarea).toHaveValue(source);
-});
+for (const fontFamily of ['default', 'Arial', 'Consolas', 'Courier New', 'padding-hit']) {
+  test(`arrows cross from existing source lines into adjacent expanded display rows (${fontFamily})`, async ({ page }) => {
+    const source = '<root>\n<a><b/><c/></a>\n</root>';
+    await openData(page, 'XML', source);
+    if (fontFamily === 'padding-hit') {
+      // 일부 Windows 글리프 배치에서 들여쓰기 여백의 기본 판정이 첫 문자 뒤를 반환한다.
+      await page.evaluate(() => {
+        const original = document.caretPositionFromPoint.bind(document);
+        document.caretPositionFromPoint = (x, y) => {
+          const row = Array.from(document.querySelectorAll('.pretty-print-row'))
+            .find(element => element.textContent === '<c/>');
+          if (row) {
+            const text = document.createTreeWalker(row, NodeFilter.SHOW_TEXT).nextNode();
+            const range = document.createRange();
+            range.setStart(text, 0);
+            range.setEnd(text, 1);
+            const glyph = range.getBoundingClientRect();
+            const box = row.getBoundingClientRect();
+            if (x < glyph.left && y >= box.top && y <= box.bottom) {
+              return { offsetNode: text, offset: 1 };
+            }
+          }
+          return original(x, y);
+        };
+      });
+    } else if (fontFamily !== 'default') {
+      await page.addStyleTag({ content: `body * { font-family: '${fontFamily}' !important; }` });
+      await expect(page.locator('.pretty-print-row').first()).toHaveCSS('font-family', new RegExp(fontFamily));
+    }
+    const textarea = page.getByTestId('editor-textarea');
+    await textarea.press('Control+End');
+    await textarea.press('Home');
+    await textarea.press('ArrowUp');
+    expect((await selection(page)).start).toBe(source.indexOf('</a>'));
+    await textarea.press('ArrowUp');
+    expect((await selection(page)).start).toBe(source.indexOf('<c/>'));
+    await textarea.press('Shift+ArrowUp');
+    expect(await selection(page)).toEqual({ start: source.indexOf('<b/>'), end: source.indexOf('<c/>'), direction: 'backward' });
+    await expect(textarea).toHaveValue(source);
+  });
+}
