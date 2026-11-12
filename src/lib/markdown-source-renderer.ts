@@ -3,6 +3,9 @@ import MarkdownIt, { type Token } from 'markdown-it';
 // 표시 문자열을 원문에서 재검색하지 않고 해석기가 소비한 범위를 기록한다.
 // 이 해석기는 편집 가능한 복합 블록에만 사용한다. 원문은 재직렬화하지 않는다.
 const parser = new MarkdownIt({ html: true, linkify: true, maxNesting: 32 });
+// 편집 가능한 주소는 %20과 국제화 도메인까지 원문 그대로 표시한다.
+// 링크 대상의 정규화·검증은 해석기의 기본 동작을 유지한다.
+parser.normalizeLinkText = text => text;
 export const markdownHtmlTags = 'a abbr b bdi bdo blockquote br caption center cite code col colgroup dd del details dfn div dl dt em figcaption figure h1 h2 h3 h4 h5 h6 hr i img ins kbd li mark ol p pre q rp rt ruby s samp small span strong sub summary sup table tbody td th thead tfoot time tr u ul var wbr'.split(' ');
 export const markdownContainerTags = new Set(markdownHtmlTags.filter(tag => !['br', 'hr', 'img', 'wbr', 'col'].includes(tag)));
 type Position = { start: number; end: number };
@@ -56,40 +59,110 @@ for (const { name, fn } of [...parser.inline.ruler.__rules__]) {
     return true;
   });
 }
-// 연결 규칙이 문자 참조와 텍스트의 원문 경계를 지우지 않게 한다.
-parser.inline.ruler2.disable('fragments_join');
+// 강조 판정 뒤에 남은 밑줄 등은 일반 문자와 합쳐야 이메일 전체를 인식한다.
+const joinFragments = parser.inline.ruler2.__rules__.find(rule => rule.name === 'fragments_join')!.fn;
+parser.inline.ruler2.at('fragments_join', state => {
+  let joined: Position | undefined;
+  for (const token of state.tokens) {
+    if (token.type !== 'text') { joined = undefined; continue; }
+    const part = positions.get(token);
+    if (part && token.content) joined = { start: joined?.start ?? part.start, end: part.end };
+    if (joined) positions.set(token, joined);
+  }
+  joinFragments(state);
+});
+// 문자 참조와 이스케이프는 일반 문자와 별도로 원문 경계를 유지한다.
 parser.core.ruler.disable('text_join');
-// 자동 링크가 나눈 텍스트도 분할 전 토큰의 범위 안에서만 연결한다.
+// 자동 링크가 나눈 텍스트는 주소 검출기의 원문 범위에 연결한다.
 const linkify = parser.core.ruler.__rules__.find(rule => rule.name === 'linkify')!.fn;
 parser.core.ruler.at('linkify', state => {
-  const originals = state.tokens.map(token => token.children?.slice());
+  const originals = state.tokens.map(token => token.children);
   linkify(state);
   state.tokens.forEach((block, index) => {
     const before = originals[index];
-    if (!before || !block.children) return;
+    const after = block.children;
+    if (!before || !after || before === after) return;
     let cursor = 0;
-    for (const old of before) {
-      if (block.children[cursor] === old) { cursor += 1; continue; }
-      const position = positions.get(old);
+    for (const [i, original] of before.entries()) {
+      if (after[cursor] === original) { cursor += 1; continue; }
+      const position = positions.get(original)!;
       let consumed = 0;
-      while (cursor < block.children.length && consumed < old.content.length) {
-        const token = block.children[cursor++];
-        if (token.type !== 'text') continue;
-        if (position && old.content.slice(consumed, consumed + token.content.length) === token.content) {
-          positions.set(token, { start: position.start + consumed, end: position.start + consumed + token.content.length });
+      for (const match of state.md.linkify.match(original.content) ?? []) {
+        // 기본 연결 규칙과 같은 순서로 새 일반 텍스트와 링크 토큰을 소비한다.
+        if (match.index === 0 && before[i - 1]?.type === 'text_special') continue;
+        if (!state.md.validateLink(state.md.normalizeLink(match.url))) continue;
+        if (consumed < match.index) {
+          positions.set(after[cursor++], { start: position.start + consumed, end: position.start + match.index });
         }
-        consumed += token.content.length;
+        const label = after[cursor + 1];
+        positions.set(label, { start: position.start + match.index, end: position.start + match.lastIndex });
+        cursor += 3;
+        consumed = match.lastIndex;
       }
-      while (block.children[cursor]?.type === 'link_close' && !before.includes(block.children[cursor])) cursor += 1;
+      if (consumed < original.content.length) {
+        positions.set(after[cursor++], { start: position.start + consumed, end: position.end });
+      }
     }
   });
 });
+
+// 목록·인용 접두부가 제거된 해석기 상태에서 표 셀의 실제 원문 경계를 기록한다.
+// 표 해석기가 먼저 제거하는 \|의 역슬래시도 표시 문자 하나의 범위에 포함한다.
+const tableCellOffsets = new WeakMap<Token, number[]>();
+const tableRule = parser.block.ruler.__rules__.find(rule => rule.name === 'table')!;
+const parseTable = tableRule.fn;
+parser.block.ruler.at('table', (state, startLine, endLine, silent) => {
+  const count = state.tokens.length;
+  if (!parseTable(state, startLine, endLine, silent)) return false;
+  if (silent) return true;
+  let cells: Array<{ text: string; offsets: number[] }> = [];
+  let column = 0;
+  let rowEnd = 0;
+  for (const token of state.tokens.slice(count)) {
+    if (token.type === 'tr_open' && token.map) {
+      const row = token.map[0];
+      const begin = state.bMarks[row] + state.tShift[row];
+      rowEnd = state.eMarks[row];
+      const raw = state.src.slice(begin, rowEnd);
+      const start = begin + raw.length - raw.trimStart().length;
+      const line = raw.trim();
+      cells = [];
+      column = 0;
+      let text = '';
+      let offsets: number[] = [];
+      for (let i = 0; i <= line.length; i++) {
+        if (i === line.length || line[i] === '|' && line[i - 1] !== '\\') {
+          cells.push({ text, offsets: [...offsets, start + i] });
+          text = ''; offsets = [];
+        } else {
+          if (line[i] === '|' && line[i - 1] === '\\') {
+            text = text.slice(0, -1);
+            offsets.pop();
+            offsets.push(start + i - 1);
+          } else offsets.push(start + i);
+          text += line[i];
+        }
+      }
+      if (cells[0]?.text === '') cells.shift();
+      if (cells.at(-1)?.text === '') cells.pop();
+    } else if (token.type === 'inline') {
+      const cell = cells[column++];
+      if (!cell) { tableCellOffsets.set(token, [rowEnd]); continue; }
+      if (cell.text.trim() !== token.content) throw new Error('Unmapped nested table cell');
+      const leading = cell.text.length - cell.text.trimStart().length;
+      tableCellOffsets.set(token, cell.offsets.slice(leading, leading + token.content.length + 1));
+    }
+  }
+  return true;
+}, { alt: tableRule.alt });
 
 export interface MappedMarkdown {
   html: string;
   attribute: string;
   maps: number[][];
   texts: string[];
+  codeRanges?: Array<{ start: number; end: number }>;
+  disclosures?: Array<{ bodyStart: number; end: number; open: boolean }>;
 }
 
 export function renderMappedMarkdown(source: string, environment: Record<string, unknown>, options: { inline?: boolean; showHeadingMarkers?: boolean } = {}): MappedMarkdown {
@@ -106,6 +179,10 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
   for (const line of lines) { starts.push(length); length += line.length + 1; }
   const maps: number[][] = [];
   const texts: string[] = [];
+  const codeRanges: Array<{ start: number; end: number }> = [];
+  let codeDepth = 0;
+  const disclosures: NonNullable<MappedMarkdown['disclosures']> = [];
+  const disclosureStack: number[] = [];
   const attribute = `data-rich-${crypto.randomUUID()}`;
   const escape = parser.utils.escapeHtml;
   function mapped(text: string, offsets: number[]): string {
@@ -115,6 +192,7 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     }
     const id = maps.push(offsets.map(pos => originalOffsets[Math.min(pos, normalized.length)])) - 1;
     texts.push(text);
+    if (codeDepth > 0) codeRanges.push({ start: maps[id][0], end: maps[id].at(-1)! });
     return `<span ${attribute}="${id}">${escape(text)}</span>`;
   }
   // 블록 해석기가 제거한 인용·목록 접두부와 들여쓰기를 줄 단위로 복원한다.
@@ -148,6 +226,19 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
       if (chunk.startsWith('<') && chunk !== '<') {
         if (literalTags.has(offsets[offset])) {
           return mapped(chunk, offsets.slice(offset, offset + chunk.length + 1));
+        }
+        if (/^<pre\b/iu.test(chunk)) codeDepth++;
+        if (/^<\/pre\b/iu.test(chunk)) codeDepth = Math.max(0, codeDepth - 1);
+        if (/^<details\b/iu.test(chunk)) {
+          disclosureStack.push(disclosures.length);
+          disclosures.push({ bodyStart: offsets[offset + chunk.length], end: normalized.length,
+            open: /\sopen(?=[\s=>])/iu.test(chunk.replace(/"[^"]*"|'[^']*'/gu, '""')) });
+        }
+        const disclosure = disclosures[disclosureStack.at(-1) ?? -1];
+        if (disclosure && /^<\/summary\b/iu.test(chunk)) disclosure.bodyStart = offsets[offset + chunk.length];
+        if (disclosure && /^<\/details\b/iu.test(chunk)) {
+          disclosure.end = offsets[offset + chunk.length];
+          disclosureStack.pop();
         }
         // 글자가 없는 줄과 이미지 양옆에도 원문 경계를 둔다.
         if (/^<(?:br|hr|img)\b/iu.test(chunk)) {
@@ -246,10 +337,8 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     const after = inlineOffsets[pos.end];
     return mapped('\u200b', [before, before]) + '<br>' + mapped('\u200b', [before, after]);
   };
-  renderer.rules.softbreak = (items, index) => {
-    const pos = positions.get(items[index])!;
-    return mapped('\n', [inlineOffsets[pos.start], inlineOffsets[pos.end]]);
-  };
+  // 본문의 원문 개행도 화면에서 줄을 나누고 앞뒤 편집 위치를 유지한다.
+  renderer.rules.softbreak = renderer.rules.hardbreak;
   renderer.rules.html_inline = (items, index) => {
     const token = items[index];
     const pos = positions.get(token)!;
@@ -261,33 +350,20 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     const offsets = blockOffsets(token);
     // 마지막 코드 개행도 텍스트 경계를 하나 가진다.
     if (offsets.length === token.content.length) offsets.push(offsets.at(-1)! + 1);
-    return `<pre><code>${mapped(token.content, offsets)}</code></pre>\n`;
+    codeDepth++;
+    const code = mapped(token.content, offsets);
+    codeDepth--;
+    return `<pre><code>${code}</code></pre>\n`;
   };
   let html = '';
-  let tableLine = 0;
-  let tableColumn = 0;
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
-    if (token.type === 'table_open') tableLine = token.map?.[0] ?? 0;
-    if (token.type === 'tr_open') {
-      tableLine = token.map?.[0] ?? tableLine;
-      tableColumn = lines[tableLine]?.match(/^(?: {0,3}>[ \t]?)*[ \t]*\|?/u)?.[0].length ?? 0;
-    }
     if (token.type === 'inline') {
       if (token.map) inlineOffsets = blockOffsets(token);
       else {
-        // 표 셀 토큰에는 map이 없다. 현재 행과 왼쪽에서 소비한 셀 범위로 한정한다.
-        const line = lines[tableLine] ?? '';
-        let end = tableColumn;
-        while (end < line.length) {
-          if (line[end] === '|' && line[end - 1] !== '\\') break;
-          end += 1;
-        }
-        const raw = line.slice(tableColumn, end);
-        if (raw.trim() !== token.content) throw new Error('Unmapped nested table cell');
-        const column = tableColumn + raw.length - raw.trimStart().length;
-        inlineOffsets = Array.from({ length: token.content.length + 1 }, (_, n) => starts[tableLine] + column + n);
-        tableColumn = end + 1;
+        const offsets = tableCellOffsets.get(token);
+        if (!offsets) throw new Error('Missing table cell source positions');
+        inlineOffsets = offsets;
       }
       html += token.content ? renderer.renderInline(token.children ?? [], parser.options, environment)
         : mapped('\u200b', [inlineOffsets[0], inlineOffsets[0]]);
@@ -308,5 +384,7 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
       }
     }
   }
-  return { html, attribute, maps, texts };
+  return { html, attribute, maps, texts, codeRanges,
+    disclosures: disclosures.map(range => ({ ...range,
+      bodyStart: originalOffsets[range.bodyStart], end: originalOffsets[range.end] })) };
 }

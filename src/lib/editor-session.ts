@@ -14,6 +14,7 @@ export interface EditorTab {
   scrollLeft: number;
   selectionStart: number;
   selectionEnd: number;
+  selectionDirection?: 'forward' | 'backward';
   cursorLine: number;
   cursorCol: number;
   caretOffset: number;

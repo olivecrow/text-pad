@@ -97,6 +97,64 @@ test('inline formatting keeps source offsets for pointer editing and undo', asyn
   await expect(editor).toHaveValue(source);
 });
 
+test('bare email links preserve surrounding formatting and exact source positions', async ({ page }) => {
+  await page.goto('/');
+  const editor = page.getByTestId('editor-textarea');
+  const rich = page.locator('.rich-content');
+  const standalone = 'first-last@example.com';
+  await editor.fill(standalone);
+  await expect(rich.getByRole('link', { name: standalone, exact: true })).toHaveAttribute('href', `mailto:${standalone}`);
+
+  const address = 'first_last@xn--exmple-cua.com';
+  const source = '- **Bold** ' + address + ' \\_ _italic_ `' + address + '`';
+  await editor.fill(source);
+  const item = rich.getByRole('listitem');
+  await expect(item.locator('strong')).toHaveText('Bold');
+  await expect(item.locator('em')).toHaveText('italic');
+  await expect(item.locator('code')).toHaveText(address);
+  await expect(item).toContainText(' _ italic ');
+  const link = item.getByRole('link', { name: address, exact: true });
+  await expect(item.getByRole('link')).toHaveCount(1);
+  await expect(link).toHaveAttribute('href', `mailto:${address}`);
+  const position = await link.locator('[data-rich-offsets]').evaluate((element) => {
+    const range = document.createRange();
+    const text = element.firstChild;
+    if (!text) throw new Error('Missing email link text');
+    range.setStart(text, 6);
+    range.collapse(true);
+    const rect = range.getBoundingClientRect();
+    return { x: rect.x, y: rect.y + rect.height / 2 };
+  });
+  await page.mouse.click(position.x, position.y);
+  await page.keyboard.insertText('x');
+  await expect(editor).toHaveValue(source.replace('first_last', 'first_xlast'));
+  await page.keyboard.press('Control+z');
+  await expect(editor).toHaveValue(source);
+});
+
+test('an email link preserves each source line in a formatted paragraph', async ({ page }) => {
+  await page.goto('/');
+  const address = 'bbbb@testtesttest.test.testtesttest.com';
+  const lines = [
+    '서비스 계정: 뒤끝_그레이트 소드  → 모든 권한이 허용된 상태',
+    '(영수증 검증, JWT 제공용) ',
+    `이메일: ${address}`,
+    '키ID: ',
+    'xxxxxxxxxxxxxxxxxxx',
+    'xxxxxxxxxxxxxxxxxxxxxxxxxxx',
+    '클라이언트 ID: 00000000000000000000'
+  ];
+  const source = '### Google Play-Backend\n\n' + lines.join('\n');
+  const editor = page.getByTestId('editor-textarea');
+  await editor.fill(source);
+  const paragraph = page.locator('.rich-content p');
+  await expect(paragraph.getByRole('link', { name: address })).toHaveAttribute('href', `mailto:${address}`);
+  await expect.poll(async () => (await paragraph.innerText()).replaceAll('\u200b', '')).toBe(
+    lines.map(line => line.trimEnd().replace(/ +/g, ' ')).join('\n')
+  );
+  await expect(editor).toHaveValue(source);
+});
+
 test('reference links retain document context and heading links scroll within the document', async ({ page }) => {
   await page.goto('/');
   const source = '[site][home] and [go](#target)\n\n' + 'line\n'.repeat(100) + '\n## Target\n\n[home]: https://example.com';
@@ -179,8 +237,8 @@ test('lazy quote continuation and multiline emphasis use full paragraphs but cod
   await editor.press('Control+Home');
   await expect(page.locator('.rich-content blockquote')).toHaveCount(1);
   await expect(page.locator('.rich-content blockquote')).toContainText('이어지는 문장');
-  await expect(page.locator('.rich-content strong')).toHaveText('여러 줄\n굵게');
-  await expect(page.locator('.rich-content em')).toHaveText('여러 줄\n기울임');
+  await expect.poll(async () => (await page.locator('.rich-content strong').innerText()).replaceAll('\u200b', '')).toBe('여러 줄\n굵게');
+  await expect.poll(async () => (await page.locator('.rich-content em').innerText()).replaceAll('\u200b', '')).toBe('여러 줄\n기울임');
   await expect(page.locator('.fenced-code-middle')).toContainText('> **코드의 원문**');
   await expect(editor).toHaveValue(source);
 });

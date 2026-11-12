@@ -18,7 +18,8 @@ export interface MarkdownRichBlock {
 }
 
 export function parseMarkdownRichBlocks(content: string, lineStarts: number[], environment: Record<string, unknown> = {}, regions?: MarkdownRichBlock[]): MarkdownRichBlock[] {
-  if (!/[<!&\[*_~]|^ {0,3}[>\-]/mu.test(content)) return [];
+  // 웹 주소의 스킴(:)도 자동 링크 해석 후보에 포함한다.
+  if (!/[<!&\[*_~@:]|^ {0,3}[>\-]/mu.test(content)) return [];
   const tokens = markdown.parse(content, environment);
   const ranges: Array<[number, number]> = [];
   const htmlParts = tokens.filter((token) => token.type === 'html_block' && token.map);
@@ -54,13 +55,17 @@ export function parseMarkdownRichBlocks(content: string, lineStarts: number[], e
     ranges.push([map[0], Math.min(endLine, lineStarts.length)]);
     coveredUntil = endLine;
   }
+  const lists: Array<[number, number]> = [];
   for (const token of tokens) {
+    if (['bullet_list_open', 'ordered_list_open'].includes(token.type) && token.map) lists.push(token.map);
+    if (['bullet_list_close', 'ordered_list_close'].includes(token.type)) lists.pop();
     if (['hr', 'blockquote_open'].includes(token.type) && token.map) ranges.push([token.map[0], token.map[1]]);
     if (token.type !== 'inline' || !token.map) continue;
     if (!token.children?.some((child) => ['html_inline', 'image', 'link_open'].includes(child.type))
       && !/&(?:#\d+|#x[\da-f]+|[a-z][\da-z]+);/iu.test(token.content)
       && !(token.map[1] - token.map[0] > 1 && token.children?.some((child) => ['em_open', 'strong_open', 's_open'].includes(child.type)))) continue;
-    ranges.push([token.map[0], token.map[1]]);
+    // 하위 항목만 잘라 다시 해석하면 들여쓰기를 코드 블록으로 오인한다.
+    ranges.push(lists.length ? [...lists[0]] : [token.map[0], token.map[1]]);
   }
   ranges.sort((a, b) => a[0] - b[0]);
   const merged: Array<[number, number]> = [];

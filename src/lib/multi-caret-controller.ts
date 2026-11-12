@@ -3,11 +3,9 @@ import { getPreferredNewline } from './editor-input';
 import { adjacentTextOffset, caretSelection, cloneMultiCaret,
   replaceAtCarets, splitCaretPaste, type CaretRange, type CaretReplacement, type MultiCaretSelection } from './multi-caret';
 
-export interface CaretGeometry {
-  rectAt(offset: number): DOMRect | null;
-  offsetAt(x: number, y: number): number | null;
-  dispose(): void;
-}
+import { selectionCaret } from './editor-selection';
+import { adjacentVisualRow, type CaretGeometry } from './editor-navigation';
+export type { CaretGeometry } from './editor-navigation';
 
 interface MultiCaretHost {
   input(): HTMLTextAreaElement | null;
@@ -27,6 +25,7 @@ interface MultiCaretHost {
 
 export class MultiCaretController {
   private addColumn: number | null = null;
+  private verticalColumns: Array<{ head: number; x: number }> = [];
   private drag: { pointerId: number; offset: number; x: number; y: number; currentX: number;
     rows: CaretRange[]; direction: -1 | 1 } | null = null;
   private scrollFrame: number | null = null;
@@ -37,6 +36,7 @@ export class MultiCaretController {
 
   reset() {
     this.stopDrag();
+    this.verticalColumns = [];
     this.addColumn = null;
     this.composition = null;
     this.compositionReplacements = null;
@@ -54,26 +54,12 @@ export class MultiCaretController {
   private current(): MultiCaretSelection {
     const snapshot = this.host.read();
     if (snapshot.multiCaret) return cloneMultiCaret(snapshot.multiCaret)!;
-    const { start, end } = snapshot.selection;
-    return { ranges: [this.host.input()?.selectionDirection === 'backward'
-      ? { anchor: end, head: start } : { anchor: start, head: end }], primary: 0 };
+    return { ranges: [selectionCaret(snapshot.selection)], primary: 0 };
   }
 
   private vertical(geometry: CaretGeometry, offset: number, x: number, direction: -1 | 1): number | null {
-    const rect = geometry.rectAt(offset);
-    if (!rect) return null;
-    // 문단 여백, 큰 제목과 숨긴 울타리는 실제 다음 표시 줄까지 건너뛴다.
-    const limit = Math.max(this.host.scroller()?.clientHeight ?? 0, this.host.lineHeight() * 3);
-    for (let distance = 1; distance <= limit; distance += Math.max(1, this.host.lineHeight() / 2)) {
-      const raw = geometry.offsetAt(x, direction < 0 ? rect.top - distance : rect.bottom + distance);
-      if (raw === null) continue;
-      const target = this.host.safe(raw, direction);
-      if (target === null) continue;
-      const next = geometry.rectAt(target);
-      if (next && (direction < 0 ? next.bottom <= rect.top + 0.5 : next.top >= rect.bottom - 0.5)) return target;
-      if (direction < 0 ? raw === 0 : raw === this.host.read().content.length) break;
-    }
-    return null;
+    return adjacentVisualRow(geometry, offset, x, direction, this.host.safe,
+      Math.max(this.host.scroller()?.clientHeight ?? 0, this.host.lineHeight() * 3));
   }
 
   keydown(event: KeyboardEvent): boolean {
@@ -129,10 +115,15 @@ export class MultiCaretController {
     try {
       const direction = ['ArrowLeft', 'ArrowUp', 'Home', 'PageUp'].includes(event.key) ? -1 : 1;
       const viewport = this.host.scroller()?.getBoundingClientRect();
-      const ranges = value.ranges.map(range => {
+      const vertical = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key);
+      if (!vertical) this.verticalColumns = [];
+      const columns: Array<{ head: number; x: number }> = [];
+      const ranges = value.ranges.map((range, index) => {
         let head = range.head;
         const rect = geometry.rectAt(head);
         const selection = caretSelection(range);
+        const previousColumn = this.verticalColumns[index];
+        const x = previousColumn?.head === range.head ? previousColumn.x : rect?.left ?? 0;
         if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
           head = !event.shiftKey && selection.start !== selection.end
             ? direction < 0 ? selection.start : selection.end
@@ -150,15 +141,17 @@ export class MultiCaretController {
             head = geometry.offsetAt(direction < 0 ? viewport.left : viewport.right, rect.top + rect.height / 2) ?? head;
           } else {
             head = event.key.startsWith('Page')
-              ? geometry.offsetAt(rect.left, rect.top + rect.height / 2 + direction * viewport.height) ?? head
-              : this.vertical(geometry, head, rect.left, direction)
+              ? geometry.offsetAt(x, rect.top + rect.height / 2 + direction * viewport.height) ?? head
+              : this.vertical(geometry, head, x, direction)
                 ?? geometry.offsetAt(direction < 0 ? viewport.left : viewport.right, rect.top + rect.height / 2) ?? head;
           }
         }
         head = this.host.safe(head, direction) ?? range.head;
+        if (vertical) columns.push({ head, x });
         return { anchor: event.shiftKey ? range.anchor : head, head };
       });
       this.host.select({ ranges, primary: value.primary });
+      this.verticalColumns = columns;
       this.host.closeGroup();
     } finally { geometry.dispose(); }
   }
@@ -243,6 +236,7 @@ export class MultiCaretController {
 
   private commit(before: EditorSnapshot, after: EditorSnapshot, mergeKey: string | null) {
     this.addColumn = null;
+    this.verticalColumns = [];
     if (!mergeKey) this.host.closeGroup();
     this.host.apply(before, after, mergeKey);
   }

@@ -1,12 +1,9 @@
 import type { EditorSelection, EditorSnapshot } from './editor-undo';
 
-export interface CaretRange { anchor: number; head: number }
+import { caretSelection, type CaretRange } from './editor-selection';
+export { caretSelection, type CaretRange } from './editor-selection';
 export interface MultiCaretSelection { ranges: CaretRange[]; primary: number }
 export interface CaretReplacement { start: number; end: number; text: string; caret?: number }
-
-export function caretSelection(range: CaretRange): EditorSelection {
-  return { start: Math.min(range.anchor, range.head), end: Math.max(range.anchor, range.head) };
-}
 
 export function cloneMultiCaret(value: MultiCaretSelection | undefined | null): MultiCaretSelection | undefined {
   return value ? { primary: value.primary, ranges: value.ranges.map(range => ({ ...range })) } : undefined;

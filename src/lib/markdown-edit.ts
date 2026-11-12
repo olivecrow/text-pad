@@ -1,31 +1,12 @@
 import type { EditorSelection, EditorSnapshot } from './editor-undo';
 import type { MarkdownRichBlock } from './markdown-rich-text';
-import { renderMappedMarkdown, type MappedMarkdown } from './markdown-source-renderer';
+import { getMarkdownEditIndex } from './render-edit-model';
 import type { TextChange } from './text-change';
 
-const deletionMaps = new WeakMap<MarkdownRichBlock, { showHeadingMarkers: boolean; mapped: MappedMarkdown }>();
-const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-
-/** 화면 밖으로 가상화된 블록도 표시 문자 단위로 지운다. 반환 위치는 블록 내부 기준이다. */
+/** 화면 밖 블록도 공용 표시 문자 인덱스로 삭제한다. */
 export function getMarkdownDeletionRange(region: MarkdownRichBlock, offset: number, direction: -1 | 1,
   showHeadingMarkers = false): EditorSelection | null {
-  let cached = deletionMaps.get(region);
-  if (!cached || cached.showHeadingMarkers !== showHeadingMarkers) {
-    cached = { showHeadingMarkers, mapped: renderMappedMarkdown(region.source, region.environment, { showHeadingMarkers }) };
-    deletionMaps.set(region, cached);
-  }
-  let best: EditorSelection | null = null;
-  const mapped = cached.mapped;
-  mapped.texts.forEach((text, index) => {
-    const offsets = mapped.maps[index];
-    for (const segment of graphemes.segment(text)) {
-      const start = offsets[segment.index];
-      const end = offsets[segment.index + segment.segment.length];
-      if (end <= start || (direction < 0 ? end > offset : start < offset)) continue;
-      if (!best || (direction < 0 ? end > best.end : start < best.start)) best = { start, end };
-    }
-  });
-  return best;
+  return getMarkdownEditIndex(region, showHeadingMarkers).deletion(offset, direction);
 }
 
 /** 브라우저가 교체한 범위의 숨긴 서식을 복원하되 실제 선택 의도를 유지한다. */
@@ -52,7 +33,7 @@ export function replaceMarkdownSelection(content: string, selection: EditorSelec
   for (const region of regions) {
     if (region.end <= start || region.start >= end || start <= region.start && end >= region.end) continue;
     let maps: number[][];
-    try { maps = renderMappedMarkdown(region.source, region.environment, { showHeadingMarkers }).maps; }
+    try { maps = getMarkdownEditIndex(region, showHeadingMarkers).mapped.maps; }
     catch { continue; } // 원문 대체 표시와 동일하게 편집한다.
     const visible = maps.flatMap(offsets => offsets.slice(0, -1).flatMap((offset, i) =>
       offsets[i + 1] > offset ? [{ start: region.start + offset, end: region.start + offsets[i + 1] }] : []))

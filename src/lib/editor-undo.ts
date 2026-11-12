@@ -1,10 +1,8 @@
 import { getTextChange, type TextChange } from './text-change';
 import { cloneMultiCaret, type MultiCaretSelection } from './multi-caret';
 
-export interface EditorSelection {
-  start: number;
-  end: number;
-}
+import type { EditorSelection } from './editor-selection';
+export type { EditorSelection } from './editor-selection';
 
 export interface EditorSnapshot {
   content: string;
@@ -47,11 +45,12 @@ const defaultMaxTransactions = 500;
 const defaultMaxBytes = 16 * 1024 * 1024;
 
 function cloneSelection(selection: EditorSelection): EditorSelection {
-  return { start: selection.start, end: selection.end };
+  return { ...selection };
 }
 
 function selectionsEqual(left: EditorSelection, right: EditorSelection): boolean {
-  return left.start === right.start && left.end === right.end;
+  return left.start === right.start && left.end === right.end
+    && (left.direction ?? 'forward') === (right.direction ?? 'forward');
 }
 
 function cloneTransaction(transaction: EditorUndoTransaction): EditorUndoTransaction {

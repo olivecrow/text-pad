@@ -5,13 +5,15 @@
   import { desktopFiles } from './desktop-file-service';
   import { desktopWindows } from './desktop-window-service';
   import { createDefaultMarkdownRenderSettings, markdownHeadingLevels, type MarkdownRenderSettings } from './markdown-settings';
-  let { source, environment, documentPath, editLabel, onedit, onlink, inline = false, showEdit = true, editable = false, settings = createDefaultMarkdownRenderSettings() }: {
+  let { source, environment, documentPath, editLabel, onedit, onlink, ondisclosure, disclosureOpen, inline = false, showEdit = true, editable = false, settings = createDefaultMarkdownRenderSettings() }: {
     source: string;
     environment: Record<string, unknown>;
     documentPath: string | null;
     editLabel: string;
     onedit: () => void;
     onlink: (href: string) => void;
+    ondisclosure?: (state: boolean[]) => void;
+    disclosureOpen?: boolean[];
     inline?: boolean;
     showEdit?: boolean;
     editable?: boolean;
@@ -28,9 +30,19 @@
     if (!editable || !contentElement) return;
     const disclosures = Array.from(contentElement.querySelectorAll('details'));
     disclosures.forEach((element, index) => {
-      if (disclosureState[index] !== undefined) element.open = disclosureState[index];
+      const open = disclosureOpen?.[index] ?? disclosureState[index];
+      if (open !== undefined) element.open = open;
     });
-    return () => { disclosureState = disclosures.map(element => element.open); };
+    const changed = () => {
+      disclosureState = disclosures.map(element => element.open);
+      ondisclosure?.(disclosureState);
+    };
+    disclosures.forEach(element => element.addEventListener('toggle', changed));
+    changed();
+    return () => {
+      disclosureState = disclosures.map(element => element.open);
+      disclosures.forEach(element => element.removeEventListener('toggle', changed));
+    };
   });
   $effect(() => {
     void html;

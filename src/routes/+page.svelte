@@ -25,10 +25,10 @@
   import { getScriptRuns, getWrapRuns } from "$lib/script-coloring";
   import { hasWordCharacterBefore } from "$lib/quote-boundaries";
   import MarkdownRichBlockView from '$lib/MarkdownRichBlock.svelte';
-  import { getRichTextBoundary, getRichTextOffsetAtPoint, getRichSelectionRanges, getRichDeletionRange } from '$lib/markdown-rich-geometry';
+  import { getRichTextBoundary, getRichTextOffsetAtPoint, getRichSelectionRanges } from '$lib/markdown-rich-geometry';
   import { findMarkdownAnchorLine, type MarkdownRichBlock } from '$lib/markdown-rich-text';
   import { MarkdownPresentationCache } from '$lib/markdown-presentation';
-  import { replaceMarkdownSelection, repairMarkdownInput, getMarkdownDeletionRange } from '$lib/markdown-edit';
+  import { replaceMarkdownSelection, repairMarkdownInput } from '$lib/markdown-edit';
   import { getEditorInputMergeKey } from '$lib/editor-input';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { getCheckboxEnterEdit, getCheckboxMarkerAtStart } from "$lib/checkbox-markers";
@@ -42,6 +42,9 @@
     renumberFollowingListMarkerSequence,
     type ListMarker
   } from "$lib/list-markers";
+  import { selectionCaret } from '$lib/editor-selection';
+  import { getMarkdownEditIndex, getInlineEditIndex, withDisclosureState, renderedDeletion } from '$lib/render-edit-model';
+  import { adjacentVisualRow } from '$lib/editor-navigation';
   import { EditorUndoHistory, EditorUndoWindowBudget, type EditorSelection, type EditorSnapshot, type EditorUndoHistoryState } from "$lib/editor-undo";
   import { adjacentTextOffset, caretSelection, cloneMultiCaret, normalizeMultiCaret, type CaretRange,
     type CaretReplacement, type MultiCaretSelection } from '$lib/multi-caret';
@@ -432,7 +435,8 @@
       content: tab.fileContent,
       selection: {
         start: Math.min(tab.selectionStart, tab.fileContent.length),
-        end: Math.min(tab.selectionEnd, tab.fileContent.length)
+        end: Math.min(tab.selectionEnd, tab.fileContent.length),
+        ...(tab.selectionDirection === 'backward' ? { direction: 'backward' as const } : {})
       }
     };
   }
@@ -799,16 +803,16 @@
 
     return {
       start: textareaOffsetToContentOffset(getTextOffsetIndex(content), textareaEl.selectionStart),
-      end: textareaOffsetToContentOffset(getTextOffsetIndex(content), textareaEl.selectionEnd)
+      end: textareaOffsetToContentOffset(getTextOffsetIndex(content), textareaEl.selectionEnd),
+      ...(textareaEl.selectionDirection === 'backward' ? { direction: 'backward' as const } : {})
     };
   }
 
-  function setTextareaSelectionFromContent(start: number, end: number, content = fileContent) {
+  function setTextareaSelectionFromContent(start: number, end: number, content = fileContent, direction: 'forward' | 'backward' = 'forward') {
     if (!textareaEl) return;
 
     const index = getTextOffsetIndex(content);
-    textareaEl.selectionStart = contentOffsetToTextareaOffset(index, start);
-    textareaEl.selectionEnd = contentOffsetToTextareaOffset(index, end);
+    textareaEl.setSelectionRange(contentOffsetToTextareaOffset(index, start), contentOffsetToTextareaOffset(index, end), direction);
   }
 
 
@@ -872,7 +876,7 @@
   function getMultiCaretReplacement(selection: EditorSelection, text: string): CaretReplacement | null {
     if (shouldRenderHighlightLayer && shouldBlockPartialFencedCodeSelectionEdit(selection.start, selection.end)) return null;
     if (!shouldRenderHighlightLayer || activeDocumentFormat.id !== 'markdown' || selection.start === selection.end
-      || !markdownRichBlocks.some(block => block.start < selection.end && block.end > selection.start)) {
+) {
       return { ...selection, text };
     }
     const result = getRenderSelectionEdit(fileContent, selection, text);
@@ -889,14 +893,9 @@
   function getMultiCaretDeletion(range: CaretRange, direction: -1 | 1, word: boolean): EditorSelection | null {
     const selection = caretSelection(range);
     if (selection.start !== selection.end) return selection;
-    if (shouldRenderHighlightLayer) {
-      const block = markdownRichByLine.get(findLineIndexForOffset(range.head));
-      if (block && !word) {
-        try {
-          const deletion = getMarkdownDeletionRange(block, range.head - block.start, direction, !markdownRenderSettings.hideHeadingMarkers);
-          return deletion ? { start: block.start + deletion.start, end: block.start + deletion.end } : selection;
-        } catch { return null; }
-      }
+    if (shouldRenderHighlightLayer && !word) {
+      const model = getRenderEditModel(range.head);
+      if (model) return renderedDeletion(fileContent, model, range.head, direction);
     }
     const adjacent = adjacentTextOffset(fileContent, range.head, direction, word);
     return { start: Math.min(range.head, adjacent), end: Math.max(range.head, adjacent) };
@@ -989,7 +988,8 @@
       scrollTop: scrollElement?.scrollTop ?? tab.scrollTop,
       scrollLeft: scrollElement?.scrollLeft ?? tab.scrollLeft,
       selectionStart: selection.start,
-      selectionEnd: selection.end
+      selectionEnd: selection.end,
+      selectionDirection: selection.direction
     });
   }
 
@@ -1007,7 +1007,7 @@
       const selectionEnd = Math.min(tab.selectionEnd, fileContent.length);
 
       textareaEl.focus({ preventScroll: true });
-      setTextareaSelectionFromContent(selectionStart, selectionEnd);
+      setTextareaSelectionFromContent(selectionStart, selectionEnd, fileContent, tab.selectionDirection);
       if (isRenderMode && isEnhancedDocumentWithinBudget) {
         textareaEl.scrollTop = 0;
         if (editorViewportEl) editorViewportEl.scrollTop = tab.scrollTop;
@@ -3674,20 +3674,36 @@
     return offset >= start && offset <= end ? { start, end } : null;
   }
 
-  function getSafeRenderedCaretOffset(offset: number, direction: -1 | 0 | 1): number {
-    const rich = markdownRichByLine.get(findLineIndexForOffset(offset));
-    const root = rich && getRichRoot(offset);
-    if (root && rich) {
-      const boundary = getRichTextBoundary(root, offset - rich.start, direction)
-        ?? getRichTextBoundary(root, offset - rich.start);
-      if (boundary) return rich.start + boundary.source;
+  const markdownDisclosureStates = new WeakMap<MarkdownRichBlock, boolean[]>();
+
+  function getRenderEditModel(offset: number) {
+    if (!shouldRenderHighlightLayer || !isActiveDocumentRenderEnabled || activeDocumentFormat.id !== 'markdown') return null;
+    const lineIndex = findLineIndexForOffset(offset);
+    const rich = markdownRichByLine.get(lineIndex);
+    if (rich) {
+      try { return { start: rich.start, end: rich.end, rich,
+        index: withDisclosureState(getMarkdownEditIndex(rich, !markdownRenderSettings.hideHeadingMarkers), markdownDisclosureStates.get(rich)) }; }
+      catch { return null; } // 원문 대체 표시와 같은 경계를 사용한다.
     }
+    if (fencedCodeBlocks.some(block => offset >= block.openingLineStart
+      && offset <= (block.closingLineEnd ?? fileContent.length)) || markdownTableByLine.has(lineIndex)) return null;
+    const start = lineStartOffsets[lineIndex] ?? 0;
+    const end = getLineEndOffset(fileContent, offset);
+    return { start, end, rich: null,
+      index: getInlineEditIndex(fileContent.slice(start, end), markdownRenderSettings.hideHeadingMarkers) };
+  }
+
+  function getSafeRenderedCaretOffset(offset: number, direction: -1 | 0 | 1): number {
+    const model = getRenderEditModel(offset);
+    if (model?.rich) return model.start + model.index.boundary(offset - model.start, direction);
     if (markdownHeadingReplacementCaret === offset) return offset;
 
     const headingMarker = getMarkdownHeadingMarkerRange(offset);
     if (headingMarker && offset > headingMarker.start && offset < headingMarker.end) {
       return direction < 0 ? headingMarker.start : headingMarker.end;
     }
+
+    if (headingMarker) return offset;
 
     for (const block of fencedCodeBlocks) {
       if (offset >= block.openingLineStart && offset <= block.openingLineEnd) {
@@ -3721,7 +3737,7 @@
       if (offset < bodyStart) return bodyStart;
     }
 
-    return offset;
+    return model ? model.start + model.index.boundary(offset - model.start, direction) : offset;
   }
 
   function shouldBlockPartialFencedCodeSelectionEdit(start: number, end: number): boolean {
@@ -3746,7 +3762,7 @@
     if (!revealCaret) renderViewportController?.cancelCaretReveal();
     const isCollapsed = textareaEl.selectionStart === textareaEl.selectionEnd;
     let selection = getTextareaSelectionInContent();
-    let pos = selection.start;
+    let pos = selectionCaret(selection).head;
     const previousCaretOffset = caretOffset;
     if (isRenderMode && isActiveDocumentRenderEnabled && isCollapsed && !isComposingEditorText) {
       const safePosition = getSafeRenderedCaretOffset(pos, pendingRenderCaretMovementDirection);
@@ -3762,6 +3778,7 @@
     updateActiveTab({
       selectionStart: selection.start,
       selectionEnd: selection.end,
+      selectionDirection: selection.direction,
       caretOffset: pos,
       cursorLine: lineIndex + 1,
       cursorCol: pos - (lineStartOffsets[lineIndex] ?? 0) + 1
@@ -3801,7 +3818,8 @@
       fileContent: snapshot.content,
       isDirty: nextIsDirty,
       selectionStart: snapshot.selection.start,
-      selectionEnd: snapshot.selection.end
+      selectionEnd: snapshot.selection.end,
+      selectionDirection: snapshot.selection.direction
     });
     errorMsg = null;
     reconcileInlineColorPickerState();
@@ -3827,7 +3845,7 @@
     // 다음 프레임까지 선택 복원을 미루면 빠른 입력이 문서 끝에 적용될 수 있다.
     if (textareaEl) {
       textareaEl.value = getTextOffsetIndex(snapshot.content).textareaValue;
-      setTextareaSelectionFromContent(snapshot.selection.start, snapshot.selection.end, snapshot.content);
+      setTextareaSelectionFromContent(snapshot.selection.start, snapshot.selection.end, snapshot.content, snapshot.selection.direction);
       const primary = snapshot.multiCaret?.ranges[snapshot.multiCaret.primary];
       if (primary) textareaEl.setSelectionRange(textareaEl.selectionStart, textareaEl.selectionEnd,
         primary.head < primary.anchor ? 'backward' : 'forward');
@@ -4040,7 +4058,8 @@
       getTextOffsetIndex(before.content),
       target.value,
       target.selectionStart,
-      target.selectionEnd
+      target.selectionEnd,
+      target.selectionDirection
     );
     inputResult.snapshot = multiCaretController.compositionSnapshot(inputResult.snapshot);
     if (!isComposingEditorText && !pendingInput?.isComposing
@@ -4191,61 +4210,54 @@
     handleEditorDoubleClick(event);
   }
 
-  function handleRichTextKey(event: KeyboardEvent): boolean {
+  function handleRenderedTextKey(event: KeyboardEvent): boolean {
     if (!textareaEl || event.isComposing || isComposingEditorText || event.ctrlKey || event.metaKey || event.altKey) return false;
     if (!['ArrowLeft', 'ArrowRight', 'Backspace', 'Delete', 'Enter'].includes(event.key)) return false;
     const selection = getTextareaSelectionInContent();
-    const backward = textareaEl.selectionDirection === 'backward';
-    const offset = backward ? selection.start : selection.end;
-    const block = markdownRichByLine.get(findLineIndexForOffset(offset));
-    const root = block && getRichRoot(offset);
-    if (!block || !root) return false;
+    const caret = selectionCaret(selection);
+    const model = getRenderEditModel(caret.head);
+    if (!model) return false;
+    const lineStart = getLineStartOffset(fileContent, selection.start);
+    const lineEnd = getLineEndOffset(fileContent, selection.start);
+    const line = fileContent.slice(lineStart, lineEnd);
+    const quote = line.match(/^(?: {0,3}>[ \t]?)+/u)?.[0] ?? '';
     if (event.key === 'Enter') {
-      const ruleLineStart = getLineStartOffset(fileContent, selection.start);
-      const ruleLineEnd = getLineEndOffset(fileContent, selection.start);
-      const ruleLine = fileContent.slice(ruleLineStart, ruleLineEnd);
-      if (selection.start === selection.end && root.querySelector('hr')
-        && /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/u.test(ruleLine)) {
-        const position = selection.start <= ruleLineStart ? ruleLineStart : ruleLineEnd;
+      if (!model.rich) return false;
+      if (selection.start === selection.end && /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/u.test(line)) {
+        const position = selection.start <= lineStart ? lineStart : lineEnd;
         const newline = getPreferredNewline(fileContent, position);
-        const caret = position + newline.length;
+        const head = position + newline.length;
         event.preventDefault();
-        commitRenderEditorEdit(fileContent.slice(0, position) + newline + fileContent.slice(position),
-          { start: caret, end: caret });
+        commitRenderEditorEdit(fileContent.slice(0, position) + newline + fileContent.slice(position), { start: head, end: head });
         return true;
       }
-      const boundary = getRichTextBoundary(root, selection.start - block.start);
-      const inCode = !!boundary?.node.parentElement?.closest('pre');
-      const lineStart = lineStartOffsets[findLineIndexForOffset(selection.start)] ?? 0;
-      const quote = fileContent.slice(lineStart, selection.start).match(/^(?: {0,3}>[ \t]?)+/u)?.[0] ?? '';
-      const newline = fileContent.includes('\r\n') ? '\r\n' : '\n';
-      const inserted = /^\s*</u.test(block.source) && !inCode ? '<br>' : (inCode ? '' : '  ') + newline + quote;
+      const local = selection.start - model.start;
+      const inCode = model.index.mapped.codeRanges?.some(range => local >= range.start && local <= range.end);
+      // 일반 문단은 원문 개행을 그대로 표시한다. 목록 명령은 이 경로보다 먼저 실행한다.
+      const inserted = /^\s*</u.test(model.rich.source) && !inCode ? '<br>'
+        : (quote && !inCode ? '  ' : '') + getPreferredNewline(fileContent, selection.start) + (inCode ? '' : quote);
       event.preventDefault();
       const edit = getRenderSelectionEdit(fileContent, selection, inserted);
       commitRenderEditorEdit(edit.content, edit.selection);
       return true;
     }
     const direction = event.key === 'ArrowLeft' || event.key === 'Backspace' ? -1 : 1;
-    const local = offset - block.start;
-    const deleting = event.key === 'Backspace' || event.key === 'Delete';
-    if (deleting && selection.start !== selection.end) return false;
-    if (deleting) {
-      // 문자 참조와 태그 경계에서도 표시 문자 하나의 원문 범위만 지운다.
-      const range = getRichDeletionRange(root, local, direction);
-      if (!range) { event.preventDefault(); return true; }
+    if (event.key === 'Backspace' || event.key === 'Delete') {
+      if (selection.start !== selection.end) return false;
+      const range = renderedDeletion(fileContent, model, caret.head, direction);
       event.preventDefault();
-      const start = block.start + range.start;
-      const end = block.start + range.end;
-      commitManualEditorEdit(fileContent.slice(0, start) + fileContent.slice(end), { start, end: start },
-        { mergeKey: `rich-${event.key}`, keepRenderCaretVisible: true });
+      if (range.start !== range.end) commitManualEditorEdit(fileContent.slice(0, range.start) + fileContent.slice(range.end),
+        { start: range.start, end: range.start }, { mergeKey: `render-${event.key}`, keepRenderCaretVisible: true });
       return true;
     }
-    const boundary = getRichTextBoundary(root, local + direction, direction);
-    let target = boundary ? block.start + boundary.source
-      : direction < 0 ? Math.max(0, block.start - 1) : Math.min(fileContent.length, block.end + 1);
+    const adjacent = model.index.adjacent(caret.head - model.start, direction);
+    let target = adjacent === null
+      ? adjacentTextOffset(fileContent, direction < 0 ? model.start : model.end, direction)
+      : model.start + adjacent;
     if (!event.shiftKey && selection.start !== selection.end) target = direction < 0 ? selection.start : selection.end;
+    target = getSafeRenderedCaretOffset(target, direction);
     event.preventDefault();
-    setRenderPointerSelection(event.shiftKey ? (backward ? selection.end : selection.start) : target, target);
+    setRenderPointerSelection(event.shiftKey ? caret.anchor : target, target);
     return true;
   }
 
@@ -5339,7 +5351,6 @@
     { id: 'fenced-code-boundary-deletion-guard', priority: 30, execute: handleRenderFencedCodeBoundaryDeletion },
     { id: 'checkbox-deletion', priority: 34, execute: handleRenderCheckboxDeletion },
     { id: 'auto-pair-backspace', priority: 35, execute: handleRenderAutoPairBackspace },
-    { id: 'rich-text-edit', priority: 37, execute: handleRichTextKey },
     { id: 'list-boundary-arrow-left', priority: 40, execute: handleRenderListBoundaryArrowLeft },
     { id: 'list-soft-break-enter', priority: 50, execute: handleRenderListSoftBreakEnter },
     { id: 'checkbox-enter', priority: 55, execute: handleRenderCheckboxEnter },
@@ -5347,12 +5358,14 @@
     { id: 'continue-list-enter', priority: 70, execute: handleRenderContinueListEnter },
     { id: 'list-continuation-enter', priority: 80, execute: handleRenderListContinuationEnter },
     { id: 'json-pair-enter', priority: 85, execute: handleRenderJsonPairEnter },
+    { id: 'markdown-enter', priority: 87, execute: event => event.key === 'Enter' && handleRenderedTextKey(event) },
     { id: 'preserve-indent-enter', priority: 90, execute: handleRenderPreserveIndentEnter },
     { id: 'list-marker-backspace', priority: 100, execute: handleRenderListMarkerBackspace },
     { id: 'list-continuation-backspace', priority: 110, execute: handleRenderListContinuationBackspace },
     { id: 'empty-indented-line-backspace', priority: 120, execute: handleRenderEmptyIndentedLineBackspace },
     { id: 'tab-indent', priority: 130, execute: handleRenderTabIndent },
     { id: 'indent-backspace', priority: 140, execute: handleRenderIndentBackspace },
+    { id: 'rendered-text-edit', priority: 150, execute: handleRenderedTextKey },
     { id: 'markdown-heading-space', priority: 160, execute: handleRenderMarkdownHeadingSpace },
     { id: 'auto-substitution-space', priority: 170, execute: handleRenderAutoSubstitutionSpace },
     { id: 'auto-pair-input', priority: 180, execute: handleRenderAutoPairInput }
@@ -5682,13 +5695,11 @@
     }
 
     if (start === end) {
-      const block = isRenderMode && isActiveDocumentRenderEnabled ? markdownRichByLine.get(findLineIndexForOffset(start)) : undefined;
-      const root = block && getRichRoot(start);
-      const range = root && block ? getRichDeletionRange(root, start - block.start, 1) : null;
-      if (root && block && !range) { closeAllDropdown(); return; }
-      const from = range && block ? block.start + range.start : start;
-      const to = range && block ? block.start + range.end : start + 1;
-      commitManualEditorEdit(fileContent.slice(0, from) + fileContent.slice(to), { start: from, end: from });
+      const range = getMultiCaretDeletion({ anchor: start, head: start }, 1, false);
+      if (range) {
+        const edit = getRenderSelectionEdit(fileContent, range, '');
+        commitManualEditorEdit(edit.content, edit.selection);
+      }
     } else {
       const edit = getRenderSelectionEdit(fileContent, { start, end }, '');
       commitManualEditorEdit(edit.content, edit.selection);
@@ -6329,24 +6340,23 @@
     if (!caret || !editorViewportEl) return false;
     const viewport = editorViewportEl.getBoundingClientRect();
     const direction = event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1;
-    const step = event.key.startsWith('Page')
-      ? Math.max(measuredLineHeight, editorViewportEl.clientHeight - measuredLineHeight)
-      : measuredLineHeight;
     if (vertical && (prettyPrintNavigationX === null || prettyPrintNavigationOffset !== offset)) {
       prettyPrintNavigationX = caret.left;
     }
-    // 첫/마지막 표시 줄에서는 같은 가로 위치를 다시 찾지 않고 이동 가능한 줄 경계로 간다.
-    // 원문 줄 수 대신 실제 좌표를 비교해야 자동 줄바꿈과 숨긴 코드 울타리도 같은 규칙을 따른다.
-    const documentEdge = vertical && !event.key.startsWith('Page')
-      ? getRenderedCaretRectForOffset(getSafeRenderedCaretOffset(direction < 0 ? 0 : fileContent.length, direction < 0 ? 1 : -1))
-      : null;
-    const atDocumentEdge = documentEdge !== null
-      && documentEdge.top < caret.bottom - 0.5 && documentEdge.bottom > caret.top + 0.5;
-    const target = getRenderedCaretOffsetAtPoint(
-      atDocumentEdge ? (direction < 0 ? viewport.left : viewport.right)
-        : vertical ? prettyPrintNavigationX ?? caret.left : event.key === 'Home' ? viewport.left : viewport.right,
-      caret.top + caret.height / 2 + (vertical && !atDocumentEdge ? direction * step : 0)
-    );
+    const geometry = createMultiCaretGeometry();
+    if (!geometry) return false;
+    let target: number | null;
+    try {
+      const x = prettyPrintNavigationX ?? caret.left;
+      target = vertical && !event.key.startsWith('Page')
+        ? adjacentVisualRow(geometry, offset, x, direction, getSafeRenderedCaretOffset,
+            Math.max(editorViewportEl.clientHeight, measuredLineHeight * 3))
+        : vertical ? geometry.offsetAt(x, caret.top + caret.height / 2
+            + direction * Math.max(measuredLineHeight, editorViewportEl.clientHeight - measuredLineHeight))
+          : geometry.offsetAt(event.key === 'Home' ? viewport.left : viewport.right, caret.top + caret.height / 2);
+      // 더 이동할 표시 행이 없으면 현재 행의 시작/끝으로 이동한다.
+      target ??= geometry.offsetAt(direction < 0 ? viewport.left : viewport.right, caret.top + caret.height / 2);
+    } finally { geometry.dispose(); }
     if (target === null) return false;
     event.preventDefault();
     const anchor = event.shiftKey ? (backward ? selection.end : selection.start) : target;
@@ -7396,7 +7406,8 @@
               style:top={`${getRenderLineTop(block.startLine) + editorTopPadding}px`}
               style:font-size={`${currentFontSize}pt`} style:line-height={`${measuredLineHeight}px`} style:tab-size={tabSize}>
               <MarkdownRichBlockView settings={markdownRenderSettings} editable source={block.source} environment={block.environment} documentPath={filePath} editLabel={t('toolbar.switchToSource')}
-                onedit={() => editMarkdownRichBlock(block)} onlink={openMarkdownRichLink} />
+                onedit={() => editMarkdownRichBlock(block)} onlink={openMarkdownRichLink}
+                disclosureOpen={markdownDisclosureStates.get(block)} ondisclosure={state => markdownDisclosureStates.set(block, state)} />
             </div>
           {/each}
 

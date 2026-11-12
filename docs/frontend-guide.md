@@ -33,7 +33,11 @@
 - `src/lib/render-budgets.ts`: 향상 렌더와 대화형 표가 허용하는 공통 문서 크기 예산.
 - `src/lib/markdown-settings.ts`: Markdown 제목 1~6단계의 공통 표시 설정.
 - `src/lib/markdown-rich-text.ts`, `src/lib/MarkdownRichBlock.svelte`: Markdown의 안전한 HTML·이미지·링크·접기 표시와 렌더 모드 직접 편집. [서식 지원 계약](features/markdown-rich-text.md)을 따른다.
-- `src/lib/markdown-source-renderer.ts`, `src/lib/markdown-rich-geometry.ts`: 해석기가 소비한 원문과 실제 표시 글자 경계를 연결한다. 기존 입력창·선택·실행 취소를 유지하며 복합 영역의 클릭·이동·삭제도 같은 원문 범위를 사용한다.
+- `src/lib/markdown-source-renderer.ts`: 해석기가 소비한 원문과 표시 글자의 대응 및 코드 문맥을 만든다.
+- `src/lib/render-edit-model.ts`: 화면 요소와 독립된 표시 문자 위치 인덱스다. 복합 블록은 해석 결과를 약한 참조로 캐시하고 일반 강조 줄은 기존 토큰의 숨김 표식을 사용한다. 이동 경계와 삭제 범위는 이 모델에서 계산하며, 선택 교체도 같은 해석 결과를 재사용한다.
+- `src/lib/editor-selection.ts`: 단일·다중 선택의 기준점·이동점과 정렬된 범위 사이의 공통 변환이다. 입력창·실행 취소·탭 복원이 선택 방향을 보존한다.
+- `src/lib/editor-navigation.ts`: 단일·다중 캐럿의 실제 표시 행 탐색을 공유한다. 가로 위치 기억과 원문 경계 검증은 호출 측의 선택 상태에 연결한다.
+- `src/lib/markdown-rich-geometry.ts`: 화면 글자의 좌표·원문 위치 변환과 선택 표시 범위만 담당한다. 편집 가능한 원문 위치나 삭제 범위를 화면 요소 존재 여부로 판정하지 않는다.
 - `src/lib/markdown-edit.ts`, `src/lib/markdown-presentation.ts`: 서식 경계의 선택 교체 계산과 활성 Markdown 문서의 부분 해석을 맡는다. 본문·표 입력의 실행 취소 병합 정책은 `src/lib/editor-input.ts`에서 공유한다.
 - `src/lib/markdown-inline.ts`: 공용 Markdown 해석기로 중첩 강조를 판정하고, 숨긴 표식을 포함한 원문 길이를 유지해 줄 편집 토큰에 연결한다. 여러 줄 강조와 인용문은 복합 표시의 배치와 글자 경계를 사용한다.
 - Markdown 표 셀은 `TableEditor.svelte`의 선택적 셀 미리보기 슬롯에 기존 `MarkdownRichBlock.svelte`를 연결한다. 비활성 셀은 인라인 서식, 포커스된 셀은 원문 입력으로 표시하고 문서 참조 정의와 이미지 경로를 공유한다. 공통 표 편집기는 Markdown 해석·주소 처리·HTML 정리를 직접 소유하지 않는다.

@@ -278,6 +278,55 @@ try {
   const { MarkdownPresentationCache } = await server.ssrLoadModule('/src/lib/markdown-presentation.ts');
   const { replaceMarkdownSelection, getMarkdownDeletionRange } = await server.ssrLoadModule('/src/lib/markdown-edit.ts');
   const { renderMappedMarkdown } = await server.ssrLoadModule('/src/lib/markdown-source-renderer.ts');
+  const { RenderTextIndex, getInlineEditIndex, getMarkdownEditIndex, withDisclosureState, renderedDeletion }
+    = await server.ssrLoadModule('/src/lib/render-edit-model.ts');
+  const { selectionCaret, caretSelection } = await server.ssrLoadModule('/src/lib/editor-selection.ts');
+  {
+    const backward = { start: 3, end: 6, direction: 'backward' };
+    assert.deepEqual(selectionCaret(backward), { anchor: 6, head: 3 });
+    assert.deepEqual(caretSelection(selectionCaret(backward)), backward);
+    const before = { content: 'abcdef', selection: backward };
+    const after = { content: 'abcX', selection: { start: 4, end: 4 } };
+    const history = new editorUndo.EditorUndoHistory(before);
+    history.record(before, after);
+    const restored = editorUndo.EditorUndoHistory.fromState(after, history.exportState());
+    assert.deepEqual(restored.undo(after), before);
+    assert.deepEqual(restored.redo(before), after);
+    const native = getInlineEditIndex('  **a👩‍💻b**  ', true);
+    assert.equal(native.boundary(0), 0); // 문단 해석기의 공백 정규화를 가져오지 않는다.
+    assert.equal(native.boundary(3, 1), 4);
+    assert.deepEqual(native.deletion(5, 1), { start: 5, end: 10 });
+    const source = '<p>&amp;👩‍💻</p>';
+    const region = new MarkdownPresentationCache().get(source, [0]).blocks[0];
+    const index = getMarkdownEditIndex(region);
+    assert.equal(index.boundary(source.length, 1), 13);
+    assert.deepEqual(index.deletion(8, 1), { start: 8, end: 13 });
+    assert.deepEqual(renderedDeletion(source, { start: 0, end: source.length, index }, 3, -1), { start: 3, end: 3 });
+    for (const newline of ['\n', '\r\n']) {
+      const folded = `<details>${newline}<summary>Title</summary>${newline}${newline}Hidden${newline}</details>`;
+      const mapped = renderMappedMarkdown(folded, {});
+      const closed = new RenderTextIndex(mapped);
+      assert.equal(closed.boundary(folded.length), folded.indexOf('Title') + 5);
+      const opened = withDisclosureState(closed, [true]);
+      assert.ok(opened.boundary(folded.length) > folded.indexOf('Hidden'));
+    }
+  }
+
+  for (const newline of ['\n', '\r\n']) {
+    for (const prefix of ['> ', '> - ']) {
+      const continuation = prefix === '> ' ? prefix : '>   ';
+      const source = [prefix + '| A | B |', continuation + '| --- | --- |', continuation + '| x\\|y | `c\\|d` |', continuation + '| missing |'].join(newline);
+      const rendered = renderMappedMarkdown(source, {});
+      for (const [text, raw] of [['x|y', 'x\\|y'], ['c|d', 'c\\|d']]) {
+        const index = rendered.texts.indexOf(text);
+        const start = source.indexOf(raw);
+        assert.ok(index >= 0, `missing escaped table text: ${text}`);
+        assert.deepEqual(rendered.maps[index], [start, start + 1, start + 3, start + 4]);
+      }
+      assert.ok(rendered.html.includes('<table>'));
+      assert.ok(rendered.maps.flat().every(Number.isFinite));
+    }
+  }
   {
     const source = '<p><b>abc</b><i>def</i></p>';
     const model = new MarkdownPresentationCache().get(source, getSlowLineStarts(source));

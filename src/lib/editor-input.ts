@@ -41,7 +41,8 @@ export function getSnapshotFromTextareaInput(
   beforeOffsetIndex: TextOffsetIndex,
   textareaValue: string,
   textareaSelectionStart: number,
-  textareaSelectionEnd: number
+  textareaSelectionEnd: number,
+  direction?: string
 ): TextareaInputResult {
   const beforeTextareaValue = beforeOffsetIndex.textareaValue;
   let prefixLength = 0;
@@ -82,7 +83,8 @@ export function getSnapshotFromTextareaInput(
       content,
       selection: {
         start: textareaOffsetToContentOffset(offsetIndex, textareaSelectionStart),
-        end: textareaOffsetToContentOffset(offsetIndex, textareaSelectionEnd)
+        end: textareaOffsetToContentOffset(offsetIndex, textareaSelectionEnd),
+        ...(direction === 'backward' ? { direction: 'backward' as const } : {})
       }
     },
     change,
