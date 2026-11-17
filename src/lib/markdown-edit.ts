@@ -31,7 +31,9 @@ export function replaceMarkdownSelection(content: string, selection: EditorSelec
   const { start, end } = selection;
   const keep: Array<{ start: number; end: number }> = [];
   for (const region of regions) {
-    if (region.end <= start || region.start >= end || start <= region.start && end >= region.end) continue;
+    const blockStart = region.listChunk?.listStart ?? region.start;
+    const blockEnd = region.listChunk?.listEnd ?? region.end;
+    if (region.end <= start || region.start >= end || start <= blockStart && end >= blockEnd) continue;
     let maps: number[][];
     try { maps = getMarkdownEditIndex(region, showHeadingMarkers).mapped.maps; }
     catch { continue; } // 원문 대체 표시와 동일하게 편집한다.

@@ -5,9 +5,10 @@
   import { desktopFiles } from './desktop-file-service';
   import { desktopWindows } from './desktop-window-service';
   import { createDefaultMarkdownRenderSettings, markdownHeadingLevels, type MarkdownRenderSettings } from './markdown-settings';
-  let { source, environment, documentPath, editLabel, onedit, onlink, ondisclosure, disclosureOpen, inline = false, showEdit = true, editable = false, settings = createDefaultMarkdownRenderSettings() }: {
+  let { source, environment, orderedListStart, documentPath, editLabel, onedit, onlink, ondisclosure, disclosureOpen, inline = false, showEdit = true, editable = false, settings = createDefaultMarkdownRenderSettings() }: {
     source: string;
     environment: Record<string, unknown>;
+    orderedListStart?: number;
     documentPath: string | null;
     editLabel: string;
     onedit: () => void;
@@ -19,7 +20,7 @@
     editable?: boolean;
     settings?: MarkdownRenderSettings;
   } = $props();
-  const html = $derived(renderMarkdownRichText(source, environment, inline, editable, !settings.hideHeadingMarkers));
+  const html = $derived(renderMarkdownRichText(source, environment, inline, editable, !settings.hideHeadingMarkers, orderedListStart));
   const headingStyle = $derived(markdownHeadingLevels.map(level =>
     `--rich-h${level}-size:${settings.headings[level].sizePercent}%;--rich-h${level}-weight:${settings.headings[level].fontWeight}`
   ).join(';'));

@@ -14,6 +14,54 @@ async function point(page, text, offset) {
   }, { text, offset });
 }
 
+test('long formatted lists keep their numbering, editable offsets and viewport-sized DOM', async ({ page }) => {
+  await page.goto('/');
+  const editor = page.getByTestId('editor-textarea');
+  const viewport = page.getByTestId('editor-viewport');
+  const items = Array.from({ length: 120 }, (_, index) =>
+    '7. [] **item ' + index + '** [read](https://example.com) `code`');
+  const source = ['## Heading', '', ...items, '', 'After the list'].join('\n');
+  await editor.fill(source);
+  await editor.press('Control+Home');
+  await expect(page.locator('.rich-content ol[start="7"]')).toBeVisible();
+  const renderedItems = page.locator('.rich-content li');
+  await expect.poll(() => renderedItems.count()).toBeLessThan(80);
+
+  const nextChunkItem = page.locator('.rich-content ol[start="23"] strong').filter({ hasText: /^item 16$/ });
+  await expect(nextChunkItem).toBeVisible();
+  const p = await point(page, 'item 16', 5);
+  await page.mouse.click(p.x, p.y);
+  const offset = source.indexOf('item 16') + 5;
+  await expect.poll(() => editor.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart)).toBe(offset);
+  await page.keyboard.insertText('X');
+  await expect(nextChunkItem).toHaveCount(0);
+  await expect(page.locator('.rich-content ol[start="23"] strong').filter({ hasText: /^item X16$/ })).toBeVisible();
+  await expect(editor).toHaveValue(source.slice(0, offset) + 'X' + source.slice(offset));
+  await page.keyboard.press('Control+z');
+  await expect(editor).toHaveValue(source);
+  await expect(nextChunkItem).toBeVisible();
+
+  const previousEnd = source.indexOf(items[15]) + items[15].length;
+  await editor.evaluate((el, offset) => {
+    if (!(el instanceof HTMLTextAreaElement)) throw new Error('Missing editor');
+    el.setSelectionRange(offset, offset);
+  }, previousEnd);
+  await editor.press('ArrowRight');
+  const nextStart = source.indexOf(items[16]) + '7. '.length;
+  await expect.poll(() => editor.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart)).toBe(nextStart);
+  await editor.press('ArrowLeft');
+  await expect.poll(() => editor.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart)).toBe(previousEnd);
+  await editor.press('Delete');
+  await expect(editor).toHaveValue(source.slice(0, nextStart) + source.slice(nextStart + 1));
+  await editor.press('Control+z');
+  await expect(editor).toHaveValue(source);
+
+  await viewport.hover();
+  await page.mouse.wheel(0, 100_000);
+  await expect(page.locator('.rich-content ol[start="119"] strong').last()).toHaveText('item 119');
+  await expect.poll(() => renderedItems.count()).toBeLessThan(80);
+});
+
 test('HTML, quotes, link labels and repeated words edit the clicked source position without leaving render mode', async ({ page }) => {
   await page.goto('/');
   const source = '<p title="같은 말"><strong>같은 말</strong> <em>같은 말</em> &amp; 끝</p>\n\n> 첫 줄 **굵은 말**\n> 둘째 줄\n\n앞 [같은 말](https://example.com/같은말) 뒤';

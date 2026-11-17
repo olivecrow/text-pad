@@ -234,6 +234,8 @@ See [Unicode's word-boundary discussion](https://www.unicode.org/reports/tr29/tr
 
 ## Markdown formatting and HTML
 
+- Long lists rendered in sections around the viewport keep continuous numbering. Caret movement and deletion across those sections use the same source boundaries as a single list.
+
 - Hide bold, italic, and strikethrough markers on ordinary lines while retaining their source offsets; clicking visible text edits at that position and supports Undo.
 - Interpret `**bold *nested italic* end**`, `*italic **nested bold** end*`, `***both***`, and emphasis inside quotation marks. Keep intraword underscores, escaped asterisks, unmatched markers, and markers with adjacent inner whitespace literal. Emphasis markers inside inline or fenced code remain text.
 - Consecutive `>` lines form one quote area with a left border; a bare `>` separates internal paragraphs and `> >` creates a nested quote. Render emphasis, lists, tables, and code within the quote; use Markdown paragraph boundaries for lazy continuation lines and the end of the area. Edit quotes and multiline emphasis directly in render mode, preserving existing source newlines.

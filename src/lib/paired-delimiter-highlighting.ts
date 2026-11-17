@@ -159,3 +159,20 @@ export function getPairedDelimiterHighlightAtCaret(
     ?? getClosingHighlight(left)
     ?? getOpeningHighlight(right);
 }
+
+/** 짝 기호는 줄을 넘지 않는다. 캐럿 옆에 후보가 있을 때만 해당 줄을 해석한다. */
+export function getLocalPairedDelimiterHighlight(content: string, caret: number): PairedDelimiterHighlight | null {
+  if (!Number.isInteger(caret) || caret < 0 || caret > content.length) return null;
+  const left = content[caret - 1] ?? '';
+  const right = content[caret] ?? '';
+  const isDelimiter = (character: string) => character !== '' && `()[]{}"'`.includes(character);
+  if (!isDelimiter(left) && !isDelimiter(right)) return null;
+
+  const candidate = isDelimiter(left) ? caret - 1 : caret;
+  const start = Math.max(content.lastIndexOf('\n', candidate), content.lastIndexOf('\r', candidate)) + 1;
+  let end = candidate + 1;
+  while (end < content.length && content[end] !== '\n' && content[end] !== '\r') end += 1;
+  const line = content.slice(start, end);
+  const match = getPairedDelimiterHighlightAtCaret(line, caret - start, createPairedDelimiterIndex(line));
+  return match && { kind: match.kind, opening: start + match.opening, closing: start + match.closing };
+}

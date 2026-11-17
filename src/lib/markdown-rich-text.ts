@@ -15,11 +15,16 @@ export interface MarkdownRichBlock {
   end: number;
   source: string;
   environment: Record<string, unknown>;
+  listChunk?: { listStart: number; listEnd: number; orderedStart?: number };
 }
 
-export function parseMarkdownRichBlocks(content: string, lineStarts: number[], environment: Record<string, unknown> = {}, regions?: MarkdownRichBlock[]): MarkdownRichBlock[] {
+const maxRichBlockCharacters = 128 * 1024;
+const listChunkLines = 16;
+
+export function parseMarkdownRichBlocks(content: string, lineStarts: number[], environment: Record<string, unknown> = {},
+  regions?: MarkdownRichBlock[], localLists?: MarkdownRichBlock[]): MarkdownRichBlock[] {
   // 웹 주소의 스킴(:)도 자동 링크 해석 후보에 포함한다.
-  if (!/[<!&\[*_~@:]|^ {0,3}[>\-]/mu.test(content)) return [];
+  if (!/[<!&\[*_~@:]|^ {0,3}(?:[>\-#+]|\d+[.)][ \t])/mu.test(content)) return [];
   const tokens = markdown.parse(content, environment);
   const ranges: Array<[number, number]> = [];
   const htmlParts = tokens.filter((token) => token.type === 'html_block' && token.map);
@@ -81,26 +86,74 @@ export function parseMarkdownRichBlocks(content: string, lineStarts: number[], e
     if (content[end - 1] === '\n') end -= content[end - 2] === '\r' ? 2 : 1;
     return { startLine, endLine: endLine - 1, start, end, source: content.slice(start, end), environment };
   };
-  const blocks = merged.slice(0, 500).map(toBlock).filter((block) => block.source.length <= 128 * 1024);
-  if (regions) {
-    regions.push(...blocks);
+  // 화면 밖의 수천 항목을 한 HTML 덩어리로 만들면 한 글자를 바꿔도 전체 DOM이 교체된다.
+  // 빈 줄로 본문 문단을 나누지 않는 최상위 목록은 항목 사이에서 나눌 수 있다.
+  type SplitList = { start: number; end: number; nextLine: number; items: number[]; orderedStart?: number; splittable: boolean };
+  const splitLists = new Map<number, SplitList>();
+  let list: SplitList | undefined;
+  for (const token of tokens) {
+    if (token.level === 0 && token.map && (token.type === 'bullet_list_open' || token.type === 'ordered_list_open')) {
+      list = { start: token.map[0], end: token.map[1], nextLine: token.map[0], items: [], splittable: true,
+        orderedStart: token.type === 'ordered_list_open' ? Number(token.attrGet('start') ?? 1) : undefined };
+    } else if (list) {
+      if (token.type === 'list_item_open' && token.level === 1) {
+        if (!token.map || token.map[0] !== list.nextLine) list.splittable = false;
+        else {
+          list.items.push(token.map[0]);
+          list.nextLine = token.map[1];
+        }
+      } else if (token.level === 0) {
+        if (list.splittable && list.items.length > 1 && list.end - list.start > listChunkLines && list.nextLine === list.end) {
+          splitLists.set(list.start, list);
+        }
+        list = undefined;
+      } else if (token.type === 'html_block' || token.type === 'heading_open'
+        || (token.type === 'paragraph_open' && !token.hidden)
+        || token.children?.some(child => child.type === 'html_inline')) {
+        list.splittable = false;
+      }
+    }
+  }
+  const blocks = merged.slice(0, 500).flatMap((range) => {
+    const block = toBlock(range);
+    if (block.source.length > maxRichBlockCharacters) return [];
+    const split = splitLists.get(range[0]);
+    if (!split || split.end !== range[1]) return [block];
+    const chunks: MarkdownRichBlock[] = [];
+    for (let itemIndex = 0; itemIndex < split.items.length;) {
+      const line = split.items[itemIndex];
+      let endItem = itemIndex + 1;
+      while (endItem < split.items.length && (split.items[endItem + 1] ?? split.end) - line <= listChunkLines) endItem++;
+      const chunk = toBlock([line, split.items[endItem] ?? split.end]);
+      chunk.listChunk = { listStart: block.start, listEnd: block.end,
+        orderedStart: split.orderedStart === undefined ? undefined : split.orderedStart + itemIndex };
+      chunks.push(chunk);
+      itemIndex = endItem;
+    }
+    return chunks;
+  });
+  if (regions || localLists) {
+    regions?.push(...blocks);
     let rangeIndex = 0;
     for (const token of tokens) {
-      if (token.level !== 0 || !token.map || !['paragraph_open', 'heading_open'].includes(token.type)) continue;
+      if (token.level !== 0 || !token.map) continue;
+      const output = token.type === 'paragraph_open' || token.type === 'heading_open' ? regions
+        : token.type === 'bullet_list_open' || token.type === 'ordered_list_open' ? localLists : undefined;
+      if (!output) continue;
       while (rangeIndex < merged.length && merged[rangeIndex][1] <= token.map[0]) rangeIndex++;
       if (rangeIndex < merged.length && merged[rangeIndex][0] < token.map[1]) continue;
-      regions.push(toBlock([token.map[0], token.map[1]]));
+      output.push(toBlock([token.map[0], token.map[1]]));
     }
-    regions.sort((a, b) => a.start - b.start);
+    regions?.sort((a, b) => a.start - b.start);
   }
   return blocks;
 }
 
-export function renderMarkdownRichText(source: string, environment: Record<string, unknown> = {}, inline = false, editable = false, showHeadingMarkers = false): string {
+export function renderMarkdownRichText(source: string, environment: Record<string, unknown> = {}, inline = false, editable = false, showHeadingMarkers = false, orderedListStart?: number): string {
   if (typeof window === 'undefined') return '';
   let mapped: MappedMarkdown | undefined;
   if (editable || inline) {
-    try { mapped = renderMappedMarkdown(source, environment, { inline, showHeadingMarkers }); }
+    try { mapped = renderMappedMarkdown(source, environment, { inline, showHeadingMarkers, orderedListStart }); }
     catch {
       // 해석기가 제공하지 못한 경계를 추측하지 않는다. 이 블록만 편집 가능한 원문으로 표시한다.
       mapped = { html: '', attribute: `data-rich-${crypto.randomUUID()}`, maps: [Array.from({ length: source.length + 1 }, (_, i) => i)], texts: [source] };

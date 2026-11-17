@@ -168,7 +168,7 @@ export interface MappedMarkdown {
   disclosures?: Array<{ bodyStart: number; end: number; open: boolean }>;
 }
 
-export function renderMappedMarkdown(source: string, environment: Record<string, unknown>, options: { inline?: boolean; showHeadingMarkers?: boolean } = {}): MappedMarkdown {
+export function renderMappedMarkdown(source: string, environment: Record<string, unknown>, options: { inline?: boolean; showHeadingMarkers?: boolean; orderedListStart?: number } = {}): MappedMarkdown {
   const normalized = source.replace(/\r\n?/gu, '\n');
   const originalOffsets: number[] = [];
   for (let pos = 0; pos < source.length; pos += 1) {
@@ -268,6 +268,9 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     });
   }
   const tokens = options.inline ? parser.parseInline(normalized, { ...environment }) : parser.parse(normalized, { ...environment });
+  if (options.orderedListStart !== undefined && tokens[0]?.type === 'ordered_list_open') {
+    tokens[0].attrSet('start', String(options.orderedListStart));
+  }
   if (options.inline && tokens[0]) tokens[0].map = [0, lines.length];
   // 실제 HTML 토큰만 검사한다. 코드/이스케이프 안의 태그는 후보가 아니다.
   // 비어 있는 쌍과 아직 닫지 않은 태그를 원문으로 보여 입력 위치를 유지한다.

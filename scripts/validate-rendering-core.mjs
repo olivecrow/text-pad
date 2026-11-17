@@ -378,6 +378,26 @@ try {
     assert.deepEqual(value, new MarkdownPresentationCache().get(next, getSlowLineStarts(next)));
     console.log(`Markdown local edit: ${large.length} chars, ${cache.inspectedCharacters} reparsed, ${elapsed.toFixed(1)} ms`);
   }
+  {
+    const cache = new MarkdownPresentationCache();
+    for (const nested of ['Check `code`', 'Read [docs](https://example.com)']) {
+      const source = Array.from({ length: 600 }, (_, index) => [
+        '## Heading ' + index, '', '- [] Review build ' + index, '  - [V] ' + nested, ''
+      ].join('\r\n')).join('\r\n');
+      cache.get(source, getSlowLineStarts(source));
+      let before = source;
+      for (const section of [0, 440, 550]) {
+        const offset = before.indexOf('Review build ' + section + '\r\n') + 'Review bu'.length;
+        const edited = before.slice(0, offset) + 'X' + before.slice(offset);
+        const updated = cache.get(edited, getSlowLineStarts(edited), textChanges.getTextChange(before, edited));
+        const fresh = new MarkdownPresentationCache().get(edited, getSlowLineStarts(edited));
+        assert.deepEqual(updated, fresh, 'local list edit keeps rich blocks, references and original offsets');
+        // 표시 한도 밖의 링크 목록은 여전히 전체 해석으로 일관성을 확인한다.
+        if (section < 500 || !nested.includes('https://')) assert.ok(cache.inspectedCharacters < 120);
+        before = edited;
+      }
+    }
+  }
   const emphasisCases = [
     ['*italic* **bold**', ['emphasis', 'strong']],
     ['**bold *nested* end**', ['strong', 'emphasis']],
@@ -576,6 +596,14 @@ try {
 
   const nestedDelimiterContent = '({["value"]})';
   const nestedDelimiterIndex = pairedDelimiterHighlighting.createPairedDelimiterIndex(nestedDelimiterContent);
+  const delimiterLines = '[] ["xy"] don\'t\r\n( )\r{ \'{x}\' }\nopen [\nclosed ]\n"end"';
+  const delimiterIndex = pairedDelimiterHighlighting.createPairedDelimiterIndex(delimiterLines);
+  for (let caret = 0; caret <= delimiterLines.length; caret++) {
+    assert.deepEqual(
+      pairedDelimiterHighlighting.getLocalPairedDelimiterHighlight(delimiterLines, caret),
+      pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(delimiterLines, caret, delimiterIndex)
+    );
+  }
   assert.deepEqual(
     pairedDelimiterHighlighting.getPairedDelimiterHighlightAtCaret(
       nestedDelimiterContent,

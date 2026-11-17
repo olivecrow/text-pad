@@ -136,7 +136,8 @@
   import { alignKeyValue, getKeyValueStart } from "$lib/key-value-wrapping";
   import {
     createPairedDelimiterIndex,
-    getPairedDelimiterHighlightAtCaret
+    getPairedDelimiterHighlightAtCaret,
+    getLocalPairedDelimiterHighlight
   } from "$lib/paired-delimiter-highlighting";
   import {
     canInsertMarkdownHeadingReplacementMarker,
@@ -901,7 +902,7 @@
     if (selection.start !== selection.end) return selection;
     if (shouldRenderHighlightLayer && !word) {
       const model = getRenderEditModel(range.head);
-      if (model) return renderedDeletion(fileContent, model, range.head, direction);
+      if (model) return getRenderedDeletion(model, range.head, direction);
     }
     const adjacent = adjacentTextOffset(fileContent, range.head, direction, word);
     return { start: Math.min(range.head, adjacent), end: Math.max(range.head, adjacent) };
@@ -2418,7 +2419,8 @@
   let blockLineHeightOverrides = $derived.by(() => {
     const heights = new Map<number, number>();
     for (const block of markdownRichBlocks) {
-      heights.set(block.startLine, measuredLineHeight * Math.min(6, block.endLine - block.startLine + 1));
+      const lines = block.endLine - block.startLine + 1;
+      heights.set(block.startLine, measuredLineHeight * (block.listChunk ? lines : Math.min(6, lines)));
       for (let line = block.startLine + 1; line <= block.endLine; line += 1) heights.set(line, 0);
     }
     for (const block of markdownTableBlocks) {
@@ -2553,14 +2555,9 @@
   ));
 
   // 렌더 모드 텍스트 및 가상화 파싱 라인 생성
-  let pairedDelimiterIndex = $derived(
-    isRenderMode && isActiveDocumentRenderEnabled
-      ? createPairedDelimiterIndex(fileContent)
-      : null
-  );
   let pairedDelimiterHighlight = $derived(
-    isEditorFocused && !hasEditorSelection && pairedDelimiterIndex
-      ? getPairedDelimiterHighlightAtCaret(fileContent, caretOffset, pairedDelimiterIndex)
+    isEditorFocused && !hasEditorSelection && isRenderMode && isActiveDocumentRenderEnabled
+      ? getLocalPairedDelimiterHighlight(fileContent, caretOffset)
       : null
   );
   let activeDelimitedTableSeparator = $derived<DelimitedTableSeparator | null>(
@@ -2778,7 +2775,8 @@
     // 복합 블록의 중간 원문 줄은 높이 0이다. 보이는 블록은 실제 글자 사각형으로 스크롤한다.
     if (getRichRoot(offset)) return false;
 
-    const lineIndex = findLineIndexForOffset(offset);
+    const sourceLine = findLineIndexForOffset(offset);
+    const lineIndex = markdownRichByLine.get(sourceLine)?.startLine ?? sourceLine;
     const lineStart = lineStartOffsets[lineIndex] ?? 0;
     const lineEnd = getLineEndOffset(fileContent, lineStart);
     const lineTop = getRenderLineTop(lineIndex) + editorTopPadding;
@@ -3762,6 +3760,22 @@
       index: getInlineEditIndex(fileContent.slice(start, end), markdownRenderSettings.hideHeadingMarkers) };
   }
 
+  function getAdjacentListChunkModel(block: MarkdownRichBlock | null, direction: -1 | 1) {
+    if (!block?.listChunk) return null;
+    const line = direction < 0 ? block.startLine - 1 : block.endLine + 1;
+    const adjacent = markdownRichByLine.get(line);
+    return adjacent?.listChunk?.listStart === block.listChunk.listStart ? getRenderEditModel(adjacent.start) : null;
+  }
+
+  function getRenderedDeletion(model: NonNullable<ReturnType<typeof getRenderEditModel>>, offset: number, direction: -1 | 1) {
+    if (model.rich?.listChunk && !model.index.deletion(offset - model.start, direction)) {
+      const next = getAdjacentListChunkModel(model.rich, direction);
+      const boundary = next?.index.deletion(direction < 0 ? next.end - next.start : 0, direction);
+      if (next && boundary) return { start: next.start + boundary.start, end: next.start + boundary.end };
+    }
+    return renderedDeletion(fileContent, model, offset, direction);
+  }
+
   function getSafeRenderedCaretOffset(offset: number, direction: -1 | 0 | 1): number {
     const model = getRenderEditModel(offset);
     if (model?.rich) return model.start + model.index.boundary(offset - model.start, direction);
@@ -4319,16 +4333,17 @@
     const direction = event.key === 'ArrowLeft' || event.key === 'Backspace' ? -1 : 1;
     if (event.key === 'Backspace' || event.key === 'Delete') {
       if (selection.start !== selection.end) return false;
-      const range = renderedDeletion(fileContent, model, caret.head, direction);
+      const range = getRenderedDeletion(model, caret.head, direction);
       event.preventDefault();
       if (range.start !== range.end) commitManualEditorEdit(fileContent.slice(0, range.start) + fileContent.slice(range.end),
         { start: range.start, end: range.start }, { mergeKey: `render-${event.key}`, keepRenderCaretVisible: true });
       return true;
     }
     const adjacent = model.index.adjacent(caret.head - model.start, direction);
-    let target = adjacent === null
-      ? adjacentTextOffset(fileContent, direction < 0 ? model.start : model.end, direction)
-      : model.start + adjacent;
+    const next = adjacent === null ? getAdjacentListChunkModel(model.rich, direction) : null;
+    let target = adjacent !== null ? model.start + adjacent
+      : next ? next.start + next.index.boundary(direction < 0 ? next.end - next.start : 0, direction)
+      : adjacentTextOffset(fileContent, direction < 0 ? model.start : model.end, direction);
     if (!event.shiftKey && selection.start !== selection.end) target = direction < 0 ? selection.start : selection.end;
     target = getSafeRenderedCaretOffset(target, direction);
     event.preventDefault();
@@ -4343,7 +4358,7 @@
     if (isRenderMode) toggleRenderMode();
     await tick();
     textareaEl.focus();
-    setTextareaSelectionFromContent(block.start, block.end);
+    setTextareaSelectionFromContent(block.listChunk?.listStart ?? block.start, block.listChunk?.listEnd ?? block.end);
     updateEditorSelectionState();
   }
 
@@ -7392,7 +7407,8 @@
               <div class="gutter-scroll-container" style="transform: translate3d(0, -{scrollTop}px, 0);">
                 {#each Array(endLine - startLine + 1) as _, idx}
                   {@const lineIdx = startLine + idx}
-                  {#if (!markdownTableByLine.has(lineIdx) || markdownTableByLine.get(lineIdx)?.startLine === lineIdx) && (!markdownRichByLine.has(lineIdx) || markdownRichByLine.get(lineIdx)?.startLine === lineIdx)}
+                  {@const rich = markdownRichByLine.get(lineIdx)}
+                  {#if (!markdownTableByLine.has(lineIdx) || markdownTableByLine.get(lineIdx)?.startLine === lineIdx) && (!rich || (rich.startLine === lineIdx && (!rich.listChunk || rich.start === rich.listChunk.listStart)))}
                   <div
                     class="gutter-line-number"
                     class:diagnostic-line={documentDiagnostic?.line === lineIdx + 1}
@@ -7506,7 +7522,7 @@
               use:observeRenderedLine data-line-index={block.startLine} data-markdown-rich={block.startLine}
               style:top={`${getRenderLineTop(block.startLine) + editorTopPadding}px`}
               style:font-size={`${currentFontSize}pt`} style:line-height={`${measuredLineHeight}px`} style:tab-size={tabSize}>
-              <MarkdownRichBlockView settings={markdownRenderSettings} editable source={block.source} environment={block.environment} documentPath={filePath} editLabel={t('toolbar.switchToSource')}
+              <MarkdownRichBlockView settings={markdownRenderSettings} editable source={block.source} environment={block.environment} orderedListStart={block.listChunk?.orderedStart} documentPath={filePath} editLabel={t('toolbar.switchToSource')}
                 onedit={() => editMarkdownRichBlock(block)} onlink={openMarkdownRichLink}
                 disclosureOpen={markdownDisclosureStates.get(block)} ondisclosure={state => markdownDisclosureStates.set(block, state)} />
             </div>

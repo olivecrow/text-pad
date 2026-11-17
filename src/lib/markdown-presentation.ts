@@ -1,7 +1,7 @@
 import { parseMarkdownRichBlocks, type MarkdownRichBlock } from './markdown-rich-text';
 import { parseMarkdownTables, type MarkdownTableBlock } from './markdown-table';
 import { MAX_INTERACTIVE_TABLE_CELLS } from './render-budgets';
-import type { TextChange } from './text-change';
+import { isTextChangeTransition, type TextChange } from './text-change';
 
 export interface MarkdownPresentation {
   blocks: MarkdownRichBlock[];
@@ -10,14 +10,28 @@ export interface MarkdownPresentation {
   environment: Record<string, unknown>;
 }
 
+function containingRegion(regions: MarkdownRichBlock[], start: number, end: number): MarkdownRichBlock | undefined {
+  let low = 0, high = regions.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (regions[middle].start < start) low = middle + 1;
+    else high = middle;
+  }
+  const region = regions[low - 1];
+  return region && end <= region.end ? region : undefined;
+}
+
 /** 활성 문서 하나의 해석 결과만 보관한다. 구조/참조 정의 변경은 전체 해석한다. */
 export class MarkdownPresentationCache {
   private content: string | null = null;
   private value: MarkdownPresentation = { blocks: [], regions: [], tables: [], environment: {} };
+  // 일반 목록을 국소 해석에만 사용한다. 줄 편집 방식과 표시 결과에는 노출하지 않는다.
+  private localLists: MarkdownRichBlock[] = [];
   inspectedCharacters = 0;
 
   clear(): MarkdownPresentation {
     this.content = null;
+    this.localLists = [];
     return this.value = { blocks: [], regions: [], tables: [], environment: {} };
   }
 
@@ -29,33 +43,50 @@ export class MarkdownPresentationCache {
     this.inspectedCharacters = content.length;
     // 문단 내부의 문자 수정은 줄/블록 경계를 바꾸지 않는다. 마크업, 참조 정의,
     // 빈 줄 및 줄 추가/제거는 이 빠른 경로를 쓰지 않는다.
-    if (old !== null && change && old.length + change.afterText.length - change.beforeText.length === content.length
-      && !/[\r\n<>\[\]`~*_\\|:#!=\-]/u.test(change.beforeText + change.afterText)
-      && old.slice(0, change.rangeStart) + change.afterText + old.slice(change.rangeStart + change.beforeText.length) === content) {
+    if (old !== null && change
+      && !/[\r\n<>\[\]`~*+_\\|:#!=\-]/u.test(change.beforeText + change.afterText)
+      && isTextChangeTransition(old, content, change)) {
       const end = change.rangeStart + change.beforeText.length;
-      const region = previous.regions.find(item => item.start < change.rangeStart && item.end >= end);
-      if (region && region.source.length < 128 * 1024 && !/^ {0,3}\[[^\]]+\]:/mu.test(region.source)) {
+      const list = containingRegion(this.localLists, change.rangeStart, end);
+      const region = containingRegion(previous.regions, change.rangeStart, end) ?? list;
+      if (region && !region.listChunk && region.source.length < 128 * 1024 && !/\]:|\|/u.test(region.source)) {
         const delta = change.afterText.length - change.beforeText.length;
         const source = content.slice(region.start, region.end + delta);
-        const oldLine = old.slice(old.lastIndexOf('\n', change.rangeStart - 1) + 1, end);
+        const lineStart = old.lastIndexOf('\n', change.rangeStart - 1) + 1;
         const beforeEdit = old.slice(region.start, change.rangeStart);
         const insideTag = beforeEdit.lastIndexOf('<') > beforeEdit.lastIndexOf('>');
-        if (!insideTag && source.trim() && oldLine.trim() && source.split(/\r?\n/u).every(line => line.trim())) {
+        // 줄의 첫 단어를 없애거나 앞에 붙이면 목록/블록의 시작 여부가 바뀔 수 있다.
+        if (!insideTag && old.slice(lineStart, change.rangeStart).trim()) {
+          // 마지막 빈 줄을 포함하는 목록은 그 줄의 줄바꿈까지 해석해야 같은 끝 줄을 얻는다.
+          const sourceEnd = region.end + delta;
+          const ending = content.startsWith('\r\n', sourceEnd) ? 2 : content[sourceEnd] === '\n' ? 1 : 0;
+          const localSource = content.slice(region.start, sourceEnd + ending);
           const localStarts = [0];
-          for (let i = 0; i < source.length; i++) if (source[i] === '\n') localStarts.push(i + 1);
-          const next = parseMarkdownRichBlocks(source, localStarts, { ...previous.environment });
-          const current = previous.blocks.filter(block => block.start >= region.start && block.end <= region.end);
-          // 블록 수가 바뀌면 500개 표시 한도 뒤의 블록까지 다시 결정한다.
-          if (next.length === current.length) {
-            const shift = (block: MarkdownRichBlock): MarkdownRichBlock => block.end < region.start ? block
-              : block.start > region.end ? { ...block, start: block.start + delta, end: block.end + delta }
-              : { ...block, end: block.end + delta, source, environment: previous.environment };
+          for (let i = 0; i < localSource.length; i++) if (localSource[i] === '\n') localStarts.push(i + 1);
+          const localLists: MarkdownRichBlock[] = [];
+          const localRegions: MarkdownRichBlock[] = [];
+          const next = parseMarkdownRichBlocks(localSource, localStarts, { ...previous.environment }, localRegions, localLists);
+          const wasRich = previous.blocks.includes(region);
+          const local = wasRich ? next : list ? localLists : localRegions;
+          // 표시 종류, 블록의 끝 또는 500개 표시 한도에 영향을 주면 전체 해석한다.
+          if (next.length === Number(wasRich) && local.length === 1
+            && local[0].start === 0 && local[0].end === source.length) {
+            const replacement = { ...region, end: region.end + delta, source };
+            const shift = (block: MarkdownRichBlock): MarkdownRichBlock => block === region ? replacement
+              : block.start <= region.end || !delta ? block : {
+                ...block, start: block.start + delta, end: block.end + delta,
+                ...(block.listChunk && { listChunk: { ...block.listChunk,
+                  listStart: block.listChunk.listStart + delta, listEnd: block.listChunk.listEnd + delta } })
+              };
             this.inspectedCharacters = source.length;
+            this.localLists = this.localLists.map(shift);
+            const blocks = previous.blocks.map(shift);
+            const shiftedRichBlocks = new Map(previous.blocks.map((block, index) => [block, blocks[index]]));
             return this.value = {
               environment: previous.environment,
-              blocks: previous.blocks.map(shift),
-              regions: previous.regions.map(shift),
-              tables: previous.tables.map(table => table.start > region.end ? {
+              blocks,
+              regions: previous.regions.map(block => shiftedRichBlocks.get(block) ?? shift(block)),
+              tables: previous.tables.map(table => delta && table.start > region.end ? {
                 ...table, start: table.start + delta, end: table.end + delta,
                 cells: table.cells.map(row => row.map(cell => ({ ...cell, start: cell.start + delta, end: cell.end + delta, offsets: cell.offsets.map(offset => offset + delta) })))
               } : table)
@@ -64,9 +95,16 @@ export class MarkdownPresentationCache {
         }
       }
     }
-    const environment = {};
+    let environment: Record<string, unknown> = {};
     const regions: MarkdownRichBlock[] = [];
-    const blocks = parseMarkdownRichBlocks(content, lineStarts, environment, regions);
+    this.localLists = [];
+    const blocks = parseMarkdownRichBlocks(content, lineStarts, environment, regions, this.localLists);
+    // 같은 참조 정의로 해석한 블록은 원문이 그대로라면 HTML도 그대로 둔다.
+    if (JSON.stringify(environment.references) === JSON.stringify(previous.environment.references)) {
+      environment = previous.environment;
+      for (const block of regions) block.environment = environment; // blocks도 같은 객체를 공유한다.
+      for (const list of this.localLists) list.environment = environment;
+    }
     const tables = parseMarkdownTables(content, lineStarts, MAX_INTERACTIVE_TABLE_CELLS)
       .filter(table => !blocks.some(block => block.startLine <= table.endLine && block.endLine >= table.startLine));
     return this.value = { blocks, tables, regions, environment };
