@@ -101,6 +101,34 @@ test('visible line breaks can be deleted without changing surrounding formatting
   }
 });
 
+test('Backspace at the start of a heading below a list keeps the source newline', async ({ page }) => {
+  await page.goto('/');
+  const editor = page.getByTestId('editor-textarea');
+  for (const { list, marker, body } of [
+    { list: '- [] 확인할 항목', marker: '##', body: '제목' },
+    { list: '1. 확인할 항목', marker: '###', body: '[제목](https://example.com)' }
+  ]) {
+    const source = list + '\n' + marker + ' ' + body + '\n다음 줄';
+    await editor.fill(source);
+    const heading = page.locator('.markdown-heading-line, .rich-content h3');
+    await expect(heading).toContainText('제목');
+    await editor.evaluate((el, offset) => {
+      const input = /** @type {HTMLTextAreaElement} */ (el);
+      input.setSelectionRange(offset, offset);
+    }, source.indexOf('제목'));
+    await editor.press('Backspace');
+    await expect(editor).toHaveValue(list + '\n' + marker + body + '\n다음 줄');
+    await expect(heading).toHaveCount(0);
+    await expect.poll(() => editor.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart))
+      .toBe(list.length + 1 + marker.length);
+    await editor.press('Control+z');
+    await expect(editor).toHaveValue(source);
+    await expect.poll(() => editor.evaluate(el => /** @type {HTMLTextAreaElement} */ (el).selectionStart))
+      .toBe(source.indexOf('제목'));
+    await expect(heading).toContainText('제목');
+  }
+});
+
 test('pair deletion has the same meaning in plain, HTML and quoted text', async ({ page }) => {
   await page.goto('/');
   const editor = page.getByTestId('editor-textarea');

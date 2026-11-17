@@ -23,7 +23,7 @@ export class RenderTextIndex {
   private starts: number[];
   private ends: number[];
 
-  constructor(readonly mapped: Pick<MappedMarkdown, 'maps' | 'texts' | 'codeRanges' | 'inlineCodeRanges' | 'disclosures'>,
+  constructor(readonly mapped: Pick<MappedMarkdown, 'maps' | 'texts' | 'codeRanges' | 'inlineCodeRanges' | 'hiddenHeadingMarkers' | 'disclosures'>,
     disclosureState: readonly boolean[] = []) {
     const boundaries = new Set<number>();
     const characters: EditorSelection[] = [];
@@ -80,10 +80,19 @@ export function renderedDeletion(content: string, region: RenderEditRegion, offs
   direction: -1 | 1): EditorSelection {
   const lineStart = offset > 0 ? content.lastIndexOf('\n', offset - 1) + 1 : 0;
   const prefix = content.slice(lineStart, offset);
-  const inCode = region.index.mapped.codeRanges?.some(range => offset - region.start >= range.start
-    && offset - region.start <= range.end);
+  const localOffset = offset - region.start;
+  const inCode = region.index.mapped.codeRanges?.some(range => localOffset >= range.start && localOffset <= range.end);
   if (!inCode && direction < 0 && /^(?: {0,3}>[ \t]?)+$/u.test(prefix)) return { start: lineStart, end: offset };
-  const local = region.index.deletion(offset - region.start, direction);
+  const local = region.index.deletion(localOffset, direction);
+  if (direction < 0) {
+    const marker = region.index.mapped.hiddenHeadingMarkers?.find(marker =>
+      marker.start >= lineStart - region.start && marker.start < localOffset && (!local || local.end <= marker.start));
+    if (marker) {
+      // 본문 첫 글자 앞에서는 숨긴 제목 표식의 끝을 편집하고 위 줄의 개행을 보존한다.
+      const end = region.start + Math.min(localOffset, marker.end);
+      return { start: end - 1, end };
+    }
+  }
   if (local) return { start: region.start + local.start, end: region.start + local.end };
   const edge = direction < 0 ? region.start : region.end;
   const adjacent = adjacentTextOffset(content, edge, direction);
@@ -128,6 +137,7 @@ export function getInlineEditIndex(source: string, hideHeadingMarkers: boolean):
   if (cached) return cached;
   const maps: number[][] = [], texts: string[] = [];
   const inlineCodeRanges: EditorSelection[] = [];
+  const hiddenHeadingMarkers: EditorSelection[] = [];
   let offset = 0;
   function visit(tokens: Token[]) {
     for (const token of tokens) {
@@ -141,13 +151,15 @@ export function getInlineEditIndex(source: string, hideHeadingMarkers: boolean):
         const text = token.text ?? '';
         if (!token.hiddenSyntax && text) {
           texts.push(text); maps.push(Array.from({ length: text.length + 1 }, (_, i) => offset + i));
+        } else if (token.type === 'heading-marker' && text) {
+          hiddenHeadingMarkers.push({ start: offset, end: offset + text.length });
         }
         offset += text.length;
       }
     }
   }
   visit(tokenizeLine(source, { markdown: { hideHeadingMarkers }, suppressCodeFence: true }));
-  const index = new RenderTextIndex({ maps, texts, inlineCodeRanges });
+  const index = new RenderTextIndex({ maps, texts, inlineCodeRanges, hiddenHeadingMarkers });
   // 긴 줄 편집 이력을 256개씩 붙잡지 않는다. 큰 단일 줄은 마지막 인덱스만 재사용한다.
   while (inlineIndexes.size && (inlineIndexes.size >= 256 || inlineCacheCharacters + key.length > 256 * 1024)) {
     const oldest = inlineIndexes.keys().next().value!;

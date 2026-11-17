@@ -165,6 +165,7 @@ export interface MappedMarkdown {
   texts: string[];
   codeRanges?: Array<{ start: number; end: number }>;
   inlineCodeRanges?: Position[];
+  hiddenHeadingMarkers?: Position[];
   disclosures?: Array<{ bodyStart: number; end: number; open: boolean }>;
 }
 
@@ -184,6 +185,7 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
   const texts: string[] = [];
   const codeRanges: Array<{ start: number; end: number }> = [];
   const inlineCodeRanges: Position[] = [];
+  const hiddenHeadingMarkers: Position[] = [];
   let codeDepth = 0;
   const disclosures: NonNullable<MappedMarkdown['disclosures']> = [];
   const disclosureStack: number[] = [];
@@ -392,17 +394,22 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     } else if (renderer.rules[token.type]) html += renderer.rules[token.type](tokens, i, parser.options, environment, renderer);
     else {
       html += renderer.renderToken(tokens, i, parser.options);
-      if (token.type === 'heading_open' && token.map && options.showHeadingMarkers && token.markup.startsWith('#')) {
+      if (token.type === 'heading_open' && token.map && token.markup.startsWith('#')) {
         const line = lines[token.map[0]];
         const marker = line.match(/^(?: {0,3}>[ \t]?)* {0,3}(#{1,6}[ \t]+)/u);
         if (marker) {
           const start = starts[token.map[0]] + marker[0].length - marker[1].length;
-          html += mapped(marker[1], Array.from({ length: marker[1].length + 1 }, (_, n) => start + n));
+          const end = start + marker[1].length;
+          if (options.showHeadingMarkers) {
+            html += mapped(marker[1], Array.from({ length: marker[1].length + 1 }, (_, n) => start + n));
+          } else {
+            hiddenHeadingMarkers.push({ start: originalOffsets[start], end: originalOffsets[end] });
+          }
         }
       }
     }
   }
-  return { html, attribute, maps, texts, codeRanges, inlineCodeRanges,
+  return { html, attribute, maps, texts, codeRanges, inlineCodeRanges, hiddenHeadingMarkers,
     disclosures: disclosures.map(range => ({ ...range,
       bodyStart: originalOffsets[range.bodyStart], end: originalOffsets[range.end] })) };
 }

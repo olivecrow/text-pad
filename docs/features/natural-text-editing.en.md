@@ -213,6 +213,7 @@ See [Unicode's word-boundary discussion](https://www.unicode.org/reports/tr29/tr
 - Typing `#` itself remains ordinary character input. Applying a heading or replacing an existing level with Space keeps the new heading marker and space as Markdown source, and records the complete Space input and old-marker replacement as one Undo action.
 - Do not intercept heading application when there is an active selection, IME composition is in progress, Ctrl, Alt, or Meta is pressed, the marker is not after no more than three leading spaces at line start, there are seven or more hashes, the line is inside a fenced code block, or the editor is in source mode.
 - Pointer placement, arrow movement, and selection on a heading map the actual rendered glyph widths back to source positions. Do not leave a collapsed caret trapped inside a hidden marker range.
+- With heading markers hidden, Backspace just before the first character of the heading text deletes one whitespace character from the end of the marker. For example, `## |Heading` directly below a list item becomes `##|Heading` on the same line. Undo restores the original heading format and caret position.
 - Links, emphasis, and inline code inside a heading keep their exact source ranges, and saved text never receives display-only size, weight, color, or divider data.
 
 ## Markdown tables
