@@ -44,6 +44,7 @@ export interface AppSettingsSnapshot {
     language: LanguagePreference;
     theme: ThemeMode;
     defaultNewDocumentFormat: DocumentFormatId;
+    separateVirtualDesktopWindows: boolean;
   };
   source: {
     fontSize: number;
@@ -387,7 +388,7 @@ function applySettingsCandidate(
 
   const general = getSection(candidate, 'general', statistics);
   if (general) {
-    markUnknownKeys(general, ['language', 'theme', 'defaultNewDocumentFormat'], statistics);
+    markUnknownKeys(general, ['language', 'theme', 'defaultNewDocumentFormat', 'separateVirtualDesktopWindows'], statistics);
     applyValue(general, 'language', normalizeLanguage, (value) => settings.general.language = value, statistics);
     applyValue(general, 'theme', normalizeTheme, (value) => settings.general.theme = value, statistics);
     applyValue(
@@ -397,6 +398,8 @@ function applySettingsCandidate(
       (value) => settings.general.defaultNewDocumentFormat = value,
       statistics
     );
+    applyValue(general, 'separateVirtualDesktopWindows', normalizeBoolean,
+      (value) => settings.general.separateVirtualDesktopWindows = value, statistics);
   }
 
   const source = getSection(candidate, 'source', statistics);

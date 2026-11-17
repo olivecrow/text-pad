@@ -10,6 +10,7 @@
     "core:window:default",
     "core:window:allow-hide",
     "allow-open-file-dialog",
+    "allow-set-separate-virtual-desktop-windows",
     "allow-save-file-dialog"
   ]
 }

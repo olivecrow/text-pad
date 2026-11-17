@@ -74,6 +74,8 @@
     currentRenderFontFamilyCSS: string;
     languagePreference: LanguagePreference;
     defaultNewDocumentFormat: DocumentFormatId;
+    separateVirtualDesktopWindows: boolean;
+    supportsVirtualDesktopWindows: boolean;
     sourceFontSize: number;
     renderFontSize: number;
     tabSize: number;
@@ -103,6 +105,8 @@
     currentRenderFontFamilyCSS,
     languagePreference = $bindable(),
     defaultNewDocumentFormat = $bindable(),
+    separateVirtualDesktopWindows = $bindable(),
+    supportsVirtualDesktopWindows,
     sourceFontSize = $bindable(),
     renderFontSize = $bindable(),
     tabSize = $bindable(),
@@ -570,6 +574,20 @@
           </div>
           <p class="settings-category-note">{t('settings.defaultNewDocumentFormatDescription')}</p>
         </div>
+        {#if supportsVirtualDesktopWindows}
+          <div class="settings-section">
+            <h2 class="section-title">{t('settings.windowSection')}</h2>
+            <label class="settings-check-row" for="separate-virtual-desktop-windows">
+              <input id="separate-virtual-desktop-windows" class="settings-checkbox" type="checkbox"
+                bind:checked={separateVirtualDesktopWindows} aria-labelledby="separate-virtual-desktop-windows-title"
+                aria-describedby="separate-virtual-desktop-windows-description"/>
+              <span class="settings-check-copy">
+                <span class="settings-check-title" id="separate-virtual-desktop-windows-title">{t('settings.separateVirtualDesktopWindows')}</span>
+                <span class="settings-check-description" id="separate-virtual-desktop-windows-description">{t('settings.separateVirtualDesktopWindowsDescription')}</span>
+              </span>
+            </label>
+          </div>
+        {/if}
       {:else if activeSettingsView === 'transfer'}
         <div class="settings-section">
           <h2 class="section-title">{t('settings.transfer.title')}</h2>

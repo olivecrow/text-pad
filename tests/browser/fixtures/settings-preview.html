@@ -22,6 +22,7 @@ document.body.classList.toggle('theme-dark', currentTheme === 'dark');
 mount(SettingsWindow, {target: document.body, props: {
   locale, systemLocale: 'ko', currentTheme, currentRenderFontFamilyCSS: 'Consolas, monospace',
   languagePreference: 'ko', defaultNewDocumentFormat: 'markdown', sourceFontSize: 11, renderFontSize: 11,
+  supportsVirtualDesktopWindows: true, separateVirtualDesktopWindows: true,
   tabSize: 4, renderFontFamily: 'notepad', renderAutoPairEditing: true, renderAutoPairAllowedFollowingStrings: ['=', ':'],
   renderAutoSymbolSubstitution: true, renderPreserveIndentOnEnter: true,
   delimitedTableHighlightHeader: true, delimitedTableShowRowIndices: true, delimitedTableAnimateReorder: true, delimitedTableReorderDurationMs: 200,

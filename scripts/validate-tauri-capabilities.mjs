@@ -57,6 +57,7 @@ const expectedGeneratedCommands = [
   'read_document_image',
   'get_startup_files',
   'take_pending_open_files',
+  'set_separate_virtual_desktop_windows',
   'open_file_dialog',
   'open_file_paths',
   'save_file_dialog',
@@ -96,6 +97,7 @@ const expectedSettingsPermissions = [
   'core:window:default',
   'core:window:allow-hide',
   commandPermission('open_file_dialog'),
+  commandPermission('set_separate_virtual_desktop_windows'),
   commandPermission('save_file_dialog')
 ];
 assertExactSet(settingsCapability.windows, ['settings'], 'Settings capability windows');

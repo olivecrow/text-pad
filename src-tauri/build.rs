@@ -9,6 +9,7 @@ fn main() {
         "setup_editor_window_wheel",
         "read_document_image",
         "take_pending_open_files",
+        "set_separate_virtual_desktop_windows",
     ]);
     let attributes = tauri_build::Attributes::new().app_manifest(app_manifest);
 

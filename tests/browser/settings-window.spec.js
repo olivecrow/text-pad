@@ -60,6 +60,22 @@ test('설정 검색은 숨은 항목과 확장자를 찾고 키보드로 이동�
   await expect(page.getByRole('navigation').getByRole('button').last()).toBeFocused();
 });
 
+test('가상 데스크톱 창 설정은 기본으로 켜져 있고 일반 설정과 검색에서 조작할 수 있다', async ({ page }) => {
+  await openSettings(page);
+  const separate = page.getByRole('checkbox', { name: '가상 데스크톱마다 별도 창 사용' });
+  await expect(separate).toBeChecked();
+  await separate.uncheck();
+  await page.getByRole('navigation').getByRole('button', { name: '색상', exact: true }).click();
+  const search = page.getByRole('searchbox', { name: '설정 검색' });
+  await search.fill('가상 데스크톱');
+  await search.press('Enter');
+  await expect(page.locator('#settings-page-title')).toHaveText('일반');
+  await expect(separate).not.toBeChecked();
+  await expect(separate).toBeInViewport();
+  await separate.check();
+  await expect(separate).toBeChecked();
+});
+
 test('글자 크기 미리보기와 입력 보조 종속 항목이 설정값에 따라 바뀐다', async ({ page }) => {
   await openSettings(page);
   const navigation = page.getByRole('navigation');

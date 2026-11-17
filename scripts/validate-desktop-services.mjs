@@ -43,6 +43,7 @@ try {
 
   assert.deepEqual(await files.getStartupFiles(), [openedFile]);
   assert.deepEqual(await files.takePendingOpenFiles([openedFile.path]), [{ kind: 'activate', path: openedFile.path }]);
+  await files.setSeparateVirtualDesktopWindows(false);
   assert.deepEqual(await files.openFileDialog(filters), openedFile);
   assert.deepEqual(await files.openFilePaths([openedFile.path]), [openedFile]);
   assert.deepEqual(await files.saveFileDialog(saveOptions), savedFile);
@@ -53,6 +54,7 @@ try {
   assert.deepEqual(calls, [
     { command: 'get_startup_files', args: undefined },
     { command: 'take_pending_open_files', args: { paths: [openedFile.path] } },
+    { command: 'set_separate_virtual_desktop_windows', args: { enabled: false } },
     { command: 'open_file_dialog', args: { filters } },
     { command: 'open_file_paths', args: { paths: [openedFile.path] } },
     { command: 'save_file_dialog', args: saveOptions },

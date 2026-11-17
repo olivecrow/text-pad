@@ -298,6 +298,9 @@
   let systemLocale = $state<AppLocale>(resolveSystemLocale(isBrowser ? navigator.languages : []));
   let languagePreference = $state<LanguagePreference>('system');
   let defaultNewDocumentFormat = $state<DocumentFormatId>(defaultNewDocumentFormatId);
+  let separateVirtualDesktopWindows = $state(true);
+  const supportsVirtualDesktopWindows = isBrowser && /\bWindows\b/i.test(navigator.userAgent);
+  let windowRoutingUpdate = Promise.resolve();
   let locale = $derived<AppLocale>(languagePreference === 'system' ? systemLocale : languagePreference);
   let untitledFileName = $derived(translate(locale, 'app.untitled'));
 
@@ -1889,6 +1892,18 @@
     settingsRepository.save(getCurrentSettingsSnapshot());
   });
 
+  function syncWindowRouting(enabled: boolean): Promise<void> {
+    windowRoutingUpdate = windowRoutingUpdate
+      .then(() => desktopFiles.setSeparateVirtualDesktopWindows(enabled))
+      .catch(error => console.error('Failed to update virtual desktop window routing:', error));
+    return windowRoutingUpdate;
+  }
+
+  $effect(() => {
+    if (!supportsVirtualDesktopWindows || !canPersistPreferences || !isSettingsWindow || !hasTauriRuntime()) return;
+    void syncWindowRouting(separateVirtualDesktopWindows);
+  });
+
   // 마운트 시 독립 설정창 감지 및 메인 창 종료 시퀀스
   $effect(() => {
     if (!isBrowser || !hasTauriRuntime()) return;
@@ -2109,7 +2124,8 @@
       general: {
         language: languagePreference,
         theme: themeMode,
-        defaultNewDocumentFormat
+        defaultNewDocumentFormat,
+        separateVirtualDesktopWindows
       },
       source: {
         fontSize: sourceFontSize
@@ -2146,6 +2162,7 @@
     languagePreference = settings.general.language;
     themeMode = settings.general.theme;
     defaultNewDocumentFormat = settings.general.defaultNewDocumentFormat;
+    separateVirtualDesktopWindows = settings.general.separateVirtualDesktopWindows;
     sourceFontSize = settings.source.fontSize;
     renderFontSize = settings.render.fontSize;
     tabSize = settings.render.indentWidth;
@@ -3249,6 +3266,7 @@
       return;
     }
     if (label === 'main') {
+      if (supportsVirtualDesktopWindows) await syncWindowRouting(separateVirtualDesktopWindows);
       await loadStartupFiles();
     }
     try {
@@ -7029,6 +7047,8 @@
     {currentRenderFontFamilyCSS}
     bind:languagePreference
     bind:defaultNewDocumentFormat
+    bind:separateVirtualDesktopWindows
+    {supportsVirtualDesktopWindows}
     bind:sourceFontSize
     bind:renderFontSize
     bind:tabSize

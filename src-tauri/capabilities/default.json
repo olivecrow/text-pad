@@ -22,6 +22,7 @@
     "allow-setup-editor-window-wheel",
     "allow-read-document-image",
     "allow-take-pending-open-files",
+    "allow-set-separate-virtual-desktop-windows",
     "core:window:default",
     "core:window:allow-set-size",
     "core:window:allow-set-position",

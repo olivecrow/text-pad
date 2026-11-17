@@ -43,6 +43,7 @@ export interface DesktopFileService {
   readDocumentImage(documentPath: string, relativePath: string): Promise<{ mimeType: string; bytes: number[] }>;
   getStartupFiles(): Promise<OpenedTextFile[]>;
   takePendingOpenFiles(paths: readonly string[]): Promise<FileOpenRequest[]>;
+  setSeparateVirtualDesktopWindows(enabled: boolean): Promise<void>;
   openFileDialog(filters: readonly DesktopFileDialogFilter[]): Promise<OpenedTextFile | null>;
   openFilePaths(paths: readonly string[]): Promise<OpenedTextFile[]>;
   saveFileDialog(options: SaveTextFileOptions): Promise<SavedTextFile | null>;
@@ -54,6 +55,7 @@ export const desktopFileCommands = {
   readDocumentImage: 'read_document_image',
   getStartupFiles: 'get_startup_files',
   takePendingOpenFiles: 'take_pending_open_files',
+  setSeparateVirtualDesktopWindows: 'set_separate_virtual_desktop_windows',
   openFileDialog: 'open_file_dialog',
   openFilePaths: 'open_file_paths',
   saveFileDialog: 'save_file_dialog',
@@ -71,6 +73,9 @@ export function createDesktopFileService(invokeCommand: DesktopInvoke): DesktopF
     },
     takePendingOpenFiles(paths) {
       return invokeCommand(desktopFileCommands.takePendingOpenFiles, { paths });
+    },
+    setSeparateVirtualDesktopWindows(enabled) {
+      return invokeCommand(desktopFileCommands.setSeparateVirtualDesktopWindows, { enabled });
     },
 
     openFileDialog(filters: readonly DesktopFileDialogFilter[]): Promise<OpenedTextFile | null> {

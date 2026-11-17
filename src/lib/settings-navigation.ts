@@ -75,8 +75,9 @@ export function getSettingsPages(locale: AppLocale): SettingsPage[] {
   const pages: SettingsPage[] = [
     page('general', 'settings.general', [], 'settings.generalDescription', [
       'settings.languageLabel', 'settings.languageDescription', 'settings.defaultNewDocumentFormat',
-      'settings.defaultNewDocumentFormatDescription'
-    ], 'language locale system new document default format 언어 기본 새 문서'),
+      'settings.defaultNewDocumentFormatDescription', 'settings.windowSection', 'settings.separateVirtualDesktopWindows',
+      'settings.separateVirtualDesktopWindowsDescription'
+    ], 'language locale system new document default format virtual desktop window 언어 기본 새 문서 가상 데스크탑 창'),
     page('sourceAppearance', 'settings.fontSettings', ['settings.editor', 'settings.sourceMode'], 'settings.sourceDescription', [
       'settings.fontSize'
     ], 'source font size 원문 글꼴 크기'),

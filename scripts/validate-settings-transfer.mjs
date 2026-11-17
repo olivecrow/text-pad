@@ -68,7 +68,8 @@ try {
     general: {
       language: 'system',
       theme: 'dark',
-      defaultNewDocumentFormat: 'markdown'
+      defaultNewDocumentFormat: 'markdown',
+      separateVirtualDesktopWindows: true
     },
     source: { fontSize: 11 },
     render: {
@@ -97,12 +98,14 @@ try {
 
   const extraTheme = await server.ssrLoadModule('/src/lib/render-theme-fields.ts');
   const customized = structuredClone(current);
+  customized.general.separateVirtualDesktopWindows = false;
   for (const item of extraTheme.additionalRenderThemeFields) {
     customized.render.colors.light[item.field] = '#123456';
     customized.render.colors.dark[item.field] = '#ABCDEF';
   }
   const customizedRoundTrip = transfer.parseSettingsFile(transfer.serializeSettingsFile(customized, '0.5.1'), current);
   assert.equal(customizedRoundTrip.ok, true);
+  assert.equal(customizedRoundTrip.settings.general.separateVirtualDesktopWindows, false);
   assert.deepEqual(customizedRoundTrip.settings.render.colors, customized.render.colors);
   const oldPaletteFile = transfer.parseSettingsFile(JSON.stringify({format: 'text-pad-settings', schemaVersion: 1,
     settings: {render: {colors: {light: {comment: '#102030', selection: 'invalid'}}}}}), customized);
@@ -147,6 +150,7 @@ try {
   assert.equal(legacy.sourceVersion, 0);
   assert.equal(legacy.settings.general.language, 'ko');
   assert.equal(legacy.settings.general.defaultNewDocumentFormat, 'tsv');
+  assert.equal(legacy.settings.general.separateVirtualDesktopWindows, true);
   assert.equal(legacy.settings.source.fontSize, 16);
   assert.equal(legacy.settings.render.fontSize, 18);
   assert.equal(legacy.settings.render.indentWidth, 8);
@@ -275,6 +279,7 @@ try {
 
   const remote = structuredClone(current);
   remote.general.theme = 'light';
+  remote.general.separateVirtualDesktopWindows = false;
   remote.source.fontSize = 24;
   const remoteValue = JSON.stringify({
     format: transfer.settingsFileFormat,

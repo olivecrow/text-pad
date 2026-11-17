@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-separate-virtual-desktop-windows"
+description = "Enables the set_separate_virtual_desktop_windows command without any pre-configured scope."
+commands.allow = ["set_separate_virtual_desktop_windows"]
+
+[[permission]]
+identifier = "deny-set-separate-virtual-desktop-windows"
+description = "Denies the set_separate_virtual_desktop_windows command without any pre-configured scope."
+commands.deny = ["set_separate_virtual_desktop_windows"]

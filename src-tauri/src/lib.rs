@@ -8,7 +8,7 @@ use file_commands::{
     get_startup_files, open_file_dialog, open_file_paths, read_document_image, save_file_dialog,
     write_file_content, ApprovedFilePaths,
 };
-use instance::{take_pending_open_files, EditorOpenRequests};
+use instance::{set_separate_virtual_desktop_windows, take_pending_open_files, EditorOpenRequests};
 use tauri::Manager;
 
 #[tauri::command]
@@ -78,6 +78,7 @@ pub fn run() {
             setup_editor_window_wheel,
             read_document_image,
             take_pending_open_files,
+            set_separate_virtual_desktop_windows,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
