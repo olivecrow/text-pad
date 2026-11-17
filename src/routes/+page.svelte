@@ -499,6 +499,9 @@
   let hasFocusedEditorOnStartup = false;
   let hasShownMainWindowOnStartup = false;
   let hasLoadedStartupFiles = false;
+  let receivesFileOpenRequests = $state(false);
+  let lastScheduledOpenPaths = '';
+  let pendingFileOpenTask = Promise.resolve();
   let hasCheckedForUpdateOnStartup = false;
   let startupUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   let transientStatusTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2999,6 +3002,44 @@
     }
   }
 
+  function getOpenTabPaths(): string[] {
+    return tabs.flatMap(tab => tab.filePath === null ? [] : [tab.filePath]);
+  }
+
+  function syncFileOpenRequests(replaceFirstBlank = false): Promise<void> {
+    pendingFileOpenTask = pendingFileOpenTask.then(async () => {
+      let requests = await desktopFiles.takePendingOpenFiles(getOpenTabPaths());
+      while (requests.length > 0) {
+        captureActiveEditorView();
+        errorMsg = null;
+        for (const request of requests) {
+          if (request.kind === 'open') {
+            openFile(request.file, replaceFirstBlank);
+            replaceFirstBlank = false;
+          } else if (request.kind === 'activate') {
+            const tab = findOpenFileTab(tabs, request.path);
+            if (tab) activateTab(tab.id);
+          } else {
+            errorMsg = localizeError('error.readFile', request.error);
+          }
+        }
+        // 새 탭 목록을 보내고, 파일을 여는 동안 들어온 다음 요청도 가져온다.
+        requests = await desktopFiles.takePendingOpenFiles(getOpenTabPaths());
+      }
+    }).catch(error => {
+      errorMsg = localizeError('error.readFile', error);
+    });
+    return pendingFileOpenTask;
+  }
+
+  $effect(() => {
+    if (!receivesFileOpenRequests) return;
+    const paths = JSON.stringify(getOpenTabPaths());
+    if (paths === lastScheduledOpenPaths) return;
+    lastScheduledOpenPaths = paths;
+    void syncFileOpenRequests();
+  });
+
   function focusEditorOnStartup() {
     if (!textareaEl || hasFocusedEditorOnStartup) return;
     textareaEl.focus({ preventScroll: true });
@@ -3196,7 +3237,8 @@
   }
 
   async function initializeMainWindowAfterStartup() {
-    if (getCurrentEditorWindowLabel() !== 'main') {
+    const label = getCurrentEditorWindowLabel();
+    if (label !== 'main') {
       void desktopFiles.setupEditorWindowWheel().catch((error) => {
         console.error('Failed to initialize horizontal wheel for editor window:', error);
       });
@@ -3206,8 +3248,17 @@
       await desktopWindows.current().destroy().catch(() => {});
       return;
     }
-    if (!startupTabTransferMetadata) {
+    if (label === 'main') {
       await loadStartupFiles();
+    }
+    try {
+      await desktopWindows.current().listen('text-pad-open-files-requested', () => {
+        if (receivesFileOpenRequests) void syncFileOpenRequests();
+      });
+      await syncFileOpenRequests(label.startsWith('editor-launch-'));
+      receivesFileOpenRequests = true;
+    } catch (error) {
+      console.error('Failed to initialize file open requests:', error);
     }
     await showMainWindowAfterStartup();
     void refreshInstalledAppVersion();

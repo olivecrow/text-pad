@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use tempfile::NamedTempFile;
 
@@ -315,7 +315,7 @@ fn target_parent_dir(file_path: &Path) -> io::Result<&Path> {
     }
 }
 
-fn normalize_existing_file_path(file_path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn normalize_existing_file_path(file_path: &Path) -> io::Result<PathBuf> {
     if !file_path.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -631,11 +631,18 @@ fn write_file_content_to_path(
         .map_err(|err| err.error)
 }
 
-fn open_file(
+pub(crate) fn open_file(
     file_path: &Path,
     approved_paths: &ApprovedFilePaths,
 ) -> Result<OpenedFile, FileCommandError> {
     let normalized = normalize_existing_file_path(file_path).map_err(FileCommandError::from_io)?;
+    open_normalized_file(normalized, approved_paths)
+}
+
+fn open_normalized_file(
+    normalized: PathBuf,
+    approved_paths: &ApprovedFilePaths,
+) -> Result<OpenedFile, FileCommandError> {
     let decoded = read_file_content_from_path(&normalized)?;
     approved_paths.approve(normalized.clone())?;
 
@@ -644,6 +651,19 @@ fn open_file(
         content: decoded.content,
         encoding: decoded.encoding,
     })
+}
+
+fn open_file_for_editor(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    file_path: &Path,
+    approved_paths: &ApprovedFilePaths,
+) -> Result<Option<OpenedFile>, FileCommandError> {
+    let normalized = normalize_existing_file_path(file_path).map_err(FileCommandError::from_io)?;
+    if crate::instance::reuse_open_file(app, window, &normalized) {
+        return Ok(None);
+    }
+    open_normalized_file(normalized, approved_paths).map(Some)
 }
 
 pub(crate) fn open_existing_files<I>(
@@ -663,6 +683,7 @@ where
 #[tauri::command]
 pub async fn open_file_dialog(
     app: AppHandle,
+    window: WebviewWindow,
     filters: Vec<DialogFilter>,
     approved_paths: State<'_, ApprovedFilePaths>,
 ) -> Result<Option<OpenedFile>, FileCommandError> {
@@ -688,7 +709,7 @@ pub async fn open_file_dialog(
         )
     })?;
 
-    open_file(&file_path, &approved_paths).map(Some)
+    open_file_for_editor(&app, &window, &file_path, &approved_paths)
 }
 
 #[tauri::command]
@@ -699,11 +720,18 @@ pub fn get_startup_files(
 }
 
 #[tauri::command]
-pub fn open_file_paths(
+pub async fn open_file_paths(
+    app: AppHandle,
+    window: WebviewWindow,
     paths: Vec<String>,
     approved_paths: State<'_, ApprovedFilePaths>,
 ) -> Result<Vec<OpenedFile>, FileCommandError> {
-    open_existing_files(paths.into_iter().map(PathBuf::from), &approved_paths)
+    paths
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .filter_map(|path| open_file_for_editor(&app, &window, &path, &approved_paths).transpose())
+        .collect()
 }
 
 #[tauri::command]

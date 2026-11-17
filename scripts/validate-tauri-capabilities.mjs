@@ -56,6 +56,7 @@ const generatedCommands = [...tauriBuildSource.matchAll(/^\s*"([a-z_]+)",?$/gm)]
 const expectedGeneratedCommands = [
   'read_document_image',
   'get_startup_files',
+  'take_pending_open_files',
   'open_file_dialog',
   'open_file_paths',
   'save_file_dialog',

@@ -17,6 +17,7 @@ try {
   const responses = new Map([
     [desktopFileModule.desktopFileCommands.readDocumentImage, { mimeType: 'image/png', bytes: [137, 80, 78, 71] }],
     [desktopFileModule.desktopFileCommands.getStartupFiles, [openedFile]],
+    [desktopFileModule.desktopFileCommands.takePendingOpenFiles, [{ kind: 'activate', path: openedFile.path }]],
     [desktopFileModule.desktopFileCommands.openFileDialog, openedFile],
     [desktopFileModule.desktopFileCommands.openFilePaths, [openedFile]],
     [desktopFileModule.desktopFileCommands.saveFileDialog, savedFile],
@@ -41,6 +42,7 @@ try {
   };
 
   assert.deepEqual(await files.getStartupFiles(), [openedFile]);
+  assert.deepEqual(await files.takePendingOpenFiles([openedFile.path]), [{ kind: 'activate', path: openedFile.path }]);
   assert.deepEqual(await files.openFileDialog(filters), openedFile);
   assert.deepEqual(await files.openFilePaths([openedFile.path]), [openedFile]);
   assert.deepEqual(await files.saveFileDialog(saveOptions), savedFile);
@@ -50,6 +52,7 @@ try {
 
   assert.deepEqual(calls, [
     { command: 'get_startup_files', args: undefined },
+    { command: 'take_pending_open_files', args: { paths: [openedFile.path] } },
     { command: 'open_file_dialog', args: { filters } },
     { command: 'open_file_paths', args: { paths: [openedFile.path] } },
     { command: 'save_file_dialog', args: saveOptions },

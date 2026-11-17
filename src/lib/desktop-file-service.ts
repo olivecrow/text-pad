@@ -12,6 +12,10 @@ export interface OpenedTextFile {
   encoding: TextEncoding;
 }
 
+export type FileOpenRequest = { kind: 'activate'; path: string }
+  | { kind: 'open'; file: OpenedTextFile }
+  | { kind: 'error'; error: { code: string; message: string } };
+
 export interface SavedTextFile {
   path: string;
   encoding: TextEncoding;
@@ -38,6 +42,7 @@ export type DesktopInvoke = <T>(
 export interface DesktopFileService {
   readDocumentImage(documentPath: string, relativePath: string): Promise<{ mimeType: string; bytes: number[] }>;
   getStartupFiles(): Promise<OpenedTextFile[]>;
+  takePendingOpenFiles(paths: readonly string[]): Promise<FileOpenRequest[]>;
   openFileDialog(filters: readonly DesktopFileDialogFilter[]): Promise<OpenedTextFile | null>;
   openFilePaths(paths: readonly string[]): Promise<OpenedTextFile[]>;
   saveFileDialog(options: SaveTextFileOptions): Promise<SavedTextFile | null>;
@@ -48,6 +53,7 @@ export interface DesktopFileService {
 export const desktopFileCommands = {
   readDocumentImage: 'read_document_image',
   getStartupFiles: 'get_startup_files',
+  takePendingOpenFiles: 'take_pending_open_files',
   openFileDialog: 'open_file_dialog',
   openFilePaths: 'open_file_paths',
   saveFileDialog: 'save_file_dialog',
@@ -62,6 +68,9 @@ export function createDesktopFileService(invokeCommand: DesktopInvoke): DesktopF
     },
     getStartupFiles(): Promise<OpenedTextFile[]> {
       return invokeCommand(desktopFileCommands.getStartupFiles);
+    },
+    takePendingOpenFiles(paths) {
+      return invokeCommand(desktopFileCommands.takePendingOpenFiles, { paths });
     },
 
     openFileDialog(filters: readonly DesktopFileDialogFilter[]): Promise<OpenedTextFile | null> {

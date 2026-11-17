@@ -4,7 +4,7 @@ This file lists the open-source packages included in the Windows application and
 the package-local license and notice texts that were available at build time.
 The corresponding package license governs each component.
 
-Generated package count: 326
+Generated package count: 327
 Packages without a package-local license file: 13
 
 ================================================================================
@@ -1785,6 +1785,15 @@ License text 6: LICENSE_MIT
 
 ================================================================================
 
+tauri-plugin-single-instance 2.4.5 (Cargo)
+License: Apache-2.0 OR MIT
+Source: https://github.com/tauri-apps/plugins-workspace
+License text 7: LICENSE.spdx
+License text 5: LICENSE_APACHE-2.0
+License text 162: LICENSE_MIT
+
+================================================================================
+
 tauri-plugin-updater 2.10.1 (Cargo)
 License: Apache-2.0 OR MIT
 Source: https://github.com/tauri-apps/plugins-workspace
@@ -1831,7 +1840,7 @@ tempfile 3.27.0 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/Stebalien/tempfile
 License text 20: LICENSE-APACHE
-License text 162: LICENSE-MIT
+License text 163: LICENSE-MIT
 
 ================================================================================
 
@@ -1839,7 +1848,7 @@ tendril 0.5.0 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/servo/html5ever
 License text 20: LICENSE-APACHE
-License text 163: LICENSE-MIT
+License text 164: LICENSE-MIT
 
 ================================================================================
 
@@ -1879,7 +1888,7 @@ time 0.3.47 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/time-rs/time
 License text 5: LICENSE-Apache
-License text 164: LICENSE-MIT
+License text 165: LICENSE-MIT
 
 ================================================================================
 
@@ -1887,7 +1896,7 @@ time-core 0.1.8 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/time-rs/time
 License text 5: LICENSE-Apache
-License text 164: LICENSE-MIT
+License text 165: LICENSE-MIT
 
 ================================================================================
 
@@ -1895,7 +1904,7 @@ time-macros 0.2.27 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/time-rs/time
 License text 5: LICENSE-Apache
-License text 164: LICENSE-MIT
+License text 165: LICENSE-MIT
 
 ================================================================================
 
@@ -1911,38 +1920,38 @@ License: Zlib OR Apache-2.0 OR MIT
 Source: https://github.com/Lokathor/tinyvec
 License text 54: LICENSE-APACHE.md
 License text 44: LICENSE-MIT.md
-License text 165: LICENSE-ZLIB.md
+License text 166: LICENSE-ZLIB.md
 
 ================================================================================
 
 tinyvec_macros 0.1.1 (Cargo)
 License: MIT OR Apache-2.0 OR Zlib
 Source: https://github.com/Soveu/tinyvec_macros
-License text 166: LICENSE-APACHE.md
-License text 167: LICENSE-MIT.md
-License text 168: LICENSE-ZLIB.md
+License text 167: LICENSE-APACHE.md
+License text 168: LICENSE-MIT.md
+License text 169: LICENSE-ZLIB.md
 
 ================================================================================
 
 tokio 1.52.3 (Cargo)
 License: MIT
 Source: https://github.com/tokio-rs/tokio
-License text 169: LICENSE
+License text 170: LICENSE
 
 ================================================================================
 
 tokio-rustls 0.26.4 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/rustls/tokio-rustls
-License text 170: LICENSE-APACHE
-License text 171: LICENSE-MIT
+License text 171: LICENSE-APACHE
+License text 172: LICENSE-MIT
 
 ================================================================================
 
 tokio-util 0.7.18 (Cargo)
 License: MIT
 Source: https://github.com/tokio-rs/tokio
-License text 169: LICENSE
+License text 170: LICENSE
 
 ================================================================================
 
@@ -1981,49 +1990,49 @@ License text 143: LICENSE-MIT
 tower 0.5.3 (Cargo)
 License: MIT
 Source: https://github.com/tower-rs/tower
-License text 172: LICENSE
+License text 173: LICENSE
 
 ================================================================================
 
 tower-http 0.6.11 (Cargo)
 License: MIT
 Source: https://github.com/tower-rs/tower-http
-License text 173: LICENSE
+License text 174: LICENSE
 
 ================================================================================
 
 tower-layer 0.3.3 (Cargo)
 License: MIT
 Source: https://github.com/tower-rs/tower
-License text 172: LICENSE
+License text 173: LICENSE
 
 ================================================================================
 
 tower-service 0.3.3 (Cargo)
 License: MIT
 Source: https://github.com/tower-rs/tower
-License text 172: LICENSE
+License text 173: LICENSE
 
 ================================================================================
 
 tracing 0.1.44 (Cargo)
 License: MIT
 Source: https://github.com/tokio-rs/tracing
-License text 174: LICENSE
+License text 175: LICENSE
 
 ================================================================================
 
 tracing-attributes 0.1.31 (Cargo)
 License: MIT
 Source: https://github.com/tokio-rs/tracing
-License text 174: LICENSE
+License text 175: LICENSE
 
 ================================================================================
 
 tracing-core 0.1.36 (Cargo)
 License: MIT
 Source: https://github.com/tokio-rs/tracing
-License text 174: LICENSE
+License text 175: LICENSE
 
 ================================================================================
 
@@ -2032,14 +2041,14 @@ License: MIT OR Apache-2.0
 Source: https://github.com/tauri-apps/tray-icon
 License text 20: LICENSE-APACHE
 License text 113: LICENSE-MIT
-License text 175: LICENSE.spdx
+License text 176: LICENSE.spdx
 
 ================================================================================
 
 try-lock 0.2.5 (Cargo)
 License: MIT
 Source: https://github.com/seanmonstar/try-lock
-License text 176: LICENSE
+License text 177: LICENSE
 
 ================================================================================
 
@@ -2054,9 +2063,9 @@ License text 12: LICENSE-MIT
 typenum 1.20.0 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/paholg/typenum
-License text 177: LICENSE
-License text 178: LICENSE-APACHE
-License text 179: LICENSE-MIT
+License text 178: LICENSE
+License text 179: LICENSE-APACHE
+License text 180: LICENSE-MIT
 
 ================================================================================
 
@@ -2107,14 +2116,14 @@ License: (MIT OR Apache-2.0) AND Unicode-3.0
 Source: https://github.com/dtolnay/unicode-ident
 License text 16: LICENSE-APACHE
 License text 12: LICENSE-MIT
-License text 180: LICENSE-UNICODE
+License text 181: LICENSE-UNICODE
 
 ================================================================================
 
 unicode-segmentation 1.13.2 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/unicode-rs/unicode-segmentation
-License text 181: COPYRIGHT
+License text 182: COPYRIGHT
 License text 20: LICENSE-APACHE
 License text 75: LICENSE-MIT
 
@@ -2123,7 +2132,7 @@ License text 75: LICENSE-MIT
 untrusted 0.9.0 (Cargo)
 License: ISC
 Source: https://github.com/briansmith/untrusted
-License text 182: LICENSE.txt
+License text 183: LICENSE.txt
 
 ================================================================================
 
@@ -2138,7 +2147,7 @@ License text 90: LICENSE-MIT
 urlpattern 0.3.0 (Cargo)
 License: MIT
 Source: https://github.com/denoland/rust-urlpattern
-License text 183: LICENSE
+License text 184: LICENSE
 
 ================================================================================
 
@@ -2153,9 +2162,9 @@ License text 12: LICENSE-MIT
 utf8_iter 1.0.4 (Cargo)
 License: Apache-2.0 OR MIT
 Source: https://github.com/hsivonen/utf8_iter
-License text 184: COPYRIGHT
+License text 185: COPYRIGHT
 License text 54: LICENSE-APACHE
-License text 185: LICENSE-MIT
+License text 186: LICENSE-MIT
 
 ================================================================================
 
@@ -2163,7 +2172,7 @@ uuid 1.23.1 (Cargo)
 License: Apache-2.0 OR MIT
 Source: https://github.com/uuid-rs/uuid
 License text 20: LICENSE-APACHE
-License text 186: LICENSE-MIT
+License text 187: LICENSE-MIT
 
 ================================================================================
 
@@ -2178,7 +2187,7 @@ License text 14: LICENSE-MIT
 want 0.3.1 (Cargo)
 License: MIT
 Source: https://github.com/seanmonstar/want
-License text 187: LICENSE
+License text 188: LICENSE
 
 ================================================================================
 
@@ -2223,15 +2232,15 @@ window-vibrancy 0.6.0 (Cargo)
 License: Apache-2.0 OR MIT
 Source: https://github.com/tauri-apps/tauri-plugin-vibrancy
 License text 20: LICENSE-APACHE
-License text 188: LICENSE-MIT
-License text 189: LICENSE.spdx
+License text 189: LICENSE-MIT
+License text 190: LICENSE.spdx
 
 ================================================================================
 
 windows 0.61.3 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2239,7 +2248,7 @@ License text 8: license-mit
 windows_x86_64_msvc 0.52.6 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2247,7 +2256,7 @@ License text 8: license-mit
 windows_x86_64_msvc 0.53.1 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2255,7 +2264,7 @@ License text 8: license-mit
 windows-collections 0.2.0 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2263,7 +2272,7 @@ License text 8: license-mit
 windows-core 0.61.2 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2271,7 +2280,7 @@ License text 8: license-mit
 windows-future 0.2.1 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2279,7 +2288,7 @@ License text 8: license-mit
 windows-implement 0.60.2 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2287,7 +2296,7 @@ License text 8: license-mit
 windows-interface 0.59.3 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2295,7 +2304,7 @@ License text 8: license-mit
 windows-link 0.1.3 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2303,7 +2312,7 @@ License text 8: license-mit
 windows-link 0.2.1 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2311,7 +2320,7 @@ License text 8: license-mit
 windows-numerics 0.2.0 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2319,7 +2328,7 @@ License text 8: license-mit
 windows-result 0.3.4 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2327,7 +2336,7 @@ License text 8: license-mit
 windows-strings 0.4.2 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2335,7 +2344,7 @@ License text 8: license-mit
 windows-sys 0.59.0 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2343,7 +2352,7 @@ License text 8: license-mit
 windows-sys 0.60.2 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2351,7 +2360,7 @@ License text 8: license-mit
 windows-sys 0.61.2 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2359,7 +2368,7 @@ License text 8: license-mit
 windows-targets 0.52.6 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2367,7 +2376,7 @@ License text 8: license-mit
 windows-targets 0.53.5 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2375,7 +2384,7 @@ License text 8: license-mit
 windows-threading 0.1.0 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2383,7 +2392,7 @@ License text 8: license-mit
 windows-version 0.1.7 (Cargo)
 License: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
-License text 190: license-apache-2.0
+License text 191: license-apache-2.0
 License text 8: license-mit
 
 ================================================================================
@@ -2391,7 +2400,7 @@ License text 8: license-mit
 winnow 1.0.3 (Cargo)
 License: MIT
 Source: https://github.com/winnow-rs/winnow
-License text 191: LICENSE-MIT
+License text 192: LICENSE-MIT
 
 ================================================================================
 
@@ -2406,8 +2415,8 @@ wry 0.55.1 (Cargo)
 License: Apache-2.0 OR MIT
 Source: https://github.com/tauri-apps/wry
 License text 20: LICENSE-APACHE
-License text 192: LICENSE-MIT
-License text 193: LICENSE.spdx
+License text 193: LICENSE-MIT
+License text 194: LICENSE.spdx
 
 ================================================================================
 
@@ -2421,7 +2430,7 @@ License text 17: LICENSE
 yaml 2.9.0 (npm)
 License: ISC
 Source: https://github.com/eemeli/yaml
-License text 194: LICENSE
+License text 195: LICENSE
 
 ================================================================================
 
@@ -2457,7 +2466,7 @@ zeroize 1.9.0 (Cargo)
 License: Apache-2.0 OR MIT
 Source: https://github.com/RustCrypto/utils
 License text 54: LICENSE-APACHE
-License text 195: LICENSE-MIT
+License text 196: LICENSE-MIT
 
 ================================================================================
 
@@ -2485,14 +2494,14 @@ License text 88: LICENSE
 zimmerframe 1.1.4 (npm)
 License: MIT
 Source: https://github.com/sveltejs/zimmerframe
-License text 196: LICENSE
+License text 197: LICENSE
 
 ================================================================================
 
 zip 4.6.1 (Cargo)
 License: MIT
 Source: https://github.com/zip-rs/zip2.git
-License text 197: LICENSE
+License text 198: LICENSE
 
 ================================================================================
 
@@ -12362,37 +12371,33 @@ Creator: Person: Daniel Thompson-Yvetot
 
 LICENSE TEXT 162
 --------------------------------------------------------------------------------
-Copyright (c) 2015 Steven Allen
+MIT License
 
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
+Copyright (c) 2017 - Present The Tauri Programme in the Commons Conservancy
 
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ================================================================================
 
 LICENSE TEXT 163
 --------------------------------------------------------------------------------
-Copyright (c) 2015 Keegan McAllister
+Copyright (c) 2015 Steven Allen
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -12422,6 +12427,36 @@ DEALINGS IN THE SOFTWARE.
 
 LICENSE TEXT 164
 --------------------------------------------------------------------------------
+Copyright (c) 2015 Keegan McAllister
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
+LICENSE TEXT 165
+--------------------------------------------------------------------------------
 Copyright (c) Jacob Pratt et al.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -12444,7 +12479,7 @@ SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 165
+LICENSE TEXT 166
 --------------------------------------------------------------------------------
 Copyright (c) 2019 Daniel "Lokathor" Gee.
 
@@ -12460,7 +12495,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 
 ================================================================================
 
-LICENSE TEXT 166
+LICENSE TEXT 167
 --------------------------------------------------------------------------------
 Apache License
                            Version 2.0, January 2004
@@ -12666,7 +12701,7 @@ Apache License
 
 ================================================================================
 
-LICENSE TEXT 167
+LICENSE TEXT 168
 --------------------------------------------------------------------------------
 MIT License
 
@@ -12692,7 +12727,7 @@ SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 168
+LICENSE TEXT 169
 --------------------------------------------------------------------------------
 zlib License
 
@@ -12716,7 +12751,7 @@ freely, subject to the following restrictions:
 
 ================================================================================
 
-LICENSE TEXT 169
+LICENSE TEXT 170
 --------------------------------------------------------------------------------
 MIT License
 
@@ -12742,7 +12777,7 @@ SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 170
+LICENSE TEXT 171
 --------------------------------------------------------------------------------
 Apache License
                         Version 2.0, January 2004
@@ -12948,7 +12983,7 @@ limitations under the License.
 
 ================================================================================
 
-LICENSE TEXT 171
+LICENSE TEXT 172
 --------------------------------------------------------------------------------
 Copyright (c) 2017 quininer kel
 
@@ -12978,7 +13013,7 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 172
+LICENSE TEXT 173
 --------------------------------------------------------------------------------
 Copyright (c) 2019 Tower Contributors
 
@@ -13008,7 +13043,7 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 173
+LICENSE TEXT 174
 --------------------------------------------------------------------------------
 Copyright (c) 2019-2021 Tower Contributors
 
@@ -13038,7 +13073,7 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 174
+LICENSE TEXT 175
 --------------------------------------------------------------------------------
 Copyright (c) 2019 Tokio Contributors
 
@@ -13068,7 +13103,7 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 175
+LICENSE TEXT 176
 --------------------------------------------------------------------------------
 SPDXVersion: SPDX-2.1
 DataLicense: CC0-1.0
@@ -13092,7 +13127,7 @@ Creator: Person: Daniel Thompson-Yvetot
 
 ================================================================================
 
-LICENSE TEXT 176
+LICENSE TEXT 177
 --------------------------------------------------------------------------------
 Copyright (c) 2018-2023 Sean McArthur
 Copyright (c) 2016 Alex Crichton
@@ -13117,13 +13152,13 @@ THE SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 177
+LICENSE TEXT 178
 --------------------------------------------------------------------------------
 MIT OR Apache-2.0
 
 ================================================================================
 
-LICENSE TEXT 178
+LICENSE TEXT 179
 --------------------------------------------------------------------------------
 Apache License
                         Version 2.0, January 2004
@@ -13329,7 +13364,7 @@ limitations under the License.
 
 ================================================================================
 
-LICENSE TEXT 179
+LICENSE TEXT 180
 --------------------------------------------------------------------------------
 The MIT License (MIT)
 
@@ -13355,7 +13390,7 @@ SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 180
+LICENSE TEXT 181
 --------------------------------------------------------------------------------
 UNICODE LICENSE V3
 
@@ -13399,7 +13434,7 @@ authorization of the copyright holder.
 
 ================================================================================
 
-LICENSE TEXT 181
+LICENSE TEXT 182
 --------------------------------------------------------------------------------
 Licensed under the Apache License, Version 2.0
 <LICENSE-APACHE or
@@ -13411,7 +13446,7 @@ according to those terms.
 
 ================================================================================
 
-LICENSE TEXT 182
+LICENSE TEXT 183
 --------------------------------------------------------------------------------
 // Copyright 2015-2016 Brian Smith.
 //
@@ -13429,7 +13464,7 @@ LICENSE TEXT 182
 
 ================================================================================
 
-LICENSE TEXT 183
+LICENSE TEXT 184
 --------------------------------------------------------------------------------
 MIT License
 
@@ -13455,7 +13490,7 @@ SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 184
+LICENSE TEXT 185
 --------------------------------------------------------------------------------
 Copyright Mozilla Foundation
 
@@ -13502,7 +13537,7 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 
 ================================================================================
 
-LICENSE TEXT 185
+LICENSE TEXT 186
 --------------------------------------------------------------------------------
 Copyright Mozilla Foundation
 
@@ -13532,7 +13567,7 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 186
+LICENSE TEXT 187
 --------------------------------------------------------------------------------
 Copyright (c) 2014 The Rust Project Developers
 Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon
@@ -13563,7 +13598,7 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 187
+LICENSE TEXT 188
 --------------------------------------------------------------------------------
 Copyright (c) 2018-2019 Sean McArthur
 
@@ -13587,7 +13622,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 188
+LICENSE TEXT 189
 --------------------------------------------------------------------------------
 MIT License
 
@@ -13613,7 +13648,7 @@ SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 189
+LICENSE TEXT 190
 --------------------------------------------------------------------------------
 SPDXVersion: SPDX-2.1
 DataLicense: CC0-1.0
@@ -13637,7 +13672,7 @@ Creator: Person: Daniel Thompson-Yvetot
 
 ================================================================================
 
-LICENSE TEXT 190
+LICENSE TEXT 191
 --------------------------------------------------------------------------------
 Apache License
                            Version 2.0, January 2004
@@ -13843,7 +13878,7 @@ Apache License
 
 ================================================================================
 
-LICENSE TEXT 191
+LICENSE TEXT 192
 --------------------------------------------------------------------------------
 Permission is hereby granted, free of charge, to any person obtaining
 a copy of this software and associated documentation files (the
@@ -13866,7 +13901,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 192
+LICENSE TEXT 193
 --------------------------------------------------------------------------------
 MIT License
 
@@ -13892,7 +13927,7 @@ SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 193
+LICENSE TEXT 194
 --------------------------------------------------------------------------------
 SPDXVersion: SPDX-2.1
 DataLicense: CC0-1.0
@@ -13917,7 +13952,7 @@ Creator: Person: Daniel Thompson-Yvetot
 
 ================================================================================
 
-LICENSE TEXT 194
+LICENSE TEXT 195
 --------------------------------------------------------------------------------
 Copyright Eemeli Aro <eemeli@gmail.com>
 
@@ -13935,7 +13970,7 @@ THIS SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 195
+LICENSE TEXT 196
 --------------------------------------------------------------------------------
 Copyright (c) 2018-2026 The RustCrypto Project Developers
 
@@ -13965,7 +14000,7 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 196
+LICENSE TEXT 197
 --------------------------------------------------------------------------------
 MIT License
 
@@ -13991,7 +14026,7 @@ SOFTWARE.
 
 ================================================================================
 
-LICENSE TEXT 197
+LICENSE TEXT 198
 --------------------------------------------------------------------------------
 The MIT License (MIT)
 
