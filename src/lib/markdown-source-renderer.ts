@@ -10,6 +10,7 @@ export const markdownHtmlTags = 'a abbr b bdi bdo blockquote br caption center c
 export const markdownContainerTags = new Set(markdownHtmlTags.filter(tag => !['br', 'hr', 'img', 'wbr', 'col'].includes(tag)));
 type Position = { start: number; end: number };
 const positions = new WeakMap<Token, Position>();
+const inlineCodePositions = new WeakMap<Token, Position>();
 const pendingStarts = new WeakMap<object, number>();
 const BaseState = parser.inline.State;
 parser.inline.State = class extends BaseState {
@@ -43,6 +44,7 @@ for (const { name, fn } of [...parser.inline.ruler.__rules__]) {
       if (name === 'emphasis' || name === 'strikethrough') {
         from = marker; end = marker += token.content.length;
       } else if (name === 'backticks' && token.type === 'code_inline') {
+        inlineCodePositions.set(token, { start, end });
         from += token.markup.length;
         end -= token.markup.length;
         const raw = state.src.slice(from, end).replace(/\n/gu, ' ');
@@ -162,6 +164,7 @@ export interface MappedMarkdown {
   maps: number[][];
   texts: string[];
   codeRanges?: Array<{ start: number; end: number }>;
+  inlineCodeRanges?: Position[];
   disclosures?: Array<{ bodyStart: number; end: number; open: boolean }>;
 }
 
@@ -180,6 +183,7 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
   const maps: number[][] = [];
   const texts: string[] = [];
   const codeRanges: Array<{ start: number; end: number }> = [];
+  const inlineCodeRanges: Position[] = [];
   let codeDepth = 0;
   const disclosures: NonNullable<MappedMarkdown['disclosures']> = [];
   const disclosureStack: number[] = [];
@@ -302,6 +306,7 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
   const renderer = new Renderer();
   renderer.rules = { ...parser.renderer.rules };
   let inlineOffsets: number[] = [];
+  const trailingSpaces = /[ \t]+(?=\n|$)/y;
   const textRule = (items: Token[], index: number) => {
     const token = items[index];
     const pos = positions.get(token);
@@ -310,7 +315,17 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     const boundaries = slice.length === token.content.length + 1 ? slice
       : [slice[0], ...Array(Math.max(0, token.content.length - 1)).fill(slice[0]), slice.at(-1)!];
     const text = mapped(token.content, boundaries);
-    return token.type === 'code_inline' ? `<code>${text}</code>` : text;
+    const inlineCode = inlineCodePositions.get(token);
+    if (!inlineCode) return text;
+
+    const start = inlineOffsets[inlineCode.start];
+    const end = inlineOffsets[inlineCode.end - 1] + 1;
+    inlineCodeRanges.push({ start: originalOffsets[start], end: originalOffsets[end] });
+    // 문단의 끝에서 해석기가 생략한 공백도 코드 바깥에서 연속 입력할 때 위치를 유지한다.
+    trailingSpaces.lastIndex = end;
+    const spaces = index === items.length - 1 ? trailingSpaces.exec(normalized)?.[0] : undefined;
+    const after = spaces ? mapped('\u200b'.repeat(spaces.length), Array.from({ length: spaces.length + 1 }, (_, i) => end + i)) : '';
+    return `<code>${text}</code>${after}`;
   };
   for (const type of ['text', 'text_special', 'code_inline']) renderer.rules[type] = textRule;
   renderer.rules.link_open = (items, index, options) => {
@@ -384,7 +399,7 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
       }
     }
   }
-  return { html, attribute, maps, texts, codeRanges,
+  return { html, attribute, maps, texts, codeRanges, inlineCodeRanges,
     disclosures: disclosures.map(range => ({ ...range,
       bodyStart: originalOffsets[range.bodyStart], end: originalOffsets[range.end] })) };
 }

@@ -163,6 +163,7 @@ The behavioral contract is:
 - Delete a confirmed empty bracket pair on the same source line even when nested, as in `((|))`. Also delete the central pair of symmetric repeated quotes such as `""|""`. Do not guess a match for unpaired characters.
 - Automatic insertion, paired deletion, and backtick code-block expansion are each one Undo action. Skipping over a closing character does not change source text and therefore creates no Undo record.
 - In render mode, hidden inline backticks and fenced-code delimiter lines are not collapsed-caret stops. Pointer and arrow-key movement skips to a visible inline-code boundary or to an adjacent editable line inside or outside the fenced block.
+- In Markdown render mode, pressing the left or right arrow at the corresponding inner edge of inline code crosses the entire backtick delimiter in one step. Text can be inserted immediately outside inline code even at the start or end of a line.
 - Pressing Backspace within the leading whitespace of the line immediately after a closing fence keeps the code content and line structure, but reduces each run of opening and closing backticks to two characters so only fenced-block syntax is disabled. Place the caret immediately after the two remaining closing backticks, at the position where the removed backticks were. Selection deletion that includes both fences and the complete block remains allowed. Disabling the fences is one Undo action.
 
 ## Highlighting paired brackets and quotation marks

@@ -16,6 +16,39 @@ const selection = editor => editor.evaluate(element => {
   return [input.selectionStart, input.selectionEnd];
 });
 
+test('렌더 모드 방향키로 인라인 코드의 양쪽 백틱 바깥에 입력할 수 있다', async ({ page }) => {
+  await page.goto('/');
+  const editor = page.getByTestId('editor-textarea');
+  for (const { prefix, delimiter } of [{ prefix: '', delimiter: '`' }, { prefix: '> ', delimiter: '``' }]) {
+    const source = `${prefix}${delimiter}abc${delimiter}`;
+    const bodyStart = prefix.length + delimiter.length;
+    const bodyEnd = bodyStart + 3;
+    await editor.fill(source);
+    await select(editor, bodyEnd);
+    await editor.press('Shift+ArrowRight');
+    await expect.poll(() => selection(editor), source).toEqual([bodyEnd, source.length]);
+    await editor.press('ArrowLeft');
+    await editor.press('ArrowRight');
+    await expect.poll(() => selection(editor), source).toEqual([source.length, source.length]);
+    await expect.poll(async () => {
+      const code = await page.locator('.rich-content code, .hl-code').boundingBox();
+      const caret = await page.locator('.steady-editor-caret').boundingBox();
+      return code && caret ? Math.abs(caret.x - (code.x + code.width)) : Infinity;
+    }, source).toBeLessThan(1);
+    await editor.press('Space');
+    await page.keyboard.insertText('뒤');
+    await expect(editor).toHaveValue(`${source} 뒤`);
+    await editor.press('Control+z');
+    await expect(editor).toHaveValue(source);
+
+    await select(editor, bodyStart);
+    await editor.press('ArrowLeft');
+    await expect.poll(() => selection(editor), source).toEqual([prefix.length, prefix.length]);
+    await page.keyboard.insertText('앞 ');
+    await expect(editor).toHaveValue(`${prefix}앞 ${delimiter}abc${delimiter}`);
+  }
+});
+
 for (const format of ['Text', 'Markdown']) {
   test(`${format}: 글머리 본문 시작의 왼쪽 화살표는 이전 줄 끝으로 이동한다`, async ({ page }) => {
     await page.goto('/');

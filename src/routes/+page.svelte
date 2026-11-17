@@ -6248,8 +6248,21 @@
     const rich = markdownRichByLine.get(findLineIndexForOffset(offset));
     if (rich) {
       const root = getRichRoot(offset);
-      const boundary = root && getRichTextBoundary(root, offset - rich.start);
-      return boundary ? getRenderedCaretRectAtBoundary(boundary) : null;
+      if (!root) return null;
+      const local = offset - rich.start;
+      const boundary = getRichTextBoundary(root, local);
+      if (!boundary) return null;
+      const rect = getRenderedCaretRectAtBoundary(boundary);
+      if (!rect || boundary.source === local) return rect;
+
+      const codeRange = getRenderEditModel(offset)?.index.mapped.inlineCodeRanges?.find(range =>
+        (local === range.start || local === range.end) && boundary.source > range.start && boundary.source < range.end);
+      const code = codeRange && boundary.node.parentElement?.closest('code');
+      if (!code) return rect;
+      const rects = Array.from(code.getClientRects());
+      const opening = local === codeRange.start;
+      const edge = opening ? rects[0] : rects.at(-1);
+      return edge ? new DOMRect(opening ? edge.left : edge.right, rect.top, rect.width, rect.height) : rect;
     }
 
     const lineIndex = findLineIndexForOffset(offset);

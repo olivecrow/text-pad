@@ -23,20 +23,27 @@ export class RenderTextIndex {
   private starts: number[];
   private ends: number[];
 
-  constructor(readonly mapped: Pick<MappedMarkdown, 'maps' | 'texts' | 'codeRanges' | 'disclosures'>,
+  constructor(readonly mapped: Pick<MappedMarkdown, 'maps' | 'texts' | 'codeRanges' | 'inlineCodeRanges' | 'disclosures'>,
     disclosureState: readonly boolean[] = []) {
     const boundaries = new Set<number>();
     const characters: EditorSelection[] = [];
+    const insideClosedDisclosure = (start: number, end: number) => mapped.disclosures?.some((range, i) =>
+      !(disclosureState[i] ?? range.open) && start >= range.bodyStart && end <= range.end);
     mapped.texts.forEach((text, index) => {
       const offsets = mapped.maps[index];
       for (const segment of graphemes.segment(text)) {
         const start = offsets[segment.index], end = offsets[segment.index + segment.segment.length];
-        if (mapped.disclosures?.some((range, i) => !(disclosureState[i] ?? range.open)
-          && start >= range.bodyStart && end <= range.end)) continue;
+        if (insideClosedDisclosure(start, end)) continue;
         boundaries.add(start); boundaries.add(end);
         if (end > start) characters.push({ start, end });
       }
     });
+    // 숨긴 백틱은 삭제할 표시 문자가 아니지만, 그 바깥은 일반 텍스트를 입력할 수 있다.
+    for (const { start, end } of mapped.inlineCodeRanges ?? []) {
+      if (insideClosedDisclosure(start, end)) continue;
+      boundaries.add(start);
+      boundaries.add(end);
+    }
     this.boundaries = [...boundaries].sort((a, b) => a - b);
     this.characters = characters.sort((a, b) => a.start - b.start || a.end - b.end);
     this.starts = this.characters.map(range => range.start);
@@ -120,11 +127,17 @@ export function getInlineEditIndex(source: string, hideHeadingMarkers: boolean):
   const cached = inlineIndexes.get(key);
   if (cached) return cached;
   const maps: number[][] = [], texts: string[] = [];
+  const inlineCodeRanges: EditorSelection[] = [];
   let offset = 0;
   function visit(tokens: Token[]) {
     for (const token of tokens) {
-      if (token.children) visit(token.children);
-      else {
+      if (token.children) {
+        const start = offset;
+        visit(token.children);
+        if (token.type === 'code' && token.children[0]?.hiddenSyntax && token.children.at(-1)?.hiddenSyntax) {
+          inlineCodeRanges.push({ start, end: offset });
+        }
+      } else {
         const text = token.text ?? '';
         if (!token.hiddenSyntax && text) {
           texts.push(text); maps.push(Array.from({ length: text.length + 1 }, (_, i) => offset + i));
@@ -134,7 +147,7 @@ export function getInlineEditIndex(source: string, hideHeadingMarkers: boolean):
     }
   }
   visit(tokenizeLine(source, { markdown: { hideHeadingMarkers }, suppressCodeFence: true }));
-  const index = new RenderTextIndex({ maps, texts });
+  const index = new RenderTextIndex({ maps, texts, inlineCodeRanges });
   // 긴 줄 편집 이력을 256개씩 붙잡지 않는다. 큰 단일 줄은 마지막 인덱스만 재사용한다.
   while (inlineIndexes.size && (inlineIndexes.size >= 256 || inlineCacheCharacters + key.length > 256 * 1024)) {
     const oldest = inlineIndexes.keys().next().value!;
