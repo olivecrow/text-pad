@@ -28,6 +28,31 @@ async function characters(locator) {
   });
 }
 
+test('큰 표시 영역의 설정 항목은 측정을 모아 배치하고 값 정렬을 유지한다', async ({ page }) => {
+  await page.setViewportSize({ width: 1800, height: 2400 });
+  await page.goto('/');
+  await page.locator('.new-document-format-trigger').click();
+  await page.locator('.new-document-format-button').filter({ hasText: /^ENV$/ }).click();
+  const editor = page.getByTestId('editor-textarea');
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Performance.enable');
+  const metric = async () => (await cdp.send('Performance.getMetrics')).metrics.find(item => item.name === 'LayoutCount')?.value ?? 0;
+  const before = await metric();
+  const source = Array.from({ length: 300 }, (_, i) => `KEY_${i}=value with several words`).join('\n');
+  await editor.evaluate((element, text) => {
+    const input = /** @type {HTMLTextAreaElement} */ (element);
+    input.value = text;
+    input.setSelectionRange(0, 0);
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: text }));
+  }, source);
+  const lines = page.locator('.line-content.key-value-wrapping');
+  await expect.poll(() => lines.count()).toBeGreaterThan(80);
+  await expect.poll(() => lines.first().evaluate(element => parseFloat(getComputedStyle(element).getPropertyValue('--key-value-indent')))).toBeGreaterThan(0);
+  expect(await metric() - before).toBeLessThan(25);
+  await expect(editor).toHaveValue(source);
+  await cdp.detach();
+});
+
 for (const format of ['ENV', 'INI/CFG', 'Properties']) {
   test(`${format} unquoted value segments never overlap and keep caret source positions`, async ({ page }) => {
     const lines = [

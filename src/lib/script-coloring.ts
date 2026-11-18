@@ -39,10 +39,14 @@ export function getScriptRuns(text: string): ScriptRun[] {
 }
 
 export function getWrapRuns(text: string): WrapRun[] {
-  return (text.match(/\s+|\S+/gu) ?? []).map(part => ({
-    text: part,
-    protect: !/^\s+$/u.test(part) && /[-/._:@\\]/u.test(part)
-  }));
+  const runs: WrapRun[] = [];
+  for (const part of text.match(/\s+|\S+/gu) ?? []) {
+    const protect = !/^\s+$/u.test(part) && /[-/._:@\\]/u.test(part);
+    const previous = runs[runs.length - 1];
+    if (!protect && previous && !previous.protect) previous.text += part;
+    else runs.push({ text: part, protect });
+  }
+  return runs;
 }
 
 const richHighlights = new Map<TextScript, Highlight>();

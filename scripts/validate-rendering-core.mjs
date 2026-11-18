@@ -102,6 +102,11 @@ try {
   assert.deepEqual(scriptColoring.getScriptRuns('スーパー'), [{ text: 'スーパー', script: 'kana' }]);
   assert.deepEqual(scriptColoring.getWrapRuns('alpha-beta other').map(run => run.text).join(''), 'alpha-beta other');
   assert.equal(scriptColoring.getWrapRuns('alpha-beta other')[0].protect, true);
+  assert.deepEqual(scriptColoring.getWrapRuns('one two 한글 three a-b next word'), [
+    { text: 'one two 한글 three ', protect: false },
+    { text: 'a-b', protect: true },
+    { text: ' next word', protect: false }
+  ]);
   assert.deepEqual(search.findDocumentMatches('Ouroboros\r\n**ouroboros**', 'ouroboros'), [
     { start: 0, end: 9 }, { start: 13, end: 22 }
   ]);

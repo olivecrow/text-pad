@@ -39,10 +39,12 @@ interface WrappingOptions {
 
 const targets = new Map<HTMLElement, WrappingOptions>();
 let observer: ResizeObserver | null = null;
+const pendingMeasurements = new Set<HTMLElement>();
+let measurementScheduled = false;
 
-function measureValueIndent(node: HTMLElement) {
+function measureValueIndent(node: HTMLElement): number | null {
   const options = targets.get(node);
-  if (!options || !node.isConnected) return;
+  if (!options || !node.isConnected) return null;
   const valueStart = getKeyValueStart(options.tokens);
   const sourceStart = options.tokens[0]?.start;
   let indent = 0;
@@ -66,6 +68,10 @@ function measureValueIndent(node: HTMLElement) {
       if (width > 0 && width <= node.clientWidth * 0.8) indent = width;
     }
   }
+  return indent;
+}
+
+function applyValueIndent(node: HTMLElement, indent: number) {
   const next = `${indent}px`;
   if (node.style.getPropertyValue('--key-value-indent') !== next) {
     node.style.setProperty('--key-value-indent', next);
@@ -73,31 +79,45 @@ function measureValueIndent(node: HTMLElement) {
   node.classList.toggle('key-value-wrapping', indent > 0);
 }
 
+function scheduleMeasurements(nodes: Iterable<HTMLElement>) {
+  for (const node of nodes) pendingMeasurements.add(node);
+  if (measurementScheduled) return;
+  measurementScheduled = true;
+  void tick().then(() => {
+    measurementScheduled = false;
+    const nodes = [...pendingMeasurements];
+    pendingMeasurements.clear();
+    // 모든 좌표를 읽은 뒤 스타일을 적용해 줄마다 배치를 반복하지 않는다.
+    const measurements = nodes.map(node => ({ node, indent: measureValueIndent(node) }));
+    for (const { node, indent } of measurements) {
+      if (indent !== null && targets.has(node)) applyValueIndent(node, indent);
+    }
+  });
+}
+
 /** 원문 노드를 유지하고 첫 줄만 내어써 후속 표시 줄을 값 시작점에 맞춘다. */
 export function alignKeyValue(node: HTMLElement, options: WrappingOptions) {
-  let disposed = false;
   const update = (next: WrappingOptions) => {
     if (getKeyValueStart(next.tokens) === null) {
       targets.delete(node);
+      pendingMeasurements.delete(node);
       observer?.unobserve(node);
       node.style.removeProperty('--key-value-indent');
       node.classList.remove('key-value-wrapping');
       return;
     }
     targets.set(node, next);
-    observer ??= new ResizeObserver(entries => {
-      for (const entry of entries) measureValueIndent(entry.target as HTMLElement);
-    });
+    observer ??= new ResizeObserver(entries => scheduleMeasurements(entries.map(entry => entry.target as HTMLElement)));
     observer.observe(node);
-    void tick().then(() => { if (!disposed) measureValueIndent(node); });
+    scheduleMeasurements([node]);
   };
   update(options);
   return {
     update,
     destroy() {
-      disposed = true;
       observer?.unobserve(node);
       targets.delete(node);
+      pendingMeasurements.delete(node);
       if (targets.size === 0) {
         observer?.disconnect();
         observer = null;
