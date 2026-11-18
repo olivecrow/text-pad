@@ -15,8 +15,9 @@ interface ListMarkerStyle {
   separator: ListMarkerSeparator;
 }
 
-const listMarkerAtStartRegex = /^([ \t]*)(?:\(([A-Za-z]+|\d+)\)|([A-Za-z]+|\d+)([.)]))([ \t]+)/;
-const unorderedListMarkerAtStartRegex = /^([ \t]*)([-*+•])([ \t]+)/;
+// 첫 공백만 표식의 구조 간격이다. 나머지는 사용자가 입력한 본문 공백이다.
+const listMarkerAtStartRegex = /^([ \t]*)(?:\(([A-Za-z]+|\d+)\)|([A-Za-z]+|\d+)([.)]))([ \t])/;
+const unorderedListMarkerAtStartRegex = /^([ \t]*)([-*+•])([ \t])/;
 const unorderedListMarkerLabels = ['-', '*', '+', '•'] as const;
 const romanNumeralRegex = /^(?=[mdclxvi]+$)m{0,3}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})$/i;
 const romanDigitValues: ReadonlyArray<readonly [number, string]> = [

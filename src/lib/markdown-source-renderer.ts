@@ -163,6 +163,7 @@ export interface MappedMarkdown {
   attribute: string;
   maps: number[][];
   texts: string[];
+  trailingWhitespaceSpans?: ReadonlySet<number>;
   codeRanges?: Array<{ start: number; end: number }>;
   inlineCodeRanges?: Position[];
   hiddenHeadingMarkers?: Position[];
@@ -183,6 +184,7 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
   for (const line of lines) { starts.push(length); length += line.length + 1; }
   const maps: number[][] = [];
   const texts: string[] = [];
+  const trailingWhitespaceSpans = new Set<number>();
   const codeRanges: Array<{ start: number; end: number }> = [];
   const inlineCodeRanges: Position[] = [];
   const hiddenHeadingMarkers: Position[] = [];
@@ -191,12 +193,13 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
   const disclosureStack: number[] = [];
   const attribute = `data-rich-${crypto.randomUUID()}`;
   const escape = parser.utils.escapeHtml;
-  function mapped(text: string, offsets: number[]): string {
+  function mapped(text: string, offsets: number[], preserveTrailingWhitespace = false): string {
     if (!text) return '';
     if (offsets.length !== text.length + 1 || offsets.some(pos => !Number.isFinite(pos))) {
       throw new Error('Markdown source boundary mismatch');
     }
     const id = maps.push(offsets.map(pos => originalOffsets[Math.min(pos, normalized.length)])) - 1;
+    if (preserveTrailingWhitespace) trailingWhitespaceSpans.add(id);
     texts.push(text);
     if (codeDepth > 0) codeRanges.push({ start: maps[id][0], end: maps[id].at(-1)! });
     return `<span ${attribute}="${id}">${escape(text)}</span>`;
@@ -326,11 +329,7 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     const start = inlineOffsets[inlineCode.start];
     const end = inlineOffsets[inlineCode.end - 1] + 1;
     inlineCodeRanges.push({ start: originalOffsets[start], end: originalOffsets[end] });
-    // 문단의 끝에서 해석기가 생략한 공백도 코드 바깥에서 연속 입력할 때 위치를 유지한다.
-    trailingSpaces.lastIndex = end;
-    const spaces = index === items.length - 1 ? trailingSpaces.exec(normalized)?.[0] : undefined;
-    const after = spaces ? mapped('\u200b'.repeat(spaces.length), Array.from({ length: spaces.length + 1 }, (_, i) => end + i)) : '';
-    return `<code>${text}</code>${after}`;
+    return `<code>${text}</code>`;
   };
   for (const type of ['text', 'text_special', 'code_inline']) renderer.rules[type] = textRule;
   renderer.rules.link_open = (items, index, options) => {
@@ -387,6 +386,15 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
       }
       html += token.content ? renderer.renderInline(token.children ?? [], parser.options, environment)
         : mapped('\u200b', [inlineOffsets[0], inlineOffsets[0]]);
+      if (token.map && token.content) {
+        // 문단 해석기가 잘라낸 끝 공백을 서식 바깥에 표시하고 입력 위치를 유지한다.
+        const end = inlineOffsets[inlineOffsets.length - 1];
+        trailingSpaces.lastIndex = end;
+        const spaces = trailingSpaces.exec(normalized)?.[0];
+        if (spaces) {
+          html += mapped(spaces, Array.from({ length: spaces.length + 1 }, (_, i) => end + i), true);
+        }
+      }
     } else if (token.type === 'hr' && token.map) {
       const start = starts[token.map[0]];
       const end = start + (lines[token.map[0]] ?? '').length;
@@ -409,7 +417,7 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
       }
     }
   }
-  return { html, attribute, maps, texts, codeRanges, inlineCodeRanges, hiddenHeadingMarkers,
+  return { html, attribute, maps, texts, trailingWhitespaceSpans, codeRanges, inlineCodeRanges, hiddenHeadingMarkers,
     disclosures: disclosures.map(range => ({ ...range,
       bodyStart: originalOffsets[range.bodyStart], end: originalOffsets[range.end] })) };
 }

@@ -109,6 +109,7 @@
   .rich-content { overflow-wrap: break-word; word-break: keep-all; white-space: normal; line-height: inherit; }
   .rich-content.editable { cursor: text; user-select: none; }
   .rich-content.editable :global(a) { cursor: text; }
+  .rich-content :global(.rich-trailing-whitespace) { white-space: break-spaces; }
   .rich-content :global(p) { margin: .4em 0; }
   .rich-content :global(> :first-child) { margin-top: 0; }
   .rich-content :global(> :last-child) { margin-bottom: 0; }

@@ -171,9 +171,13 @@ export function renderMarkdownRichText(source: string, environment: Record<strin
   });
   for (const element of fragment.querySelectorAll('*')) {
     if (mapped && element.hasAttribute(mapped.attribute)) {
-      const offsets = mapped.maps[Number(element.getAttribute(mapped.attribute))];
+      const spanIndex = Number(element.getAttribute(mapped.attribute));
+      const offsets = mapped.maps[spanIndex];
       element.removeAttribute(mapped.attribute);
-      if (offsets) element.setAttribute('data-rich-offsets', offsets.join(','));
+      if (offsets) {
+        element.setAttribute('data-rich-offsets', offsets.join(','));
+        if (mapped.trailingWhitespaceSpans?.has(spanIndex)) element.classList.add('rich-trailing-whitespace');
+      }
     }
     for (const name of ['width', 'height', 'colspan', 'rowspan']) {
       const value = element.getAttribute(name);

@@ -242,6 +242,7 @@ See [Unicode's word-boundary discussion](https://www.unicode.org/reports/tr29/tr
 - Consecutive `>` lines form one quote area with a left border; a bare `>` separates internal paragraphs and `> >` creates a nested quote. Render emphasis, lists, tables, and code within the quote; use Markdown paragraph boundaries for lazy continuation lines and the end of the area. Edit quotes and multiline emphasis directly in render mode, preserving existing source newlines.
 - Render paragraphs containing HTML, images, links, or character references, and horizontal rules, as safe rich previews. Example: `<p align="center"><strong>Title</strong><br><sub>Description</sub></p>`.
 - Show each ordinary source newline as a visible line break in rich Markdown paragraphs, including paragraphs with email links or multiline emphasis. Editing on either side of a break uses the corresponding source position.
+- Preserve the displayed width and caret position of every trailing space in rich Markdown paragraphs. For example, typing a space after `user@example.com` moves the caret beyond the link, where typing can continue.
 - Navigate and delete a horizontal rule as one displayed element mapped to the complete source marker, and allow Undo. Enter at its end creates a new line below it.
 - Click, Shift-click, drag, and double-click rich text to place the caret or select text, then type, paste, and undo without leaving render mode. Connect display boundaries to source ranges consumed by the parser; repeated words, tags, character references, and CRLF must not shift editing positions. Keep IME composition on the existing input path. Show only blocks with unverifiable boundaries as editable source.
 - Deleting, cutting, or replacing a partial selection across formatting boundaries changes the selected displayed characters while preserving hidden wrapping syntax. Deleting `bcde` from `<b>abc</b><i>def</i>` produces `<b>a</b><i>f</i>`. Selecting an entire block or document removes its tags as well. Do not protect ordinary source line breaks as formatting tags.
@@ -298,7 +299,7 @@ The current recognized forms are:
 - Valid Roman numeral: `I. `, `II. `, `iv. `
 - Unordered marker: `- `, `* `, `+ `, `• `
 
-`-`, `*`, and `+` are widely used lightweight-markup markers, while `•` is common in ordinary documents. Whitespace between the marker and body is treated as part of the marker and preserved when continuing the list. Identical text in the middle of a line is not treated as a list marker.
+`-`, `*`, and `+` are widely used lightweight-markup markers, while `•` is common in ordinary documents. Only the first space or tab immediately after the marker is structural spacing and is preserved when continuing the list. Further spaces are editable body text and are not copied into the next item's structural spacing. For example, the item after `-   body` starts with `- `. Identical text in the middle of a line is not treated as a list marker.
 
 ### Rendered body cell and boundary editing
 
@@ -345,7 +346,7 @@ When tabs and spaces are mixed, calculate visual indentation using four-column t
 - When the current line is an empty item containing only leading indentation and a list marker, with the caret at the line end, plain `Enter` does not insert a newline. A nested item loses one indentation level; a top-level item becomes an empty ordinary line by removing its marker and following whitespace.
 - When an earlier marker exists at the target depth, immediately restore its style, following whitespace, and next number on the same line, with the caret after the marker. Unordered lists restore the earlier symbol. Skip deeper items and continuation lines, but stop at a blank line, an ordinary paragraph at the same or shallower depth, or a shallower item, and do not mix ordered and unordered families.
 - Repeated plain `Enter` on the empty item removes one level at a time on the same line. If no earlier target-depth marker or safe next label exists, keep only the reduced indentation. Top-level list exit preserves following numbers; restoring an earlier depth also renumbers following items within the existing automatic-sequence boundaries. `Shift+Enter` still creates a marker-free continuation line.
-- Preserve the current indentation, delimiter, and whitespace following the marker.
+- Preserve the current indentation, delimiter, and first structural space or tab following the marker.
 - Increment decimal numbers, Latin letters, and Roman numerals to their next value.
 - Deleting a selected whole item line in a consecutive ordered list renumbers the following continuous items at the same depth and with the same delimiter to fill the gap. Undo restores the deletion and renumbering together.
 - For an unordered list, reuse the current symbol for the next item at the same depth.
