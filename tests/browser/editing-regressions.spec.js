@@ -29,6 +29,26 @@ test('목록 항목 삭제와 뒷번호 조정은 한 번에 되돌린다', asyn
   await expect(editor).toHaveValue(source);
 });
 
+test('글머리 삭제와 빈 항목 종료도 뒤 순번을 조정한다', async ({ page }) => {
+  await page.goto('/');
+  const editor = page.getByTestId('editor-textarea');
+  const source = '1. one\n2. two\n3. three';
+  for (const action of ['Backspace', 'selection']) {
+    await editor.fill(source);
+    await select(editor, action === 'selection' ? 0 : 3, 3);
+    await editor.press('Backspace');
+    await expect(editor).toHaveValue(action === 'selection' ? 'one\n1. two\n2. three' : '1one\n1. two\n2. three');
+    await editor.press('Control+z');
+    await expect(editor).toHaveValue(source);
+  }
+  await editor.fill('1. \n2. two\n3. three');
+  await select(editor, 3);
+  await editor.press('Enter');
+  await expect(editor).toHaveValue('\n1. two\n2. three');
+  await editor.press('Control+z');
+  await expect(editor).toHaveValue('1. \n2. two\n3. three');
+});
+
 test('중첩 괄호 쌍 삭제와 미완성 따옴표 닫기는 같은 원문 줄에서 작동한다', async ({ page }) => {
   await page.goto('/');
   const editor = page.getByTestId('editor-textarea');

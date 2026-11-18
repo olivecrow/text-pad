@@ -4218,9 +4218,9 @@
     if (start !== getLineStartOffset(fileContent, start) || isLineInsideFencedCodeBlock(start)) return false;
     const lineEnd = getLineEndOffset(fileContent, start);
     const nextStart = getNextLineStartOffset(fileContent, lineEnd);
-    if (end !== lineEnd && end !== nextStart) return false;
     const removed = getListMarkerAtStart(fileContent.slice(start, lineEnd));
     if (!removed || removed.separator === 'unordered' || nextStart === null) return false;
+    if (end !== lineEnd && end !== nextStart && end !== start + removed.indent.length + removed.marker.length) return false;
     const previous = getPreviousListMarker(fileContent, start, removed);
     if (previous && getNextListMarkerLabel(previous.label) !== removed.label) return false;
     const renumbered = renumberFollowingListMarkerSequence(
@@ -4620,8 +4620,10 @@
 
     event.preventDefault();
     const nextCaret = lineStart + edit.caret;
+    const marker = getListMarkerAtStart(fileContent.slice(lineStart, lineEnd));
+    const nextContent = marker ? renumberAfterRemovedListMarker(lineStart, lineEnd, marker) : fileContent;
     commitRenderEditorEdit(
-      `${fileContent.slice(0, lineStart)}${edit.text}${fileContent.slice(lineEnd)}`,
+      `${nextContent.slice(0, lineStart)}${edit.text}${nextContent.slice(lineEnd)}`,
       { start: nextCaret, end: nextCaret }
     );
     return true;
@@ -4904,6 +4906,16 @@
     return previousMarker;
   }
 
+  function renumberAfterRemovedListMarker(lineStart: number, lineEnd: number, marker: ListMarker): string {
+    const nextStart = getNextLineStartOffset(fileContent, lineEnd);
+    if (marker.separator === 'unordered' || nextStart === null) return fileContent;
+    const previous = getPreviousListMarker(fileContent, lineStart, marker);
+    if (previous && getNextListMarkerLabel(previous.label) !== marker.label) return fileContent;
+    return renumberFollowingListMarkerSequence(
+      fileContent, nextStart, marker, previous?.label ?? null, previous?.label ?? marker.label, tabSize, 'remove'
+    );
+  }
+
   function getMeasuredListContinuationIndent(marker: ListMarker): string {
     const fallbackIndent = getListContinuationIndent(marker, tabSize);
     const indentWidth = measureEditorTextWidth(marker.indent);
@@ -5023,7 +5035,7 @@
 
     const nextIndent = currentMarker.indent.slice(getRenderOutdentCount(currentMarker.indent));
     let replacement = nextIndent;
-    let nextContent = fileContent;
+    let nextContent = renumberAfterRemovedListMarker(lineStart, lineEnd, currentMarker);
     if (currentMarker.indent.length > 0) {
       const earlier = getEarlierListItemAtIndent(lineStart, nextIndent);
       if (earlier && (earlier.marker.separator === 'unordered') === (currentMarker.separator === 'unordered')) {
@@ -5036,7 +5048,7 @@
           const followingLineStart = getNextLineStartOffset(fileContent, lineEnd);
           if (followingLineStart !== null) {
             nextContent = renumberFollowingListMarkerSequence(
-              fileContent, followingLineStart, earlier.marker, previousLabel, nextLabel, editorIndentUnit.length
+              nextContent, followingLineStart, earlier.marker, previousLabel, nextLabel, editorIndentUnit.length
             );
           }
         }
