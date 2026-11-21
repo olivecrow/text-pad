@@ -67,6 +67,7 @@ export function getRichTextOffsetAtPoint(root: HTMLElement, x: number, y: number
 export function getRichSelectionRanges(root: HTMLElement, start: number, end: number): Range[] {
   const result: Range[] = [];
   for (const run of getRichTextRuns(root)) {
+    if (run.node.parentElement?.classList.contains('rich-block-boundary')) continue;
     const from = run.offsets.findIndex(offset => offset >= start);
     let to = run.offsets.length - 1;
     while (to >= 0 && run.offsets[to] > end) to--;

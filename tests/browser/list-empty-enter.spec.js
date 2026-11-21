@@ -21,6 +21,28 @@ test('빈 중첩 글머리는 같은 줄에서 이전 깊이와 다음 번호를
   })).toEqual([initial.length + 4, initial.length + 4]);
 });
 
+test('Enter를 두 번 누르면 다른 계열의 상위 글머리도 원래 형식으로 이어진다', async ({ page }) => {
+  await page.goto('/');
+  const editor = page.getByTestId('editor-textarea');
+  for (const { source, child, parent } of [
+    { source: '1. 상위\n    - 하위', child: '    - ', parent: '2. ' },
+    { source: '* 상위\n    (a) 하위', child: '    (b) ', parent: '* ' },
+    { source: '1. 상위\n   - 중간\n     (a) 하위', child: '     (b) ', parent: '   - ' },
+    { source: '- 상위\n\t3) 하위', child: '\t4) ', parent: '- ' }
+  ]) {
+    await editor.fill(source);
+    await editor.press('Control+End');
+    await editor.press('Enter');
+    await expect(editor).toHaveValue(source + '\n' + child);
+    await editor.press('Enter');
+    await expect(editor).toHaveValue(source + '\n' + parent);
+    await editor.press('Control+z');
+    await expect(editor).toHaveValue(source + '\n' + child);
+    await editor.press('Control+y');
+    await expect(editor).toHaveValue(source + '\n' + parent);
+  }
+});
+
 for (const sample of [
   { name: '순서 있는', initial: '1. parent\n    A. child\n        1. grandchild\n            i. ', prefixes: ['        2. ', '    B. ', '2. ', ''] },
   { name: '순서 없는', initial: '- parent\n    * child\n        + grandchild\n            • ', prefixes: ['        + ', '    * ', '- ', ''] },

@@ -403,6 +403,86 @@ try {
       }
     }
   }
+  {
+    // 제목·글머리가 있는 마크다운 문서의 일반 텍스트 문단 편집과 줄 시작 조합도 국소 경로를 사용한다.
+    for (const newline of ['\n', '\r\n']) {
+      const cache = new MarkdownPresentationCache();
+      const base = Array.from({ length: 120 }, (_, i) => [
+        `# 섹션 제목 ${i + 1}`,
+        `- 항목 ${i + 1}`,
+        `일반 문단 텍스트입니다. 여기에는 서식이 없습니다.`
+      ].join(newline)).join(newline + newline);
+      let source = base + newline + newline + 'ㅇ';
+      cache.get(source, getSlowLineStarts(source));
+      const steps = ['아', '안', '안ㄴ', '안녀', '안녕', '안녕 ', '안녕 ㅎ', '안녕 하', '안녕 하ㅅ', '안녕 하세', '안녕 하세ㅇ', '안녕 하세요'];
+      const tailStart = base.length + newline.length * 2;
+      for (const tail of steps) {
+        const next = source.slice(0, tailStart) + tail;
+        const updated = cache.get(next, getSlowLineStarts(next), textChanges.getTextChange(source, next));
+        const fresh = new MarkdownPresentationCache().get(next, getSlowLineStarts(next));
+        assert.deepEqual(updated, fresh, `plain paragraph local edit parity (${tail})`);
+        assert.ok(cache.inspectedCharacters < 40, `plain paragraph reparsed ${cache.inspectedCharacters} chars for "${tail}"`);
+        source = next;
+      }
+      // 구조가 바뀌는 입력(링크화, 4칸 코드 블록, 순서 목록, 제목 앞 글자 추가, 빈 줄화)은 전체 해석과 일치한다.
+      for (const [before, after] of [
+        ['# 제목\n\nfoo', '# 제목\n\nfoo.com'],
+        ['# 제목\n\n   text', '# 제목\n\n    text'],
+        ['# 제목\n\n1', '# 제목\n\n1. '],
+        ['# 제목\n둘째 줄', 'a# 제목\n둘째 줄'],
+        ['# 제목\n\n한글', '# 제목\n\n']
+      ]) {
+        const c = new MarkdownPresentationCache();
+        c.get(before, getSlowLineStarts(before));
+        assert.deepEqual(
+          c.get(after, getSlowLineStarts(after), textChanges.getTextChange(before, after)),
+          new MarkdownPresentationCache().get(after, getSlowLineStarts(after)),
+          `structural boundary parity: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`
+        );
+      }
+    }
+    // 여러 줄 인용문/강조/링크의 줄 끝 공백, 빈 인용 줄, 복합 목록 빈 항목도 정확한 경계를 가진다.
+    for (const newline of ['\n', '\r\n']) {
+      for (const [source, expectedOffsets] of [
+        [`> 첫줄 ${newline}> 둘째`, [4, 5]],
+        [`> 첫줄  ${newline}> 둘째`, [4, 5, 6]],
+        [`**첫줄  ${newline}둘째**`, [4, 5, 6]],
+        [`a@b.com  ${newline}둘째`, [7, 8, 9]],
+        [`> 인용문  ${newline}> `, [5, 6, 7, `> 인용문  ${newline}> `.length]],
+        [`> `, [2]],
+        [`- [링크](https://example.com)${newline}- `, [`- [링크](https://example.com)${newline}- `.length]]
+      ]) {
+        const index = new RenderTextIndex(renderMappedMarkdown(source, {}));
+        for (const offset of expectedOffsets) {
+          assert.equal(index.boundary(offset, 0), offset, `missing boundary ${offset} in ${JSON.stringify(source)}`);
+        }
+      }
+    }
+    // 변경 없는 줄은 캐시된 ParsedLine 참조를 재사용하고, editor-session은 동일 값 갱신 시 참조를 유지한다.
+    const lineCache = documentFormats.createDocumentRenderCache();
+    const docBefore = '# 제목\n- 항목 1\n일반 줄 ㅇ';
+    const docAfter = '# 제목\n- 항목 1\n일반 줄 아';
+    const r1 = documentFormats.parseDocumentForRender(docBefore, {
+      pathOrName: 'note.md', formatId: 'markdown', tabSize: 4,
+      lineStartOffsets: getSlowLineStarts(docBefore), renderCache: lineCache
+    });
+    const r2 = documentFormats.parseDocumentForRender(docAfter, {
+      pathOrName: 'note.md', formatId: 'markdown', tabSize: 4,
+      lineStartOffsets: getSlowLineStarts(docAfter), renderCache: lineCache,
+      contentChange: textChanges.getTextChange(docBefore, docAfter)
+    });
+    assert.equal(r2.lines[0], r1.lines[0]);
+    assert.equal(r2.lines[1], r1.lines[1]);
+    assert.notEqual(r2.lines[2], r1.lines[2]);
+    const editorSessionMod = await server.ssrLoadModule('/src/lib/editor-session.ts');
+    const session = editorSessionMod.createEditorSession({
+      id: 'tab-1', filePath: null, fileName: 'Untitled', fileContent: 'hi',
+      selectedDocumentFormatId: 'markdown', encoding: 'utf8', isDirty: false,
+      scrollTop: 0, scrollLeft: 0, selectionStart: 0, selectionEnd: 0, cursorLine: 1, cursorCol: 1, caretOffset: 0
+    });
+    assert.equal(editorSessionMod.updateEditorTab(session, 'tab-1', { scrollTop: 0, scrollLeft: 0 }), session);
+    assert.notEqual(editorSessionMod.updateEditorTab(session, 'tab-1', { scrollTop: 10 }), session);
+  }
   const emphasisCases = [
     ['*italic* **bold**', ['emphasis', 'strong']],
     ['**bold *nested* end**', ['strong', 'emphasis']],
@@ -1407,6 +1487,11 @@ try {
   caretController.requestCaretReveal();
   caretScheduler.flushTimeouts();
   assert.deepEqual(caretSyncs, [true, true, false, true, true]);
+  caretController.requestCaretReveal(false);
+  assert.equal(caretSyncs.length, 5);
+  assert.equal(caretScheduler.timeoutCount, 1);
+  caretScheduler.flushTimeouts();
+  assert.deepEqual(caretSyncs, [true, true, false, true, true, true]);
 
   const viewportScheduler = createFakeRenderViewportScheduler();
   const viewportWidths = [];
@@ -1456,8 +1541,11 @@ try {
 
   // 입력 시작 시에는 대기 중인 전체 입력창 폭을 즉시 확정한다.
   viewportController.connectViewport(700, 440);
+  assert.equal(viewportController.hasPendingViewportWidth(), false);
   viewportController.observeViewportSize(760, 440);
+  assert.equal(viewportController.hasPendingViewportWidth(), true);
   viewportController.flushPendingViewportWidth();
+  assert.equal(viewportController.hasPendingViewportWidth(), false);
   assert.equal(viewportScheduler.timeoutCount, 0);
   assert.equal(viewportWidths.at(-1), 760);
   const flushedWidthCount = viewportWidths.length;

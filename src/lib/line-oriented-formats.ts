@@ -340,6 +340,25 @@ function cloneTokenizeState(state: TokenizeState | null): TokenizeState | null {
   return state ? { ...state } : null;
 }
 
+function getTokenizeStateKey(state: TokenizeState | null): string {
+  return state
+    ? `${state.blockCommentEnd ?? ''}|${state.blockCommentCaseInsensitive ? 1 : 0}|${state.codeFenceLength ?? 0}`
+    : '';
+}
+
+interface CachedParsedLineEntry {
+  text: string;
+  startOffset: number;
+  stateKey: string;
+  line: ParsedLine;
+  nextState: TokenizeState | null;
+}
+
+const parsedLineCaches = new WeakMap<LineOrientedRenderCache, {
+  context: string;
+  entries: Map<number, CachedParsedLineEntry>;
+}>();
+
 export function parseLineOrientedFormat(
   content: string,
   format: LineOrientedFormatId,
@@ -348,6 +367,7 @@ export function parseLineOrientedFormat(
   const parsedLines: ParsedLine[] = [];
   const cache = options.renderCache;
   let state: TokenizeState | null = null;
+  let lineCacheEntries: Map<number, CachedParsedLineEntry> | null = null;
 
   if (cache) {
     const context = JSON.stringify([
@@ -356,6 +376,12 @@ export function parseLineOrientedFormat(
       options.hideMarkdownHeadingMarkers,
       options.commentSyntax ?? null
     ]);
+    let lineCache = parsedLineCaches.get(cache);
+    if (!lineCache || lineCache.context !== context) {
+      lineCache = { context, entries: new Map() };
+      parsedLineCaches.set(cache, lineCache);
+    }
+    lineCacheEntries = lineCache.entries;
     prepareLineStateCheckpointCache(
       cache,
       content,
@@ -389,12 +415,51 @@ export function parseLineOrientedFormat(
     lineIndex <= options.lineRange.endLine;
     lineIndex += 1
   ) {
+    if (lineCacheEntries) {
+      const lineText = getLineText(content, options.lineStartOffsets, lineIndex);
+      const lineStartOffset = options.lineStartOffsets[lineIndex] ?? 0;
+      const stateKey = getTokenizeStateKey(state);
+      const cached = lineCacheEntries.get(lineIndex);
+      if (
+        cached
+        && cached.text === lineText
+        && cached.startOffset === lineStartOffset
+        && cached.stateKey === stateKey
+      ) {
+        state = cloneTokenizeState(cached.nextState);
+        parsedLines.push(cached.line);
+        if (cache) {
+          storeLineStateCheckpoint(cache, lineIndex + 1, state, cloneTokenizeState);
+        }
+        continue;
+      }
+      const parsed = parseLineOrientedLine(content, format, options, lineIndex, state);
+      state = parsed.state;
+      parsedLines.push(parsed.line);
+      lineCacheEntries.set(lineIndex, {
+        text: lineText,
+        startOffset: lineStartOffset,
+        stateKey,
+        line: parsed.line,
+        nextState: cloneTokenizeState(state)
+      });
+      if (cache) {
+        cache.visitedLineCount += 1;
+        storeLineStateCheckpoint(cache, lineIndex + 1, state, cloneTokenizeState);
+      }
+      continue;
+    }
+
     const parsed = parseLineOrientedLine(content, format, options, lineIndex, state);
     state = parsed.state;
     parsedLines.push(parsed.line);
-    if (cache) {
-      cache.visitedLineCount += 1;
-      storeLineStateCheckpoint(cache, lineIndex + 1, state, cloneTokenizeState);
+  }
+
+  if (lineCacheEntries && lineCacheEntries.size > 512) {
+    for (const cachedLineIndex of lineCacheEntries.keys()) {
+      if (cachedLineIndex < options.lineRange.startLine || cachedLineIndex > options.lineRange.endLine) {
+        lineCacheEntries.delete(cachedLineIndex);
+      }
     }
   }
 

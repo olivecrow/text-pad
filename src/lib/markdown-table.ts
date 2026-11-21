@@ -1,5 +1,6 @@
 import { getLineText } from './structured-rendering';
 import { getTableColumnCount, type TableAlignment, type TableDocument } from './table-document';
+import { lowerBound } from './editor-navigation';
 
 export interface MarkdownTableCell {
   start: number;
@@ -226,22 +227,81 @@ export function replaceMarkdownTable(
   const range = cell ? block.cells[cell.row]?.[cell.column] : null;
   if (cell && range) {
     const value = encodeMarkdownTableCell(next.rows[cell.row]?.[cell.column] ?? '');
-    return content.slice(0, range.start) + value + content.slice(range.end);
+    const rowStart = content.lastIndexOf('\n', range.start - 1) + 1;
+    const nextLine = content.indexOf('\n', range.end);
+    const rowEnd = nextLine < 0 ? content.length : nextLine;
+    const unframedStart = !content.slice(rowStart, range.start).trim();
+    const unframedEnd = !content.slice(range.end, rowEnd).trim();
+    // 비어 있는 바깥 셀도 구분자가 있어야 같은 열로 다시 해석된다.
+    const leadingPipe = unframedStart && (!value || startsOtherBlock(value)) ? '|' : '';
+    const trailingPipe = unframedEnd && !value ? '|' : '';
+    // 공백이 없는 표에서 셀 끝의 역슬래시가 바로 다음 구분자를 이스케이프하지 않게 한다.
+    const padding = content[range.end] === '|' && value.endsWith('\\') ? ' ' : '';
+    return content.slice(0, range.start) + leadingPipe + value + padding + trailingPipe + content.slice(range.end);
   }
   return content.slice(0, block.start) + serializeMarkdownTable(next, block.lineEnding) + content.slice(block.end);
 }
 
-export function getMarkdownTableCellAtOffset(block: MarkdownTableBlock, offset: number) {
-  let closest = { row: 0, column: 0, offset: 0 };
-  let distance = Number.POSITIVE_INFINITY;
-  block.cells.forEach((row, rowIndex) => row.forEach((cell, column) => {
-    cell.offsets.forEach((sourceOffset, index) => {
-      const nextDistance = Math.abs(sourceOffset - offset);
-      if (nextDistance < distance) {
-        distance = nextDistance;
-        closest = { row: rowIndex, column, offset: index };
+const tableGraphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+const tableCaretIndexes = new WeakMap<MarkdownTableBlock, ReturnType<typeof createMarkdownTableCaretIndex>>();
+
+function createMarkdownTableCaretIndex(block: MarkdownTableBlock) {
+  const cells = block.cells.flatMap((row, rowIndex) => row.map((cell, column) => ({ cell, row: rowIndex, column })));
+  const ends = cells.map(({ cell }) => cell.end);
+  const graphemesByCell = new Map<MarkdownTableCell, number[]>();
+  function getBoundaries({ cell, row, column }: typeof cells[number]) {
+    let boundaries = graphemesByCell.get(cell);
+    if (!boundaries) {
+      const value = block.document.rows[row]?.[column] ?? '';
+      boundaries = [cell.start];
+      for (const { index, segment } of tableGraphemes.segment(value)) boundaries.push(cell.offsets[index + segment.length]);
+      graphemesByCell.set(cell, boundaries);
+    }
+    return boundaries;
+  }
+  return {
+    cellAt(offset: number) {
+      const entry = cells[lowerBound(ends, offset)];
+      if (!entry || offset < entry.cell.start) return undefined;
+      const local = lowerBound(entry.cell.offsets, offset);
+      if (entry.cell.offsets[local] === offset) return { row: entry.row, column: entry.column, offset: local };
+    },
+    boundary(offset: number, direction: -1 | 0 | 1) {
+      if (offset <= block.start || offset >= block.end) return Math.max(block.start, Math.min(offset, block.end));
+      const index = lowerBound(ends, offset);
+      const entry = cells[index];
+      let before = cells[index - 1]?.cell.end ?? block.start;
+      let after = entry?.cell.start ?? block.end;
+      if (entry && offset >= entry.cell.start) {
+        const boundaries = getBoundaries(entry);
+        const local = lowerBound(boundaries, offset);
+        before = boundaries[Math.max(0, local - 1)];
+        after = boundaries[local];
       }
-    });
-  }));
-  return closest;
+      if (after === offset) return offset;
+      return direction < 0 || direction === 0 && offset - before <= after - offset ? before : after;
+    },
+    adjacent(offset: number, direction: -1 | 1) {
+      if (offset === (direction < 0 ? block.start : block.end)) return null;
+      const index = lowerBound(ends, offset);
+      const entry = cells[index];
+      if (entry && offset >= entry.cell.start) {
+        const boundaries = getBoundaries(entry);
+        const local = lowerBound(boundaries, offset);
+        const next = direction < 0 ? boundaries[local - 1] : boundaries[local + Number(boundaries[local] === offset)];
+        if (next !== undefined) return next;
+        if (direction > 0) return cells[index + 1]?.cell.start ?? block.end;
+      }
+      return direction < 0 ? cells[index - 1]?.cell.end ?? block.start : entry?.cell.start ?? block.end;
+    }
+  };
+}
+
+export function getMarkdownTableCaretIndex(block: MarkdownTableBlock) {
+  let index = tableCaretIndexes.get(block);
+  if (!index) {
+    index = createMarkdownTableCaretIndex(block);
+    tableCaretIndexes.set(block, index);
+  }
+  return index;
 }

@@ -4,6 +4,17 @@ export interface CaretGeometry {
   dispose(): void;
 }
 
+export function lowerBound(values: readonly number[], value: number): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (values[middle] < value) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
 /** 단일·다중 캐럿이 공유하는 표시 행 탐색. 고정 줄 높이만큼 이동했다고 가정하지 않는다. */
 export function adjacentVisualRow(geometry: CaretGeometry, offset: number, x: number, direction: -1 | 1,
   safe: (offset: number, direction: -1 | 1) => number | null, limit: number): number | null {

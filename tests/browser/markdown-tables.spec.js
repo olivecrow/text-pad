@@ -120,6 +120,8 @@ test('table keyboard boundaries enter paragraphs and source selections include t
   await page.keyboard.insertText('after');
   await expect(editor).toHaveValue(`${tableSource}\nafter`);
   await editor.press('Control+Home');
+  await expect(editor).toBeFocused();
+  await editor.press('ArrowRight');
   await expect(block.locator('[data-table-row="0"][data-table-column="0"]')).toBeFocused();
   await block.locator('[data-table-row="0"][data-table-column="0"]').press('Shift+Tab');
   await expect(editor).toBeFocused();
@@ -131,6 +133,172 @@ test('table keyboard boundaries enter paragraphs and source selections include t
   await expect(editor).toHaveValue('');
   await editor.press('Control+z');
   await expect(editor).toHaveValue(`before\n${tableSource}\nafter`);
+});
+
+test('표 셀을 넘는 방향키와 역방향 선택이 같은 원문 기준점을 보존한다', async ({ page }) => {
+  await page.goto('/');
+  const editor = page.getByTestId('editor-textarea');
+  const tableSource = '| A | B |\n| --- | --- |\n| cat | dog |';
+  const source = `before\n\n${tableSource}\n\nafter`;
+  const tableStart = source.indexOf(tableSource);
+  const tableEnd = tableStart + tableSource.length;
+  const bStart = source.indexOf('B');
+  const aEnd = source.indexOf('A') + 1;
+  const dogEnd = source.indexOf('dog') + 3;
+  const range = () => editor.evaluate(el => {
+    const input = /** @type {HTMLTextAreaElement} */ (el);
+    return [input.selectionStart, input.selectionEnd, input.selectionDirection];
+  });
+  await editor.fill(source);
+  const table = page.locator('[data-markdown-table]');
+  const firstCell = table.locator('[data-table-row="0"][data-table-column="0"]');
+  const secondCell = table.locator('[data-table-row="0"][data-table-column="1"]');
+  const bottomCell = table.locator('[data-table-row="1"][data-table-column="1"]');
+  await secondCell.press('Home');
+  await secondCell.press('ArrowLeft');
+  await expect(firstCell).toBeFocused();
+  await expect.poll(range).toEqual([aEnd, aEnd, 'forward']);
+  await page.keyboard.press('ArrowRight');
+  await expect(secondCell).toBeFocused();
+  await page.keyboard.press('Shift+ArrowLeft');
+  await expect(editor).toBeFocused();
+  await expect.poll(range).toEqual([aEnd, bStart, 'backward']);
+  await page.keyboard.press('Shift+ArrowRight');
+  await expect(secondCell).toBeFocused();
+  await expect.poll(range).toEqual([bStart, bStart, 'forward']);
+  await page.keyboard.press('Shift+ArrowRight');
+  await expect.poll(range).toEqual([bStart, bStart + 1, 'forward']);
+  await page.keyboard.press('ArrowDown');
+  await expect(bottomCell).toBeFocused();
+
+  await bottomCell.press('End');
+  await bottomCell.press('Shift+ArrowDown');
+  await expect(editor).toBeFocused();
+  await expect.poll(range).toEqual([dogEnd, tableEnd, 'forward']);
+  await page.keyboard.press('Shift+ArrowDown');
+  await expect.poll(range).toEqual([dogEnd, tableEnd + 1, 'forward']);
+  await page.keyboard.press('Shift+ArrowUp');
+  await expect.poll(range).toEqual([dogEnd, tableEnd, 'forward']);
+  await page.keyboard.press('Shift+ArrowLeft');
+  await expect(bottomCell).toBeFocused();
+  await expect.poll(range).toEqual([dogEnd, dogEnd, 'forward']);
+  await expect(editor).toHaveValue(source);
+});
+
+test('표만 정확히 선택하고 문서 경계에서 방향키로 빈 줄을 추가하지 않는다', async ({ page }) => {
+  await page.goto('/');
+  const editor = page.getByTestId('editor-textarea');
+  const tableSource = '| A | B |\n| --- | --- |\n| cat | dog |';
+  const table = page.locator('[data-markdown-table]');
+  const range = () => editor.evaluate(el => {
+    const input = /** @type {HTMLTextAreaElement} */ (el);
+    return [input.selectionStart, input.selectionEnd, input.selectionDirection];
+  });
+  const surrounding = `before\n\n${tableSource}\n\nafter`;
+  await editor.fill(surrounding);
+  await editor.press('Control+Home');
+  await editor.press('ArrowDown');
+  await editor.press('ArrowDown');
+  const tableStart = surrounding.indexOf(tableSource);
+  const tableEnd = tableStart + tableSource.length;
+  await expect.poll(range).toEqual([tableStart, tableStart, 'forward']);
+  await editor.press('Shift+ArrowRight');
+  await expect(table).not.toHaveClass(/table-source-selected/);
+  await editor.press('Shift+ArrowRight');
+  await expect.poll(() => page.evaluate(() => Array.from(CSS.highlights.get('render-selection') ?? [], range => range.toString()))).toContain('A');
+  await editor.press('Shift+ArrowDown');
+  await expect(table).not.toHaveClass(/table-source-selected/);
+  await editor.press('Shift+ArrowDown');
+  await expect.poll(range).toEqual([tableStart, tableEnd, 'forward']);
+  await expect(table).toHaveClass(/table-source-selected/);
+  await editor.press('Delete');
+  await expect(editor).toHaveValue('before\n\n\n\nafter');
+  await editor.press('Control+z');
+  await expect(editor).toHaveValue(surrounding);
+  await expect(table).toHaveClass(/table-source-selected/);
+
+  await editor.fill(tableSource);
+  await editor.press('Control+Home');
+  await editor.press('ArrowRight');
+  const firstCell = table.locator('[data-table-row="0"][data-table-column="0"]');
+  await expect(firstCell).toBeFocused();
+  await page.keyboard.press('Shift+ArrowUp');
+  await expect.poll(range).toEqual([0, 2, 'backward']);
+  await page.keyboard.press('ArrowLeft');
+  for (const key of ['ArrowUp', 'ArrowLeft', 'Shift+ArrowUp', 'Shift+ArrowLeft']) await page.keyboard.press(key);
+  await expect.poll(range).toEqual([0, 0, 'forward']);
+  await editor.press('Control+End');
+  const bottomCell = table.locator('[data-table-row="1"][data-table-column="1"]');
+  await editor.press('ArrowLeft');
+  await expect(bottomCell).toBeFocused();
+  await page.keyboard.press('Shift+ArrowDown');
+  await expect.poll(range).toEqual([tableSource.indexOf('dog') + 3, tableSource.length, 'forward']);
+  await page.keyboard.press('ArrowRight');
+  for (const key of ['ArrowDown', 'ArrowRight', 'Shift+ArrowDown', 'Shift+ArrowRight']) await page.keyboard.press(key);
+  await expect.poll(range).toEqual([tableSource.length, tableSource.length, 'forward']);
+  await expect(editor).toHaveValue(tableSource);
+  await editor.press('Control+z');
+  await expect(editor).toHaveValue(surrounding);
+});
+
+test('긴 표를 선택할 때 화면이 이동점을 따라가고 외곽 파이프 없는 표도 끝까지 선택된다', async ({ page }) => {
+  await page.setViewportSize({ width: 540, height: 430 });
+  await page.goto('/');
+  const editor = page.getByTestId('editor-textarea');
+  const viewport = page.getByTestId('editor-viewport');
+  const source = ['Head | Value', '--- | ---', ...Array.from({ length: 24 }, (_, row) => `${row} | cell`)].join('\n');
+  await editor.fill(source);
+  await editor.press('Control+Home');
+  await page.keyboard.press('Shift+ArrowDown');
+  await expect.poll(() => editor.evaluate(el => (/** @type {HTMLTextAreaElement} */ (el)).selectionEnd)).toBe(1);
+  for (let step = 0; step < 28; step++) await page.keyboard.press('Shift+ArrowDown');
+  await expect.poll(() => editor.evaluate(el => (/** @type {HTMLTextAreaElement} */ (el)).selectionEnd)).toBe(source.length);
+  await expect.poll(() => viewport.evaluate(el => el.scrollTop)).toBeGreaterThan(200);
+  await expect(page.locator('[data-markdown-table]')).toHaveClass(/table-source-selected/);
+  await expect(editor).toHaveValue(source);
+});
+
+test('복사한 표의 바깥 셀을 지우거나 바꾸어도 같은 열이 유지된다', async ({ page }) => {
+  await page.goto('/');
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const editor = page.getByTestId('editor-textarea');
+  const source = 'A|B\n---|---\none|two';
+  await editor.fill(source);
+  await editor.press('Control+a');
+  await editor.press('Control+c');
+  await expect.poll(() => page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, '\n'))).toBe(source);
+  await editor.fill('before\n\n');
+  await editor.press('Control+End');
+  await editor.press('Control+v');
+  const base = 'before\n\n' + source;
+  await expect(editor).toHaveValue(base);
+  const table = page.locator('[data-markdown-table]');
+  const cell = table.locator('[data-table-row="0"][data-table-column="0"]');
+  await cell.click();
+  await page.keyboard.press('Control+a');
+  await page.keyboard.press('Backspace');
+  await expect(cell).toBeFocused();
+  await expect(cell).toHaveValue('');
+  await expect(table.locator('[data-table-row="0"][data-table-column="1"]')).toHaveValue('B');
+  await expect(editor).toHaveValue(base.replace('A|B', '||B'));
+  await page.keyboard.insertText('# New');
+  await expect(cell).toHaveValue('# New');
+  await expect(editor).toHaveValue(base.replace('A|B', '|# New|B'));
+  await page.keyboard.press('Control+z');
+  await expect(cell).toHaveValue('');
+  await page.keyboard.press('Control+z');
+  await expect(editor).toHaveValue(base);
+
+  const last = table.locator('[data-table-row="1"][data-table-column="1"]');
+  await last.click();
+  await last.press('Backspace');
+  await expect(last).toHaveValue('');
+  await expect(editor).toHaveValue(base.replace('one|two', 'one||'));
+
+  await cell.click();
+  await page.keyboard.insertText('\\');
+  await expect(cell).toHaveValue('\\');
+  await expect(table.locator('[data-table-row="0"][data-table-column="1"]')).toHaveValue('B');
 });
 
 test('a table drag is cancelled when its tab is replaced', async ({ page }) => {

@@ -150,7 +150,7 @@ test('an email link preserves each source line in a formatted paragraph', async 
   const paragraph = page.locator('.rich-content p');
   await expect(paragraph.getByRole('link', { name: address })).toHaveAttribute('href', `mailto:${address}`);
   await expect.poll(async () => (await paragraph.innerText()).replaceAll('\u200b', '')).toBe(
-    lines.map(line => line.trimEnd().replace(/ +/g, ' ')).join('\n')
+    lines.join('\n')
   );
   await expect(editor).toHaveValue(source);
 });

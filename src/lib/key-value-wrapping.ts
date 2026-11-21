@@ -97,7 +97,12 @@ function scheduleMeasurements(nodes: Iterable<HTMLElement>) {
 
 /** 원문 노드를 유지하고 첫 줄만 내어써 후속 표시 줄을 값 시작점에 맞춘다. */
 export function alignKeyValue(node: HTMLElement, options: WrappingOptions) {
+  let previous: WrappingOptions | null = null;
   const update = (next: WrappingOptions) => {
+    if (previous && previous.tokens === next.tokens && previous.context === next.context) {
+      return;
+    }
+    previous = next;
     if (getKeyValueStart(next.tokens) === null) {
       targets.delete(node);
       pendingMeasurements.delete(node);

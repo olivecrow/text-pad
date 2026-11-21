@@ -11,6 +11,7 @@ export interface TableCellSelection {
   column: number;
   start: number;
   end: number;
+  direction?: 'forward' | 'backward';
 }
 
 export interface TableDocumentChangeOptions {

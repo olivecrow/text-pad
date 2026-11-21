@@ -22,9 +22,9 @@ const maxRichBlockCharacters = 128 * 1024;
 const listChunkLines = 16;
 
 export function parseMarkdownRichBlocks(content: string, lineStarts: number[], environment: Record<string, unknown> = {},
-  regions?: MarkdownRichBlock[], localLists?: MarkdownRichBlock[]): MarkdownRichBlock[] {
+  regions?: MarkdownRichBlock[], localLists?: MarkdownRichBlock[], alwaysParseRegions = false): MarkdownRichBlock[] {
   // 웹 주소의 스킴(:)도 자동 링크 해석 후보에 포함한다.
-  if (!/[<!&\[*_~@:]|^ {0,3}(?:[>\-#+]|\d+[.)][ \t])/mu.test(content)) return [];
+  if (!alwaysParseRegions && !/[<!&\[*_~@:]|^ {0,3}(?:[>\-#+]|\d+[.)][ \t])/mu.test(content)) return [];
   const tokens = markdown.parse(content, environment);
   const ranges: Array<[number, number]> = [];
   const htmlParts = tokens.filter((token) => token.type === 'html_block' && token.map);
@@ -177,6 +177,7 @@ export function renderMarkdownRichText(source: string, environment: Record<strin
       if (offsets) {
         element.setAttribute('data-rich-offsets', offsets.join(','));
         if (mapped.trailingWhitespaceSpans?.has(spanIndex)) element.classList.add('rich-trailing-whitespace');
+        if (mapped.blockBoundarySpans?.has(spanIndex)) element.classList.add('rich-block-boundary');
       }
     }
     for (const name of ['width', 'height', 'colspan', 'rowspan']) {

@@ -113,19 +113,25 @@ export class RenderViewportController {
     this.setWrapSettling(false);
   }
 
+  hasPendingViewportWidth(): boolean {
+    return !this.isDisposed && this.isViewportConnected && this.viewportResizeTimer !== null;
+  }
+
   flushPendingViewportWidth(): void {
     if (this.isDisposed || !this.isViewportConnected || this.viewportResizeTimer === null) return;
     this.scheduler.clearTimeout(this.viewportResizeTimer);
     this.flushViewportWidth();
   }
 
-  requestCaretReveal(): void {
+  requestCaretReveal(syncImmediately = true): void {
     if (this.isDisposed) return;
 
     const generation = this.caretRevealGeneration + 1;
     this.caretRevealGeneration = generation;
     this.pendingCaretRevealGeneration = generation;
-    this.onCaretSync(true);
+    if (syncImmediately) {
+      this.onCaretSync(true);
+    }
     this.scheduleCaretRevealCompletion(generation);
   }
 

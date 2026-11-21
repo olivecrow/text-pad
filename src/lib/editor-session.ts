@@ -67,8 +67,18 @@ export function updateEditorTab(
   const tabIndex = session.tabs.findIndex((tab) => tab.id === tabId);
   if (tabIndex === -1) return session;
 
+  const current = session.tabs[tabIndex];
+  let changed = false;
+  for (const key of Object.keys(updates) as Array<keyof EditorTabUpdates>) {
+    if (!Object.is(current[key], updates[key])) {
+      changed = true;
+      break;
+    }
+  }
+  if (!changed) return session;
+
   const tabs = [...session.tabs];
-  tabs[tabIndex] = { ...tabs[tabIndex], ...updates };
+  tabs[tabIndex] = { ...current, ...updates };
   return { ...session, tabs };
 }
 

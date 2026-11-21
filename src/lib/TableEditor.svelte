@@ -50,6 +50,7 @@
     cellPreview?: Snippet<[number, number]>;
     ondocumentchange: (document: T, options?: TableDocumentChangeOptions) => void;
     oncellselection?: (selection: TableCellSelection) => void;
+    oncellnavigation?: (event: KeyboardEvent, selection: TableCellSelection, input: HTMLTextAreaElement) => boolean;
     onleave?: (direction: -1 | 1) => void;
     onhistoryinput?: (direction: 'undo' | 'redo') => void;
     onundogroupend?: () => void;
@@ -70,6 +71,7 @@
     cellPreview,
     ondocumentchange,
     oncellselection,
+    oncellnavigation,
     onleave,
     onhistoryinput,
     onundogroupend,
@@ -254,14 +256,19 @@
       updateTableCell(document, rowIndex, columnIndex, target.value),
       {
         mergeKey: kind === 'composition' ? kind : kind ? `table-cell:${rowIndex}:${columnIndex}:${kind}` : null,
-        cell: { row: rowIndex, column: columnIndex, start: target.selectionStart, end: target.selectionEnd }
+        cell: readCellSelection(target, rowIndex, columnIndex)
       }
     );
   }
 
   function reportCellSelection(event: Event, row: number, column: number) {
     const target = event.currentTarget as HTMLTextAreaElement;
-    oncellselection?.({ row, column, start: target.selectionStart, end: target.selectionEnd });
+    if (target === target.ownerDocument.activeElement) oncellselection?.(readCellSelection(target, row, column));
+  }
+
+  function readCellSelection(input: HTMLTextAreaElement, row: number, column: number): TableCellSelection {
+    return { row, column, start: input.selectionStart, end: input.selectionEnd,
+      direction: input.selectionDirection === 'backward' ? 'backward' : 'forward' };
   }
 
   function handleCellBeforeInput(event: InputEvent, row: number, column: number) {
@@ -309,12 +316,10 @@
       return;
     }
     const target = event.currentTarget as HTMLTextAreaElement;
+    if (oncellnavigation?.(event, readCellSelection(target, rowIndex, columnIndex), target)) return;
     if (embedded && onleave) {
-      const before = (event.key === 'ArrowUp' && rowIndex === 0 && target.selectionEnd === 0)
-        || (event.ctrlKey && event.key === 'Home');
-      const after = (event.key === 'ArrowDown' && rowIndex === document.rows.length - 1
-        && target.selectionStart === target.value.length)
-        || (event.ctrlKey && event.key === 'End') || event.key === 'Escape';
+      const before = event.ctrlKey && event.key === 'Home';
+      const after = (event.ctrlKey && event.key === 'End') || event.key === 'Escape';
       if (before || after) {
         event.preventDefault();
         onleave(before ? -1 : 1);

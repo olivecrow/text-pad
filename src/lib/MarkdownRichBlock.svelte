@@ -110,6 +110,7 @@
   .rich-content.editable { cursor: text; user-select: none; }
   .rich-content.editable :global(a) { cursor: text; }
   .rich-content :global(.rich-trailing-whitespace) { white-space: break-spaces; }
+  .rich-content :global(.rich-block-boundary) { display: block; font-size: 4px; line-height: 4px; }
   .rich-content :global(p) { margin: .4em 0; }
   .rich-content :global(> :first-child) { margin-top: 0; }
   .rich-content :global(> :last-child) { margin-bottom: 0; }

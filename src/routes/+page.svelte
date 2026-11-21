@@ -44,7 +44,7 @@
   } from "$lib/list-markers";
   import { selectionCaret } from '$lib/editor-selection';
   import { getMarkdownEditIndex, getInlineEditIndex, withDisclosureState, renderedDeletion } from '$lib/render-edit-model';
-  import { adjacentVisualRow } from '$lib/editor-navigation';
+  import { adjacentVisualRow, lowerBound } from '$lib/editor-navigation';
   import { EditorUndoHistory, EditorUndoWindowBudget, type EditorSelection, type EditorSnapshot, type EditorUndoHistoryState } from "$lib/editor-undo";
   import { adjacentTextOffset, caretSelection, cloneMultiCaret, normalizeMultiCaret, type CaretRange,
     type CaretReplacement, type MultiCaretSelection } from '$lib/multi-caret';
@@ -98,10 +98,11 @@
   } from "$lib/i18n";
   import TableEditor from "$lib/TableEditor.svelte";
   import {
-    parseMarkdownTables, replaceMarkdownTable, getMarkdownTableCellAtOffset,
+    parseMarkdownTables, replaceMarkdownTable, getMarkdownTableCaretIndex,
     type MarkdownTableBlock
   } from "$lib/markdown-table";
   import type { TableDocument, TableCellSelection, TableDocumentChangeOptions } from "$lib/table-document";
+  import { createMarkdownTableGeometry, getMarkdownTableBoundaryRect } from '$lib/markdown-table-geometry';
   import { APP_VERSION_FALLBACK } from "$lib/app-metadata";
   import {
     checkForAppUpdate,
@@ -339,14 +340,15 @@
     return name;
   }
 
+  const titleGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
   function getFirstLineTitle(content: string): string {
     const lineBreakIndex = content.search(/[\r\n]/);
     const firstLineEnd = lineBreakIndex === -1 ? content.length : lineBreakIndex;
     const firstLine = content.slice(0, firstLineEnd).trim();
-    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
     let title = '';
     let characterCount = 0;
-    for (const { segment } of segmenter.segment(firstLine)) {
+    for (const { segment } of titleGraphemeSegmenter.segment(firstLine)) {
       title += segment;
       if (++characterCount === 20) break;
     }
@@ -524,7 +526,6 @@
   let editorCaretColor = $state<string>('var(--color-caret, var(--color-render-text))');
   let editorCursorStyle = $state<string>('text');
   let hasEditorSelection = $state<boolean>(false);
-  let hasRenderedSelectionHighlight = $state<boolean>(false);
   let steadyEditorCaretVisible = $state<boolean>(false);
   let steadyEditorCaretCollapsed = $state<boolean>(true);
   let steadyEditorCaretLeft = $state<number>(12);
@@ -612,7 +613,7 @@
     tabText: () => isRenderMode ? editorIndentUnit : '\t',
     enabled: () => !!textareaEl && !shouldShowDelimitedTableEditor && !isComposingEditorText
   });
-  let markdownComposition: { tabId: string; before: EditorSnapshot; regions: MarkdownRichBlock[]; showHeadingMarkers: boolean } | null = null;
+  let renderCompositionRepair: { tabId: string; repair: (after: EditorSnapshot) => EditorSnapshot } | null = null;
 
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
   let editorViewportEl = $state<HTMLDivElement | null>(null);
@@ -838,7 +839,7 @@
   function safeMultiCaretOffset(offset: number, direction: -1 | 0 | 1): number | null {
     if (!shouldRenderHighlightLayer) return offset;
     if (markdownTableByLine.has(findLineIndexForOffset(offset))) return null;
-    return getSafeRenderedCaretOffset(offset, direction);
+    return getEditableRenderedCaretOffset(offset, direction);
   }
 
   function createMultiCaretGeometry(): CaretGeometry | null {
@@ -2436,7 +2437,7 @@
     currentRenderFontFamilyCSS,
     activeColors.renderFontWeight,
     tabSize,
-    filePath || fileName,
+    activeDocumentFormat.id,
     JSON.stringify(documentFeatureSettings),
     JSON.stringify(markdownRenderSettings),
     markdownTableBlocks.map((block) => `${block.startLine}:${block.endLine}`).join(','),
@@ -2474,23 +2475,28 @@
     const hasCurrentMeasurements = renderedLineHeightMeasurements.content === fileContent
       && renderedLineHeightMeasurements.context === renderedLineMeasurementContext;
     let nextHeights = hasCurrentMeasurements ? renderedLineHeightMeasurements.heights : {};
+    const observedHeights: Record<number, number> = hasCurrentMeasurements ? nextHeights : {};
     let hasChanged = false;
 
-    // 크기가 그대로인 줄도 원문 세대가 바뀌면 다시 기록한다.
-    // 변경 통지만 쓰면 나머지 줄은 추정 높이로 돌아간다.
+    // 보이는 줄의 실측 높이가 현재 배치와 달라졌을 때만 높이 표를 갱신한다.
     for (const lineElement of editorViewportEl.querySelectorAll<HTMLElement>('.backdrop-line')) {
       const lineIndex = Number(lineElement.dataset.lineIndex);
       if (!Number.isFinite(lineIndex)) continue;
 
       const observedHeight = lineElement.getBoundingClientRect().height;
       const height = Math.max(measuredLineHeight, observedHeight);
-      const previousHeight = nextHeights[lineIndex];
+      const previousHeight = hasCurrentMeasurements
+        ? nextHeights[lineIndex]
+        : renderLineLayout.getLineHeight(lineIndex);
+      if (!hasCurrentMeasurements) {
+        observedHeights[lineIndex] = height;
+      }
       if (previousHeight !== undefined && Math.abs(previousHeight - height) <= 0.25) {
         continue;
       }
 
       if (!hasChanged) {
-        nextHeights = { ...nextHeights };
+        nextHeights = hasCurrentMeasurements ? { ...nextHeights } : observedHeights;
         hasChanged = true;
       }
       nextHeights[lineIndex] = height;
@@ -2600,7 +2606,23 @@
     bodyTokens: Token[];
   }
 
+  const listRenderTokenPartsCache = new WeakMap<Token[], Map<number, RenderListTokenParts | null>>();
+
   function getListRenderTokenParts(tokens: Token[], prefixLength: number): RenderListTokenParts | null {
+    let byPrefix = listRenderTokenPartsCache.get(tokens);
+    if (byPrefix?.has(prefixLength)) {
+      return byPrefix.get(prefixLength) ?? null;
+    }
+    const result = computeListRenderTokenParts(tokens, prefixLength);
+    if (!byPrefix) {
+      byPrefix = new Map();
+      listRenderTokenPartsCache.set(tokens, byPrefix);
+    }
+    byPrefix.set(prefixLength, result);
+    return result;
+  }
+
+  function computeListRenderTokenParts(tokens: Token[], prefixLength: number): RenderListTokenParts | null {
     if (prefixLength === 0) {
       return { prefixTokens: [], bodyTokens: tokens };
     }
@@ -2776,7 +2798,9 @@
     if (getRichRoot(offset)) return false;
 
     const sourceLine = findLineIndexForOffset(offset);
-    const lineIndex = markdownRichByLine.get(sourceLine)?.startLine ?? sourceLine;
+    const table = markdownTableByLine.get(sourceLine);
+    if (table && getMarkdownTableRoot(table)) return false;
+    const lineIndex = table?.startLine ?? markdownRichByLine.get(sourceLine)?.startLine ?? sourceLine;
     const lineStart = lineStartOffsets[lineIndex] ?? 0;
     const lineEnd = getLineEndOffset(fileContent, lineStart);
     const lineTop = getRenderLineTop(lineIndex) + editorTopPadding;
@@ -2823,10 +2847,14 @@
       const editorHasFocus = isEditorFocused || document.activeElement === textareaEl;
       steadyEditorCaretVisible = editorHasFocus && isActiveDocumentRenderEnabled && shouldRenderHighlightLayer;
       if (!steadyEditorCaretVisible) return;
+      if (getFenceInteriorDirection(start) !== undefined) {
+        steadyEditorCaretVisible = false;
+        return;
+      }
       if (revealCaret && ensureRenderedCaretLineVisible(start)) return;
 
       const table = markdownTableByLine.get(findLineIndexForOffset(start));
-      if (table) {
+      if (table && start > table.start && start < table.end) {
         steadyEditorCaretVisible = false;
         if (revealCaret && document.activeElement === textareaEl) {
           void tick().then(() => focusMarkdownTableCell(table, start));
@@ -2841,18 +2869,8 @@
       }
 
       const viewportRect = editorViewportEl.getBoundingClientRect();
-      let nextScrollTop = editorViewportEl.scrollTop;
-      if (caretRect.top < viewportRect.top) {
-        nextScrollTop += caretRect.top - viewportRect.top;
-      } else if (caretRect.bottom > viewportRect.bottom) {
-        nextScrollTop += caretRect.bottom - viewportRect.bottom;
-      }
-      if (revealCaret && Math.abs(nextScrollTop - editorViewportEl.scrollTop) > 0.5) {
-        const maximumScrollTop = Math.max(0, renderEditorScrollHeight - editorViewportEl.clientHeight);
-        const clampedScrollTop = Math.max(0, Math.min(nextScrollTop, maximumScrollTop));
+      if (revealCaret && revealRenderedRect(caretRect, viewportRect)) {
         steadyEditorCaretVisible = false;
-        editorViewportEl.scrollTop = clampedScrollTop;
-        updateActiveTab({ scrollTop: clampedScrollTop });
         requestAnimationFrame(() => syncSteadyEditorCaretPosition());
         return;
       }
@@ -2869,6 +2887,16 @@
 
   function restartSteadyEditorCaretBlink() {
     steadyEditorCaretBlinkKey += 1;
+  }
+
+  function revealRenderedRect(rect: DOMRect, viewport = editorViewportEl?.getBoundingClientRect()): boolean {
+    if (!editorViewportEl || !viewport) return false;
+    const delta = Math.min(0, rect.top - viewport.top) || Math.max(0, rect.bottom - viewport.bottom);
+    const next = clamp(editorViewportEl.scrollTop + delta, 0, Math.max(0, renderEditorScrollHeight - editorViewportEl.clientHeight));
+    if (Math.abs(next - editorViewportEl.scrollTop) <= 0.5) return false;
+    editorViewportEl.scrollTop = next;
+    updateActiveTab({ scrollTop: next });
+    return true;
   }
 
   function hideSteadyEditorCaret() {
@@ -3328,7 +3356,6 @@
   }
 
   function clearRenderedSelectionHighlight() {
-    hasRenderedSelectionHighlight = false;
     if (renderedSelectionDecorations.length) renderedSelectionDecorations = [];
     if (!supportsRenderedHighlights) return;
     CSS.highlights.delete(renderedSelectionHighlightName);
@@ -3403,7 +3430,38 @@
       const root = getRichRoot(block.start);
       if (root) ranges.push(...getRichSelectionRanges(root, selection.start - block.start, selection.end - block.start));
     }
+    if (isEditorFocused) {
+      for (const block of markdownTableBlocks) {
+        if (selection.end <= block.start || selection.start >= block.end
+          || (selection.start <= block.start && selection.end >= block.end)) continue;
+        const inputs = getMarkdownTableRoot(block)?.querySelectorAll<HTMLTextAreaElement>('textarea[data-table-column]');
+        for (const input of inputs ?? []) {
+          const row = Number(input.dataset.tableRow);
+          const column = Number(input.dataset.tableColumn);
+          const cell = block.cells[row]?.[column];
+          const preview = input.previousElementSibling;
+          if (!cell || !(preview instanceof HTMLElement) || !preview.classList.contains('table-cell-preview')) continue;
+          const start = Math.max(selection.start, cell.start);
+          const end = Math.min(selection.end, cell.end);
+          if (start >= end) continue;
+          if (preview.querySelector('[data-rich-offsets]')) {
+            const localStart = getMarkdownCellPreviewSource(cell.start, start).length;
+            const localEnd = getMarkdownCellPreviewSource(cell.start, end).length;
+            ranges.push(...getRichSelectionRanges(preview, localStart, localEnd));
+          } else {
+            const from = getTextNodeBoundary(preview, lowerBound(cell.offsets, start));
+            const to = getTextNodeBoundary(preview, lowerBound(cell.offsets, end));
+            if (!from || !to) continue;
+            const range = document.createRange();
+            range.setStart(from.node, from.offset);
+            range.setEnd(to.node, to.offset);
+            ranges.push(range);
+          }
+        }
+      }
+    }
     for (let lineIndex = startLine; lineIndex <= endLine; lineIndex += 1) {
+      if (fencedCodeByDelimiterLine.has(lineIndex) && !markdownRichByLine.has(lineIndex)) continue;
       const lineStart = lineStartOffsets[lineIndex] ?? 0;
       const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
       const lineEnd = lineStart + lineText.length;
@@ -3430,36 +3488,49 @@
       return;
     }
 
-    const ranges = multiCaret
-      ? multiCaret.ranges.flatMap(range => getVisibleRenderedSelectionRanges(caretSelection(range)))
-      : getVisibleRenderedSelectionRanges(getTextareaSelectionInContent());
-    if (ranges.length === 0) {
-      clearRenderedSelectionHighlight();
-      return;
+    const selections = multiCaret ? multiCaret.ranges.map(caretSelection) : [getTextareaSelectionInContent()];
+    const ranges = selections.flatMap(getVisibleRenderedSelectionRanges);
+    const rects = selections.flatMap(getRenderedSelectedLineBreakRects);
+    if (supportsRenderedHighlights && ranges.length) {
+      CSS.highlights.set(renderedSelectionHighlightName, new Highlight(...ranges));
+    } else if (supportsRenderedHighlights) {
+      CSS.highlights.delete(renderedSelectionHighlightName);
+    } else {
+      rects.push(...ranges.flatMap(range => Array.from(range.getClientRects())));
     }
 
-    if (supportsRenderedHighlights) {
-      CSS.highlights.set(renderedSelectionHighlightName, new Highlight(...ranges));
-    } else {
-      const viewport = editorViewportEl.getBoundingClientRect();
-      const selectionScrollTop = editorViewportEl.scrollTop;
-      const seenRects = new Set<string>();
-      renderedSelectionDecorations = ranges.flatMap(range => Array.from(range.getClientRects())
-        .filter(rect => {
-          if (rect.width <= 0 || rect.height <= 0) return false;
-          const key = `${rect.left}:${rect.top}:${rect.width}:${rect.height}`;
-          if (seenRects.has(key)) return false;
-          seenRects.add(key);
-          return true;
-        })
-        .map(rect => ({
-          left: rect.left - viewport.left,
-          top: rect.top - viewport.top + selectionScrollTop,
-          width: rect.width,
-          height: rect.height
-        })));
+    const viewport = editorViewportEl.getBoundingClientRect();
+    const selectionScrollTop = editorViewportEl.scrollTop;
+    const seenRects = new Set<string>();
+    renderedSelectionDecorations = rects.filter(rect => {
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      const key = `${rect.left}:${rect.top}:${rect.width}:${rect.height}`;
+      if (seenRects.has(key)) return false;
+      seenRects.add(key);
+      return true;
+    }).map(rect => ({
+      left: rect.left - viewport.left,
+      top: rect.top - viewport.top + selectionScrollTop,
+      width: rect.width,
+      height: rect.height
+    }));
+  }
+
+  function getRenderedSelectedLineBreakRects(selection: EditorSelection): DOMRect[] {
+    if (!editorViewportEl || selection.start === selection.end) return [];
+    const first = Math.max(startLine, findLineIndexForOffset(selection.start));
+    const last = Math.min(endLine, findLineIndexForOffset(selection.end) - 1);
+    const width = Math.max(1, measureEditorPlainTextWidth(' '));
+    const rects: DOMRect[] = [];
+    for (let line = first; line <= last; line++) {
+      if (fencedCodeByDelimiterLine.has(line) || markdownRichByLine.has(line) || markdownTableByLine.has(line)) continue;
+      const row = editorViewportEl.querySelector<HTMLElement>(`.backdrop-line[data-line-index="${line}"]`);
+      if (!row) continue;
+      const text = getLineTextForLayout(fileContent, lineStartOffsets, line);
+      const caret = getRenderedCaretRectFromLineText(row, text, text.length);
+      if (caret) rects.push(new DOMRect(caret.left, caret.top, width, caret.height));
     }
-    hasRenderedSelectionHighlight = true;
+    return rects;
   }
 
   function syncRenderedPairHighlight() {
@@ -3686,43 +3757,18 @@
     return () => window.removeEventListener('scroll', repaint, true);
   });
 
-  function getFencedCodeLineCaret(lineStart: number): number {
-    const lineEnd = getLineEndOffset(fileContent, lineStart);
-    return lineStart + getLeadingWhitespace(fileContent.slice(lineStart, lineEnd)).length;
-  }
+  let fencedCodeByDelimiterLine = $derived.by(() => {
+    const lines = new Map<number, FencedCodeBlockRange>();
+    for (const block of fencedCodeBlocks) {
+      lines.set(block.openingLineIndex, block);
+      if (block.closingLineIndex !== undefined) lines.set(block.closingLineIndex, block);
+    }
+    return lines;
+  });
 
-  function getFirstFencedCodeContentCaret(block: FencedCodeBlockRange): number {
-    const hasContentLine = block.closingLineStart === undefined
-      ? block.contentStart > block.openingLineEnd
-      : block.contentStart < block.closingLineStart;
-    return hasContentLine
-      ? getFencedCodeLineCaret(block.contentStart)
-      : getCaretAfterFencedCodeBlock(block)
-        ?? getCaretBeforeFencedCodeBlock(block)
-        ?? block.openingLineEnd;
-  }
-
-  function getLastFencedCodeContentCaret(block: FencedCodeBlockRange): number | null {
-    if (block.closingLineStart === undefined) return null;
-
-    const previousLine = getPreviousLineBounds(fileContent, block.closingLineStart);
-    return previousLine && previousLine.start > block.openingLineStart
-      ? previousLine.end
-      : null;
-  }
-
-  function getCaretBeforeFencedCodeBlock(block: FencedCodeBlockRange): number | null {
-    return getPreviousLineBounds(fileContent, block.openingLineStart)?.end ?? null;
-  }
-
-  function getCaretAfterFencedCodeBlock(block: FencedCodeBlockRange): number | null {
-    if (
-      block.closingLineEnd === undefined
-      || block.afterBlockStart === undefined
-      || block.afterBlockStart <= block.closingLineEnd
-    ) return null;
-
-    return getFencedCodeLineCaret(block.afterBlockStart);
+  function getFencedCodeBoundary(line: number): number | undefined {
+    const block = fencedCodeByDelimiterLine.get(line);
+    return line === block?.openingLineIndex ? block.openingLineStart : block?.closingLineEnd;
   }
 
   function getMarkdownHeadingMarkerRange(offset: number): { start: number; end: number } | null {
@@ -3777,6 +3823,9 @@
   }
 
   function getSafeRenderedCaretOffset(offset: number, direction: -1 | 0 | 1): number {
+    const lineIndex = findLineIndexForOffset(offset);
+    const table = markdownTableByLine.get(lineIndex);
+    if (table) return getMarkdownTableCaretIndex(table).boundary(offset, direction);
     const model = getRenderEditModel(offset);
     if (model?.rich) return model.start + model.index.boundary(offset - model.start, direction);
     if (markdownHeadingReplacementCaret === offset) return offset;
@@ -3788,39 +3837,67 @@
 
     if (headingMarker) return offset;
 
-    for (const block of fencedCodeBlocks) {
-      if (offset >= block.openingLineStart && offset <= block.openingLineEnd) {
-        return direction < 0
-          ? getCaretBeforeFencedCodeBlock(block) ?? getFirstFencedCodeContentCaret(block)
-          : getFirstFencedCodeContentCaret(block);
+    const fence = fencedCodeByDelimiterLine.get(lineIndex);
+    if (fence) {
+      const boundary = getFencedCodeBoundary(lineIndex)!;
+      if (offset === boundary) return offset;
+      if (lineIndex === fence.openingLineIndex) {
+        if (direction <= 0) return boundary;
+        return fence.contentStart === fence.closingLineStart ? fence.closingLineEnd! : fence.contentStart;
       }
-
-      if (
-        block.closingLineStart !== undefined
-        && block.closingLineEnd !== undefined
-        && offset >= block.closingLineStart
-        && offset <= block.closingLineEnd
-      ) {
-        if (direction < 0) {
-          return getLastFencedCodeContentCaret(block)
-            ?? getCaretBeforeFencedCodeBlock(block)
-            ?? getCaretAfterFencedCodeBlock(block)
-            ?? offset;
-        }
-        return getCaretAfterFencedCodeBlock(block)
-          ?? getLastFencedCodeContentCaret(block)
-          ?? offset;
-      }
+      return direction < 0 && fence.closingBoundaryStart !== undefined
+        ? fence.contentStart === fence.closingLineStart ? fence.openingLineStart : fence.closingBoundaryStart
+        : boundary;
     }
 
-    const listLineIndex = findLineIndexForOffset(offset);
-    const listLayout = getRenderListLineLayout(listLineIndex);
+    const listLayout = getRenderListLineLayout(lineIndex);
     if (listLayout) {
-      const bodyStart = getRenderListBodyStart(listLineIndex, listLayout);
+      const bodyStart = getRenderListBodyStart(lineIndex, listLayout);
       if (offset < bodyStart) return bodyStart;
     }
 
     return model ? model.start + model.index.boundary(offset - model.start, direction) : offset;
+  }
+
+  function getFenceInteriorDirection(offset: number): -1 | 1 | undefined {
+    const line = findLineIndexForOffset(offset);
+    if (markdownRichByLine.has(line)) {
+      const model = getRenderEditModel(offset);
+      return model?.index.mapped.fencedCodeBoundaries?.get(offset - model.start);
+    }
+    const fence = fencedCodeByDelimiterLine.get(line);
+    if (fence) return line === fence.openingLineIndex ? 1 : -1;
+  }
+
+  function findEditableCaretPastFence(offset: number, direction: -1 | 1): number | null {
+    let position = offset;
+    while (getFenceInteriorDirection(position) !== undefined) {
+      const line = findLineIndexForOffset(position);
+      const rich = markdownRichByLine.get(line);
+      let next: number;
+      if (rich) {
+        const adjacent = getRenderEditModel(position)?.index.adjacent(position - rich.start, direction);
+        next = adjacent != null ? rich.start + adjacent
+          : adjacentTextOffset(fileContent, direction < 0 ? rich.start : rich.end, direction);
+      } else {
+        const start = lineStartOffsets[line + direction];
+        if (start === undefined) return null;
+        next = direction < 0 ? getLineEndOffset(fileContent, start) : start;
+      }
+      if ((next - position) * direction <= 0) return null;
+      const safe = getSafeRenderedCaretOffset(next, direction);
+      position = (safe - position) * direction > 0 ? safe : next;
+    }
+    return position;
+  }
+
+  function getEditableRenderedCaretOffset(offset: number, direction: -1 | 0 | 1): number | null {
+    const safe = getSafeRenderedCaretOffset(offset, direction);
+    const inside = getFenceInteriorDirection(safe);
+    if (inside === undefined) return safe;
+    const preferred = direction || inside;
+    return findEditableCaretPastFence(safe, preferred)
+      ?? findEditableCaretPastFence(safe, preferred === 1 ? -1 : 1);
   }
 
   function shouldBlockPartialFencedCodeSelectionEdit(start: number, end: number): boolean {
@@ -3834,7 +3911,7 @@
       ) return false;
 
       const touchesOpeningBoundary = start < block.contentStart && end > block.openingLineStart;
-      const touchesClosingBoundary = start < block.afterBlockStart && end > block.closingBoundaryStart;
+      const touchesClosingBoundary = start < block.closingLineEnd && end > block.closingBoundaryStart;
       const coversWholeBlock = start <= block.openingLineStart && end >= block.closingLineEnd;
       return (touchesOpeningBoundary || touchesClosingBoundary) && !coversWholeBlock;
     });
@@ -3848,7 +3925,7 @@
     let pos = selectionCaret(selection).head;
     const previousCaretOffset = caretOffset;
     if (isRenderMode && isActiveDocumentRenderEnabled && isCollapsed && !isComposingEditorText) {
-      const safePosition = getSafeRenderedCaretOffset(pos, pendingRenderCaretMovementDirection);
+      const safePosition = getEditableRenderedCaretOffset(pos, pendingRenderCaretMovementDirection) ?? pos;
       if (safePosition !== pos) {
         setTextareaSelectionFromContent(safePosition, safePosition);
         pos = safePosition;
@@ -3980,10 +4057,10 @@
           || editorActivationGeneration !== activationGeneration
         ) return;
         updateCursorPosition();
-        if (options.keepRenderCaretVisible) {
-          keepEditorCaretVisibleDuringEdit();
+        if (isRenderMode) {
+          renderViewportController?.requestCaretReveal(false);
         } else {
-          syncEditorCaretVisibilityForCurrentMode();
+          hideSteadyEditorCaret();
         }
       });
       return;
@@ -4050,26 +4127,48 @@
   function updateMarkdownTableSelection(block: MarkdownTableBlock, selection: TableCellSelection) {
     multiCaretController.reset();
     multiCaret = null;
-    const cell = block.cells[selection.row]?.[selection.column];
-    if (!cell || !textareaEl) return;
-    const start = cell.offsets[Math.min(selection.start, cell.offsets.length - 1)];
-    const end = cell.offsets[Math.min(selection.end, cell.offsets.length - 1)];
-    setTextareaSelectionFromContent(start, end);
-    updateActiveTab({ selectionStart: start, selectionEnd: end });
-    setLastEditorSnapshot({ content: fileContent, selection: { start, end } });
+    const { start, end, direction } = getMarkdownTableSourceSelection(block, selection);
+    if (!textareaEl) return;
+    setTextareaSelectionFromContent(start, end, fileContent, direction);
+    updateActiveTab({ selectionStart: start, selectionEnd: end, selectionDirection: direction });
+    setLastEditorSnapshot({ content: fileContent, selection: { start, end, direction } });
     hideSteadyEditorCaret();
     clearRenderedSelectionHighlight();
   }
 
+  function getMarkdownTableSourceSelection(block: MarkdownTableBlock, selection: TableCellSelection): EditorSelection {
+    const row = block.cells[selection.row];
+    const cell = row?.[selection.column];
+    const fallback = row?.at(-1)?.end ?? block.start;
+    return {
+      start: cell?.offsets[Math.min(selection.start, cell.offsets.length - 1)] ?? fallback,
+      end: cell?.offsets[Math.min(selection.end, cell.offsets.length - 1)] ?? fallback,
+      direction: selection.direction
+    };
+  }
+
+  function getMarkdownTableRoot(block: MarkdownTableBlock) {
+    return editorViewportEl?.querySelector<HTMLElement>(`[data-markdown-table="${block.startLine}"]`);
+  }
+
+  function getMarkdownCellPreviewSource(start: number, end: number) {
+    return fileContent.slice(start, end).replace(/\\\|/gu, '|');
+  }
+
+  function getMarkdownTableInput(block: MarkdownTableBlock, row: number, column: number) {
+    return getMarkdownTableRoot(block)?.querySelector<HTMLTextAreaElement>(`[data-table-row="${row}"][data-table-column="${column}"]`);
+  }
+
   function focusMarkdownTableCell(block: MarkdownTableBlock, offset: number) {
-    if (document.activeElement !== textareaEl || getTextareaSelectionInContent().start !== offset) return;
-    const position = getMarkdownTableCellAtOffset(block, offset);
-    const cell = editorViewportEl?.querySelector<HTMLTextAreaElement>(
-      `[data-markdown-table="${block.startLine}"] [data-table-row="${position.row}"][data-table-column="${position.column}"]`
-    );
+    const selection = getTextareaSelectionInContent();
+    if (document.activeElement !== textareaEl || selection.start !== offset || selection.end !== offset) return;
+    const position = getMarkdownTableCaretIndex(block).cellAt(offset);
+    if (!position) return;
+    const cell = getMarkdownTableInput(block, position.row, position.column);
     if (!cell) return;
     cell.setSelectionRange(position.offset, position.offset);
-    cell.focus();
+    cell.focus({ preventScroll: true });
+    revealKeyboardSelectionHead(offset);
   }
 
   function commitMarkdownTableEdit(
@@ -4090,14 +4189,15 @@
       ? cell.offsets[Math.min(options.cell.start, cell.offsets.length - 1)] : block.start;
     const end = cell && options.cell
       ? cell.offsets[Math.min(options.cell.end, cell.offsets.length - 1)] : start;
-    commitEditorEdit(before, { content: nextContent, selection: { start, end } }, {
+    const direction = options.cell?.direction;
+    commitEditorEdit(before, { content: nextContent, selection: { start, end, direction } }, {
       mergeKey: options.mergeKey === 'composition' ? 'composition' : options.mergeKey ? `markdown:${block.start}:${options.mergeKey}` : null,
       selectionAlreadyApplied: true,
       syncRenderCaretAfterUpdate: true,
       offsetIndex
     });
     if (textareaEl) textareaEl.value = offsetIndex.textareaValue;
-    setTextareaSelectionFromContent(start, end, nextContent);
+    setTextareaSelectionFromContent(start, end, nextContent, direction);
   }
 
   function leaveMarkdownTable(block: MarkdownTableBlock, direction: -1 | 1) {
@@ -4121,9 +4221,40 @@
     return getEditorInputMergeKey(inputType, before.selection.start !== before.selection.end, isComposing);
   }
 
+  function getFenceInsertionSite(offset: number) {
+    const editable = getEditableRenderedCaretOffset(offset, pendingRenderCaretMovementDirection);
+    if (editable !== null) return { offset: editable, prefix: '', suffix: '' };
+    const fence = fencedCodeByDelimiterLine.get(findLineIndexForOffset(offset));
+    if (!fence) return null;
+    const newline = getPreferredNewline(fileContent, fence.contentStart);
+    if (fence.contentStart === fence.closingLineStart) return { offset: fence.contentStart, prefix: '', suffix: newline };
+    if (fence.openingLineEnd === fileContent.length) return { offset: fileContent.length, prefix: newline, suffix: '' };
+    return null;
+  }
+
+  function insertAtFence(content: string, selection: EditorSelection,
+    site: ReturnType<typeof getFenceInsertionSite>, text: string): EditorSnapshot {
+    if (!site || !text) return { content, selection };
+    const { offset, prefix, suffix } = site;
+    const head = offset + prefix.length + text.length;
+    return {
+      content: content.slice(0, offset) + prefix + text + suffix + content.slice(offset),
+      selection: { start: head, end: head }
+    };
+  }
+
+  function getFencedInsertionEdit(content: string, selection: EditorSelection, text: string): EditorSnapshot | null {
+    if (selection.start !== selection.end || !text || getFenceInteriorDirection(selection.start) === undefined) return null;
+    return insertAtFence(content, selection, getFenceInsertionSite(selection.start), text);
+  }
+
   function getRenderSelectionEdit(content: string, selection: EditorSelection, text: string): EditorSnapshot {
-    if (isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown') {
-      return replaceMarkdownSelection(content, selection, text, markdownPresentation.regions, !markdownRenderSettings.hideHeadingMarkers);
+    if (isRenderMode && isActiveDocumentRenderEnabled) {
+      const fenced = getFencedInsertionEdit(content, selection, text);
+      if (fenced) return fenced;
+      if (activeDocumentFormat.id === 'markdown') {
+        return replaceMarkdownSelection(content, selection, text, markdownPresentation.regions, !markdownRenderSettings.hideHeadingMarkers);
+      }
     }
     return { content: content.slice(0, selection.start) + text + content.slice(selection.end),
       selection: { start: selection.start + text.length, end: selection.start + text.length } };
@@ -4145,10 +4276,11 @@
       target.selectionDirection
     );
     inputResult.snapshot = multiCaretController.compositionSnapshot(inputResult.snapshot);
-    if (!isComposingEditorText && !pendingInput?.isComposing
-      && isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown') {
-      const safe = repairMarkdownInput(before, inputResult.snapshot, inputResult.change,
-        markdownPresentation.regions, !markdownRenderSettings.hideHeadingMarkers);
+    if (!isComposingEditorText && !pendingInput?.isComposing && isRenderMode && isActiveDocumentRenderEnabled) {
+      const change = inputResult.change;
+      const safe = (change && !change.beforeText ? getFencedInsertionEdit(before.content, before.selection, change.afterText) : null)
+        ?? (activeDocumentFormat.id === 'markdown' ? repairMarkdownInput(before, inputResult.snapshot, change,
+          markdownPresentation.regions, !markdownRenderSettings.hideHeadingMarkers) : inputResult.snapshot);
       if (safe.content !== inputResult.snapshot.content) {
         const offsetIndex = createTextOffsetIndex(safe.content);
         target.value = offsetIndex.textareaValue;
@@ -4170,18 +4302,27 @@
 
   function syncInputWidthBeforeEditing() {
     if (!isRenderMode) return;
+    const needsScrollSync = shouldRenderHighlightLayer && !!editorViewportEl && (
+      editorViewportEl.scrollTop !== scrollTop || editorViewportEl.scrollLeft !== scrollLeft
+    );
+    const needsWidthSync = renderViewportController?.hasPendingViewportWidth() ?? false;
+    if (!needsScrollSync && !needsWidthSync) return;
     // scroll 이벤트가 아직 전달되지 않았어도 현재 화면과 가상화 범위를 먼저 맞춘다.
     // 이전 화면의 줄을 클릭하거나 빠른 연속 키 입력을 누락하지 않도록 한다.
     flushSync(() => {
-      if (shouldRenderHighlightLayer && editorViewportEl) {
+      if (needsScrollSync && editorViewportEl) {
         updateActiveTab({ scrollTop: editorViewportEl.scrollTop, scrollLeft: editorViewportEl.scrollLeft });
       }
-      renderViewportController?.flushPendingViewportWidth();
+      if (needsWidthSync) {
+        renderViewportController?.flushPendingViewportWidth();
+      }
     });
   }
 
   function handleEditorBeforeInput(event: InputEvent) {
-    syncInputWidthBeforeEditing();
+    if (!event.isComposing && !isComposingEditorText) {
+      syncInputWidthBeforeEditing();
+    }
     if (event.inputType === 'historyUndo') {
       event.preventDefault();
       performUndo();
@@ -4211,7 +4352,6 @@
       inputType: event.inputType,
       isComposing: event.isComposing || isComposingEditorText
     };
-    syncEditorCaretVisibilityForCurrentMode();
   }
 
   function handleSelectedListItemDeletion(event: InputEvent, start: number, end: number): boolean {
@@ -4236,28 +4376,46 @@
   function handleEditorCompositionStart() {
     syncInputWidthBeforeEditing();
     closeActiveUndoGroup();
+    const { start, end } = getTextareaSelectionInContent();
+    const atFence = isRenderMode && isActiveDocumentRenderEnabled
+      && start === end && getFenceInteriorDirection(start) !== undefined;
+    const site = atFence ? getFenceInsertionSite(start) : null;
+    const needsFenceRepair = atFence && (!site || !!site.prefix || !!site.suffix);
+    if (site && !needsFenceRepair) {
+      setTextareaSelectionFromContent(site.offset, site.offset);
+    }
     multiCaretController.startComposition();
     isComposingEditorText = true;
     pendingNativeInput = null;
     const before = getCurrentEditorSnapshot();
-    markdownComposition = isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown'
-      && before.selection.start !== before.selection.end
-      ? { tabId: activeTabId, before, regions: markdownPresentation.regions, showHeadingMarkers: !markdownRenderSettings.hideHeadingMarkers } : null;
+    renderCompositionRepair = null;
+    if (needsFenceRepair) {
+      renderCompositionRepair = { tabId: activeTabId, repair(after) {
+        const length = after.content.length - before.content.length;
+        const text = length > 0 ? after.content.slice(start, start + length) : '';
+        return insertAtFence(before.content, before.selection, site, text);
+      } };
+    } else if (isRenderMode && isActiveDocumentRenderEnabled && activeDocumentFormat.id === 'markdown'
+      && before.selection.start !== before.selection.end) {
+      const regions = markdownPresentation.regions;
+      const showHeadingMarkers = !markdownRenderSettings.hideHeadingMarkers;
+      renderCompositionRepair = { tabId: activeTabId, repair: after =>
+        repairMarkdownInput(before, after, getTextChange(before.content, after.content), regions, showHeadingMarkers) };
+    }
   }
 
   function handleEditorCompositionEnd() {
     isComposingEditorText = false;
     if (multiCaretController.finishComposition()) {
-      markdownComposition = null;
+      renderCompositionRepair = null;
       closeActiveUndoGroup();
       return;
     }
-    const composition = markdownComposition;
-    markdownComposition = null;
+    const composition = renderCompositionRepair;
+    renderCompositionRepair = null;
     if (composition && composition.tabId === activeTabId) {
       const after = getCurrentEditorSnapshot();
-      const safe = repairMarkdownInput(composition.before, after, getTextChange(composition.before.content, after.content),
-        composition.regions, composition.showHeadingMarkers);
+      const safe = composition.repair(after);
       if (safe.content !== after.content) commitEditorEdit(after, safe, { mergeKey: 'composition' });
     }
     closeActiveUndoGroup();
@@ -4299,11 +4457,67 @@
     handleEditorDoubleClick(event);
   }
 
+  function getRenderedHorizontalTarget(offset: number, direction: -1 | 1): number | null {
+    const line = findLineIndexForOffset(offset);
+    const table = markdownTableByLine.get(line);
+    if (table) {
+      return getMarkdownTableCaretIndex(table).adjacent(offset, direction)
+        ?? getSafeRenderedCaretOffset(adjacentTextOffset(fileContent, offset, direction), direction);
+    }
+
+    const model = getRenderEditModel(offset);
+    const layout = getRenderListLineLayout(line);
+    if (!model?.rich && layout && direction < 0 && offset === getRenderListBodyStart(line, layout)) {
+      const previous = getPreviousLineBounds(fileContent, lineStartOffsets[line]);
+      return previous ? getSafeRenderedCaretOffset(previous.end, direction) : offset;
+    }
+
+    const fence = fencedCodeByDelimiterLine.get(line);
+    if (fence) {
+      if (offset === fence.openingLineStart && direction > 0) {
+        return fence.contentStart === fence.closingLineStart ? fence.closingLineEnd! : fence.contentStart;
+      }
+      if (offset === fence.closingLineEnd && direction < 0) {
+        return fence.contentStart === fence.closingLineStart ? fence.openingLineStart : fence.closingBoundaryStart!;
+      }
+    }
+    if (!model && !layout && !fence) {
+      // 일반 텍스트 줄에서도 구조 앞뒤의 줄바꿈을 넘을 때는 같은 경계 규칙을 사용한다.
+      const nextLine = direction > 0 ? getNextLineStartOffset(fileContent, offset)
+        : offset === lineStartOffsets[line] ? getPreviousLineBounds(fileContent, offset)?.end : null;
+      if (nextLine == null) return null;
+      const target = getSafeRenderedCaretOffset(nextLine, direction);
+      return target === nextLine ? null : target;
+    }
+    const adjacent = model?.index.adjacent(offset - model.start, direction);
+    if (model && adjacent != null) return getSafeRenderedCaretOffset(model.start + adjacent, direction);
+    const next = model && getAdjacentListChunkModel(model.rich, direction);
+    if (next) return next.start + next.index.boundary(direction < 0 ? next.end - next.start : 0, direction);
+    const edge = model ? direction < 0 ? model.start : model.end : offset;
+    return getSafeRenderedCaretOffset(adjacentTextOffset(fileContent, edge, direction), direction);
+  }
+
+  function getHorizontalNavigationTarget(selection: EditorSelection, direction: -1 | 1, extend: boolean): number | null {
+    if (!extend && selection.start !== selection.end) {
+      return getSafeRenderedCaretOffset(direction < 0 ? selection.start : selection.end, direction);
+    }
+    return getRenderedHorizontalTarget(selectionCaret(selection).head, direction);
+  }
+
   function handleRenderedTextKey(event: KeyboardEvent): boolean {
     if (!textareaEl || event.isComposing || isComposingEditorText || event.ctrlKey || event.metaKey || event.altKey) return false;
     if (!['ArrowLeft', 'ArrowRight', 'Backspace', 'Delete', 'Enter'].includes(event.key)) return false;
     const selection = getTextareaSelectionInContent();
     const caret = selectionCaret(selection);
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      if (!shouldRenderHighlightLayer) return false;
+      const direction = event.key === 'ArrowLeft' ? -1 : 1;
+      const target = getHorizontalNavigationTarget(selection, direction, event.shiftKey);
+      if (target === null) return false;
+      event.preventDefault();
+      setRenderedKeyboardSelection(event.shiftKey ? caret.anchor : target, target);
+      return true;
+    }
     const model = getRenderEditModel(caret.head);
     if (!model) return false;
     const lineStart = getLineStartOffset(fileContent, selection.start);
@@ -4330,24 +4544,11 @@
       commitRenderEditorEdit(edit.content, edit.selection);
       return true;
     }
-    const direction = event.key === 'ArrowLeft' || event.key === 'Backspace' ? -1 : 1;
-    if (event.key === 'Backspace' || event.key === 'Delete') {
-      if (selection.start !== selection.end) return false;
-      const range = getRenderedDeletion(model, caret.head, direction);
-      event.preventDefault();
-      if (range.start !== range.end) commitManualEditorEdit(fileContent.slice(0, range.start) + fileContent.slice(range.end),
-        { start: range.start, end: range.start }, { mergeKey: `render-${event.key}`, keepRenderCaretVisible: true });
-      return true;
-    }
-    const adjacent = model.index.adjacent(caret.head - model.start, direction);
-    const next = adjacent === null ? getAdjacentListChunkModel(model.rich, direction) : null;
-    let target = adjacent !== null ? model.start + adjacent
-      : next ? next.start + next.index.boundary(direction < 0 ? next.end - next.start : 0, direction)
-      : adjacentTextOffset(fileContent, direction < 0 ? model.start : model.end, direction);
-    if (!event.shiftKey && selection.start !== selection.end) target = direction < 0 ? selection.start : selection.end;
-    target = getSafeRenderedCaretOffset(target, direction);
+    if (selection.start !== selection.end) return false;
+    const range = getRenderedDeletion(model, caret.head, event.key === 'Backspace' ? -1 : 1);
     event.preventDefault();
-    setRenderPointerSelection(event.shiftKey ? caret.anchor : target, target);
+    if (range.start !== range.end) commitManualEditorEdit(fileContent.slice(0, range.start) + fileContent.slice(range.end),
+      { start: range.start, end: range.start }, { mergeKey: `render-${event.key}`, keepRenderCaretVisible: true });
     return true;
   }
 
@@ -4578,29 +4779,6 @@
 
   function getRenderListLineStyle(layout: RenderListLineLayout): string {
     return `--list-visual-indent: ${layout.visualIndentWidth}px; --list-prefix-width: ${layout.prefixWidth}px;`;
-  }
-
-  function handleRenderListBoundaryArrowLeft(event: KeyboardEvent): boolean {
-    if (!textareaEl || event.isComposing || event.key !== 'ArrowLeft') return false;
-    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
-
-    const { start, end } = getTextareaSelectionInContent();
-    if (start !== end) return false;
-
-    const lineIndex = findLineIndexForOffset(start);
-    const layout = getRenderListLineLayout(lineIndex);
-    if (!layout || layout.prefixLength === 0) return false;
-    if (start !== getRenderListBodyStart(lineIndex, layout)) return false;
-
-    const previousLine = getPreviousLineBounds(fileContent, lineStartOffsets[lineIndex] ?? 0);
-    if (!previousLine) return false;
-
-    event.preventDefault();
-    closeActiveUndoGroup();
-    setTextareaSelectionFromContent(previousLine.end, previousLine.end);
-    updateCursorPosition();
-    keepEditorCaretVisibleDuringEdit();
-    return true;
   }
 
   function handleRenderListMarkerBackspace(event: KeyboardEvent): boolean {
@@ -4868,6 +5046,7 @@
     if (start !== end) return false;
 
     const crossesProtectedBoundary = fencedCodeBlocks.some((block) => {
+      if (start === block.openingLineStart || start === block.closingLineEnd) return true;
       if (event.key === 'Backspace') {
         return block.contentStart > block.openingLineEnd && start === block.contentStart;
       }
@@ -4998,15 +5177,18 @@
 
   function getEarlierListItemAtIndent(
     lineStart: number,
-    indent: string
+    indent: string,
+    childIndent?: string
   ): { marker: ListMarker; lineStart: number } | null {
     const targetColumns = getEditorIndentColumns(indent);
+    const childColumns = childIndent === undefined ? undefined : getEditorIndentColumns(childIndent);
     let previousLine = getPreviousLineBounds(fileContent, lineStart);
     while (previousLine) {
       const text = fileContent.slice(previousLine.start, previousLine.end);
       if (/^[ \t]*$/.test(text)) return null;
       const marker = getListMarkerAtStart(text);
       const columns = getEditorIndentColumns(marker?.indent ?? getLeadingWhitespace(text));
+      if (marker && childColumns !== undefined && columns < childColumns) return { marker, lineStart: previousLine.start };
       if (columns < targetColumns) return null;
       if (columns === targetColumns) {
         return marker ? { marker, lineStart: previousLine.start } : null;
@@ -5037,16 +5219,16 @@
     let replacement = nextIndent;
     let nextContent = renumberAfterRemovedListMarker(lineStart, lineEnd, currentMarker);
     if (currentMarker.indent.length > 0) {
-      const earlier = getEarlierListItemAtIndent(lineStart, nextIndent);
-      if (earlier && (earlier.marker.separator === 'unordered') === (currentMarker.separator === 'unordered')) {
-        const previous = getEarlierListItemAtIndent(earlier.lineStart, nextIndent);
+      const earlier = getEarlierListItemAtIndent(lineStart, nextIndent, currentMarker.indent);
+      if (earlier) {
+        const previous = getEarlierListItemAtIndent(earlier.lineStart, earlier.marker.indent);
         const previousLabel = previous?.marker.separator === earlier.marker.separator
           ? previous.marker.label : null;
         const nextLabel = getNextListMarkerLabel(earlier.marker.label, previousLabel);
         if (nextLabel) {
-          replacement = `${nextIndent}${formatListMarker(nextLabel, earlier.marker.separator, earlier.marker.spacing)}`;
+          replacement = `${earlier.marker.indent}${formatListMarker(nextLabel, earlier.marker.separator, earlier.marker.spacing)}`;
           const followingLineStart = getNextLineStartOffset(fileContent, lineEnd);
-          if (followingLineStart !== null) {
+          if (earlier.marker.separator !== 'unordered' && followingLineStart !== null) {
             nextContent = renumberFollowingListMarkerSequence(
               nextContent, followingLineStart, earlier.marker, previousLabel, nextLabel, editorIndentUnit.length
             );
@@ -5386,7 +5568,7 @@
 
   function handleRenderMarkdownHeadingSpace(event: KeyboardEvent): boolean {
     if (activeDocumentFormat.id !== 'markdown' || !isActiveDocumentRenderEnabled) return false;
-    if (!textareaEl || event.isComposing || event.key !== ' ') return false;
+    if (!textareaEl || event.isComposing || isComposingEditorText || event.key !== ' ') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
     const { start, end } = getTextareaSelectionInContent();
@@ -5405,6 +5587,7 @@
     if (
       event.key !== '#'
       || event.isComposing
+      || isComposingEditorText
       || event.ctrlKey
       || event.altKey
       || event.metaKey
@@ -5431,7 +5614,7 @@
 
   function handleRenderAutoSubstitutionSpace(event: KeyboardEvent): boolean {
     if (!renderAutoSymbolSubstitution) return false;
-    if (!textareaEl || event.isComposing) return false;
+    if (!textareaEl || event.isComposing || isComposingEditorText) return false;
     if (event.key !== ' ') return false;
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
 
@@ -5453,7 +5636,6 @@
     { id: 'fenced-code-boundary-deletion-guard', priority: 30, execute: handleRenderFencedCodeBoundaryDeletion },
     { id: 'checkbox-deletion', priority: 34, execute: handleRenderCheckboxDeletion },
     { id: 'auto-pair-backspace', priority: 35, execute: handleRenderAutoPairBackspace },
-    { id: 'list-boundary-arrow-left', priority: 40, execute: handleRenderListBoundaryArrowLeft },
     { id: 'list-soft-break-enter', priority: 50, execute: handleRenderListSoftBreakEnter },
     { id: 'checkbox-enter', priority: 55, execute: handleRenderCheckboxEnter },
     { id: 'empty-list-exit-enter', priority: 60, execute: handleRenderExitEmptyListEnter },
@@ -5474,6 +5656,7 @@
   ]);
 
   function handleEditorKeyDown(event: KeyboardEvent) {
+    if (event.isComposing || event.keyCode === 229) return;
     syncInputWidthBeforeEditing();
     if (shouldRenderHighlightLayer && editorMovementKeys.has(event.key)) {
       // Ctrl+Home 직후 selectionchange보다 다음 키가 먼저 와도 새 이동점의 좌표를 확보한다.
@@ -5500,6 +5683,21 @@
     if (handlePrettyPrintNavigation(event)) return;
     prepareRenderMarkdownHeadingReplacementMarker(event);
     renderEditorCommandPipeline.execute(event);
+  }
+
+  function handleEditorKeyUp(event: KeyboardEvent) {
+    if (event.isComposing || isComposingEditorText || event.keyCode === 229) return;
+    if (!textareaEl) return;
+    const selection = getTextareaSelectionInContent();
+    const selectionMatches = selection.start === activeTab?.selectionStart
+      && selection.end === activeTab?.selectionEnd
+      && selection.direction === activeTab?.selectionDirection;
+    const caretReady = !isRenderMode || !isActiveDocumentRenderEnabled || !shouldRenderHighlightLayer
+      || selection.start !== selection.end || steadyEditorCaretVisible;
+    if (selectionMatches && caretReady && !editorMovementKeys.has(event.key) && pendingNativeInput === null) {
+      return;
+    }
+    updateCursorPosition();
   }
 
   // 새 탭 생성
@@ -5792,7 +5990,7 @@
     const { start, end } = getTextareaSelectionInContent();
     if (isRenderMode && isActiveDocumentRenderEnabled) {
       const blocksProtectedBoundary = start === end && fencedCodeBlocks.some((block) => (
-        block.closingBoundaryStart === start
+        block.openingLineStart === start || block.closingLineEnd === start || block.closingBoundaryStart === start
         || getPreviousLineBounds(fileContent, block.openingLineStart)?.end === start
       ));
       if (blocksProtectedBoundary || shouldBlockPartialFencedCodeSelectionEdit(start, end)) {
@@ -6341,7 +6539,20 @@
   function getRenderedCaretRectForOffset(offset: number): DOMRect | null {
     if (!isBrowser || !editorViewportEl || !shouldRenderHighlightLayer) return null;
 
-    const rich = markdownRichByLine.get(findLineIndexForOffset(offset));
+    const lineIndex = findLineIndexForOffset(offset);
+    const table = markdownTableByLine.get(lineIndex);
+    if (table) {
+      const root = getMarkdownTableRoot(table);
+      if (!root) return null;
+      if (offset === table.start || offset === table.end) return getMarkdownTableBoundaryRect(root, offset === table.start);
+      const cell = getMarkdownTableCaretIndex(table).cellAt(offset);
+      const input = cell && getMarkdownTableInput(table, cell.row, cell.column);
+      if (!cell || !input) return null;
+      const geometry = createTextareaGeometry(input);
+      try { return geometry.rectAt(cell.offset); }
+      finally { geometry.dispose(); }
+    }
+    const rich = markdownRichByLine.get(lineIndex);
     if (rich) {
       const root = getRichRoot(offset);
       if (!root) return null;
@@ -6361,13 +6572,16 @@
       return edge ? new DOMRect(opening ? edge.left : edge.right, rect.top, rect.width, rect.height) : rect;
     }
 
-    const lineIndex = findLineIndexForOffset(offset);
     if (lineIndex < startLine || lineIndex > endLine) return null;
 
     const lineElement = document.querySelector(
       `.backdrop-line[data-line-index="${lineIndex}"]`
     ) as HTMLElement | null;
     if (!lineElement) return null;
+    if (offset === getFencedCodeBoundary(lineIndex)) {
+      const rect = lineElement.getBoundingClientRect();
+      return new DOMRect(rect.left, rect.top, 1, rect.height);
+    }
 
     const lineStart = lineStartOffsets[lineIndex] ?? 0;
     const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
@@ -6425,8 +6639,8 @@
     return Number.isFinite(end) ? end : null;
   }
 
-  function getRenderedCaretOffsetAtPoint(clientX: number, clientY: number): number | null {
-    const lineElement = getRenderedLineElementAtPoint(clientY);
+  function getRenderedCaretOffsetAtPoint(clientX: number, clientY: number,
+    lineElement = getRenderedLineElementAtPoint(clientY), keyboard = false): number | null {
     if (!lineElement) return null;
 
     const lineIndex = Number(lineElement.dataset.lineIndex);
@@ -6435,9 +6649,24 @@
     const rich = markdownRichByLine.get(lineIndex);
     if (rich) {
       const offset = getRichTextOffsetAtPoint(lineElement, clientX, clientY, getRenderedCaretRectAtBoundary, textareaEl);
+      if (keyboard && offset !== null) {
+        const codeRange = getRenderEditModel(rich.start)?.index.mapped.inlineCodeRanges?.find(range =>
+          offset > range.start && offset < range.end);
+        const boundary = codeRange && getRichTextBoundary(lineElement, offset);
+        const code = boundary && boundary.node.parentElement?.closest('code');
+        if (code && codeRange) {
+          const rects = Array.from(code.getClientRects());
+          const first = rects[0];
+          const last = rects.at(-1);
+          if (first && clientY >= first.top && clientY <= first.bottom && clientX <= first.left) return rich.start + codeRange.start;
+          if (last && clientY >= last.top && clientY <= last.bottom && clientX >= last.right) return rich.start + codeRange.end;
+        }
+      }
       return offset === null ? rich.start : rich.start + offset;
     }
 
+    const fenceBoundary = getFencedCodeBoundary(lineIndex);
+    if (fenceBoundary !== undefined) return fenceBoundary;
     const lineStart = lineStartOffsets[lineIndex] ?? 0;
     const lineText = getLineTextForLayout(fileContent, lineStartOffsets, lineIndex);
     const headingMarkerOffset = getHiddenHeadingMarkerCaretOffsetAtPoint(lineElement, clientX, clientY);
@@ -6453,41 +6682,105 @@
   let prettyPrintNavigationOffset: number | null = null;
   let prettyPrintCaretAffinity: { content: string; offset: number; rowStart: number } | null = null;
 
-  function handlePrettyPrintNavigation(event: KeyboardEvent): boolean {
-    const vertical = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key);
-    if (!vertical) prettyPrintNavigationX = null;
-    if ((!vertical && event.key !== 'Home' && event.key !== 'End')
-      || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || isComposingEditorText || !textareaEl) return false;
-    const selection = getTextareaSelectionInContent();
-    const backward = textareaEl.selectionDirection === 'backward';
-    const offset = backward ? selection.start : selection.end;
-    // 이웃한 원문 줄에서 펼친 줄로 들어갈 때도 입력창의 원래 줄 높이를 쓰지 않는다.
-    const caret = getRenderedCaretRectForOffset(offset);
-    if (!caret || !editorViewportEl) return false;
-    const viewport = editorViewportEl.getBoundingClientRect();
-    const direction = event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1;
-    if (vertical && (prettyPrintNavigationX === null || prettyPrintNavigationOffset !== offset)) {
-      prettyPrintNavigationX = caret.left;
+  function createRenderedNavigationGeometry(): CaretGeometry {
+    const tables = new Map<MarkdownTableBlock, CaretGeometry>();
+    function getTableGeometry(table: MarkdownTableBlock, root: HTMLElement) {
+      let geometry = tables.get(table);
+      if (!geometry) {
+        geometry = createMarkdownTableGeometry(table, root);
+        tables.set(table, geometry);
+      }
+      return geometry;
     }
-    const geometry = createMultiCaretGeometry();
-    if (!geometry) return false;
-    let target: number | null;
+    return {
+      rectAt(offset) {
+        const table = markdownTableByLine.get(findLineIndexForOffset(offset));
+        const root = table && getMarkdownTableRoot(table);
+        return table && root ? getTableGeometry(table, root).rectAt(offset) : getRenderedCaretRectForOffset(offset);
+      },
+      offsetAt(x, y) {
+        const line = getRenderedLineElementAtPoint(y);
+        const table = line && markdownTableByLine.get(Number(line.dataset.lineIndex));
+        return table && line ? getTableGeometry(table, line).offsetAt(x, y) : getRenderedCaretOffsetAtPoint(x, y, line, true);
+      },
+      dispose() {
+        for (const geometry of tables.values()) geometry.dispose();
+      }
+    };
+  }
+
+  function getRenderedRowNavigationTarget(event: KeyboardEvent, offset: number): number | null {
+    const vertical = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key);
+    if (!vertical && event.key !== 'Shift') prettyPrintNavigationX = null;
+    if ((!vertical && event.key !== 'Home' && event.key !== 'End')
+      || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || isComposingEditorText
+      || !editorViewportEl || !shouldRenderHighlightLayer) return null;
+    const geometry = createRenderedNavigationGeometry();
     try {
+      const caret = geometry.rectAt(offset);
+      if (!caret) return null;
+      const viewport = editorViewportEl.getBoundingClientRect();
+      const direction = ['ArrowUp', 'PageUp', 'Home'].includes(event.key) ? -1 : 1;
+      if (vertical && (prettyPrintNavigationX === null || prettyPrintNavigationOffset !== offset)) {
+        prettyPrintNavigationX = caret.left;
+      }
       const x = prettyPrintNavigationX ?? caret.left;
-      target = vertical && !event.key.startsWith('Page')
-        ? adjacentVisualRow(geometry, offset, x, direction, getSafeRenderedCaretOffset,
+      const rowBoundary = (raw: number, movement: -1 | 1) => {
+        const safe = getSafeRenderedCaretOffset(raw, movement);
+        return !event.shiftKey && getFenceInteriorDirection(safe) !== undefined ? null : safe;
+      };
+      let target = vertical && !event.key.startsWith('Page')
+        ? adjacentVisualRow(geometry, offset, x, direction, rowBoundary,
             Math.max(editorViewportEl.clientHeight, measuredLineHeight * 3))
         : vertical ? geometry.offsetAt(x, caret.top + caret.height / 2
             + direction * Math.max(measuredLineHeight, editorViewportEl.clientHeight - measuredLineHeight))
-          : geometry.offsetAt(event.key === 'Home' ? viewport.left : viewport.right, caret.top + caret.height / 2);
-      // 더 이동할 표시 행이 없으면 현재 행의 시작/끝으로 이동한다.
-      target ??= geometry.offsetAt(direction < 0 ? viewport.left : viewport.right, caret.top + caret.height / 2);
+          : null;
+      if (target === null) {
+        const edge = geometry.offsetAt(direction < 0 ? viewport.left : viewport.right, caret.top + caret.height / 2);
+        target = edge === null ? offset : getSafeRenderedCaretOffset(edge, direction);
+        if (vertical && (target - offset) * direction < 0) target = offset;
+      }
+      if (!event.shiftKey) target = getEditableRenderedCaretOffset(target, direction) ?? offset;
+      prettyPrintNavigationOffset = target;
+      return target;
     } finally { geometry.dispose(); }
+  }
+
+  function handlePrettyPrintNavigation(event: KeyboardEvent): boolean {
+    const caret = selectionCaret(getTextareaSelectionInContent());
+    const target = getRenderedRowNavigationTarget(event, caret.head);
     if (target === null) return false;
     event.preventDefault();
-    const anchor = event.shiftKey ? (backward ? selection.end : selection.start) : target;
-    setRenderPointerSelection(anchor, target);
-    prettyPrintNavigationOffset = target;
+    setRenderedKeyboardSelection(event.shiftKey ? caret.anchor : target, target);
+    return true;
+  }
+
+  function navigateMarkdownTableCell(event: KeyboardEvent, block: MarkdownTableBlock,
+    cell: TableCellSelection, input: HTMLTextAreaElement): boolean {
+    if (event.ctrlKey || event.altKey || event.metaKey || !event.key.startsWith('Arrow')) return false;
+    const selection = getMarkdownTableSourceSelection(block, cell);
+    const caret = selectionCaret(selection);
+    const horizontal = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
+    if (horizontal) prettyPrintNavigationX = null;
+    const target = horizontal
+      ? getHorizontalNavigationTarget(selection, event.key === 'ArrowLeft' ? -1 : 1, event.shiftKey)
+      : getRenderedRowNavigationTarget(event, caret.head);
+    if (target === null) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    closeActiveUndoGroup();
+    const anchor = event.shiftKey ? caret.anchor : target;
+    const offsets = block.cells[cell.row]?.[cell.column]?.offsets;
+    const { start, end, direction } = caretSelection({ anchor, head: target });
+    const localStart = offsets?.indexOf(start) ?? -1;
+    const localEnd = offsets?.indexOf(end) ?? -1;
+    if (localStart >= 0 && localEnd >= 0 && target !== block.start && target !== block.end) {
+      input.setSelectionRange(localStart, localEnd, direction ?? 'forward');
+      updateMarkdownTableSelection(block, { ...cell, start: localStart, end: localEnd, direction });
+      revealKeyboardSelectionHead(target);
+    } else {
+      setRenderedKeyboardSelection(anchor, target, true);
+    }
     return true;
   }
 
@@ -6822,13 +7115,33 @@
     return true;
   }
 
-  function setRenderPointerSelection(anchor: number, offset: number) {
+  function setRenderPointerSelection(anchor: number, offset: number, focusEditor = false) {
     if (!textareaEl) return;
-    setTextareaSelectionFromContent(Math.min(anchor, offset), Math.max(anchor, offset));
-    textareaEl.setSelectionRange(textareaEl.selectionStart, textareaEl.selectionEnd,
-      offset < anchor ? 'backward' : 'forward');
+    const { start, end, direction } = caretSelection({ anchor, head: offset });
+    setTextareaSelectionFromContent(start, end, fileContent, direction);
+    if (focusEditor) textareaEl.focus({ preventScroll: true });
     updateCursorPosition();
     scheduleRenderedHighlights();
+  }
+
+  function setRenderedKeyboardSelection(anchor: number, head: number, focusEditor = false) {
+    setRenderPointerSelection(anchor, head, focusEditor);
+    if (anchor !== head) revealKeyboardSelectionHead(head);
+  }
+
+  function revealKeyboardSelectionHead(offset: number) {
+    if (ensureRenderedCaretLineVisible(offset)) return;
+    const rect = getRenderedCaretRectForOffset(offset);
+    if (!rect) return;
+    const table = markdownTableByLine.get(findLineIndexForOffset(offset));
+    if (table && offset > table.start && offset < table.end) {
+      const scroller = getMarkdownTableRoot(table)?.querySelector<HTMLElement>('.table-scroll-region');
+      if (scroller) {
+        const bounds = scroller.getBoundingClientRect();
+        scroller.scrollLeft += Math.min(0, rect.left - bounds.left) || Math.max(0, rect.right - bounds.right);
+      }
+    }
+    revealRenderedRect(rect);
   }
 
   let renderDragScrollFrame: number | null = null;
@@ -7342,7 +7655,7 @@
       style:--editor-layout-width={`${editorViewportWidth}px`}
       class:render-mode={isRenderMode && isEnhancedDocumentWithinBudget}
       class:render-selection-active={isRenderMode && isEnhancedDocumentWithinBudget && hasEditorSelection}
-      class:render-custom-selection={isRenderMode && shouldRenderHighlightLayer && hasRenderedSelectionHighlight}
+      class:render-custom-selection={shouldRenderHighlightLayer}
       class:render-wrap-settling={isRenderMode && isEnhancedDocumentWithinBudget && isRenderWrapSettling}
     >
       {#if shouldShowNewDocumentFormatToolbar && isNewDocumentFormatPickerOpen}
@@ -7543,7 +7856,7 @@
           {#each markdownTableBlocks.filter((block) => block.startLine <= endLine && block.endLine >= startLine) as block (`${activeTabId}:${block.startLine}`)}
             <div
               class="backdrop-line render-table-block"
-              class:table-source-selected={isEditorFocused && (activeTab?.selectionStart ?? 0) < block.end && (activeTab?.selectionEnd ?? 0) > block.start}
+              class:table-source-selected={isEditorFocused && (activeTab?.selectionStart ?? 0) <= block.start && (activeTab?.selectionEnd ?? 0) >= block.end}
               use:observeRenderedLine
               data-line-index={block.startLine}
               data-markdown-table={block.startLine}
@@ -7561,6 +7874,7 @@
                 reorderDurationMs={delimitedTableReorderDurationMs}
                 ondocumentchange={(next, options) => commitMarkdownTableEdit(block, next, options)}
                 oncellselection={(selection) => updateMarkdownTableSelection(block, selection)}
+                oncellnavigation={(event, selection, input) => navigateMarkdownTableCell(event, block, selection, input)}
                 onleave={(direction) => leaveMarkdownTable(block, direction)}
                 onhistoryinput={(direction) => direction === 'undo' ? performUndo() : performRedo()}
                 onundogroupend={closeActiveUndoGroup}
@@ -7569,7 +7883,7 @@
               >
                 {#snippet cellPreview(row: number, column: number)}
                   {@const cell = block.cells[row]?.[column]}
-                  {@const source = cell ? fileContent.slice(cell.start, cell.end).replace(/\\\|/gu, '|') : ''}
+                  {@const source = cell ? getMarkdownCellPreviewSource(cell.start, cell.end) : ''}
                   {#if /[*_~`<&\[!]/u.test(source)}
                   <MarkdownRichBlockView
                     {source}
@@ -7624,7 +7938,7 @@
             onpointerup={handleEditorPointerUp}
             onpointermove={trackRenderCaretPointerMove}
             onpointercancel={handleEditorPointerCancel}
-            onkeyup={updateCursorPosition}
+            onkeyup={handleEditorKeyUp}
             onselect={handleEditorSelectionChange}
             onclick={handleEditorClick}
             ondblclick={handleEditorDoubleClick}

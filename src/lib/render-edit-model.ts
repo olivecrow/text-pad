@@ -3,18 +3,9 @@ import type { MarkdownRichBlock } from './markdown-rich-text';
 import { renderMappedMarkdown, type MappedMarkdown } from './markdown-source-renderer';
 import { tokenizeLine, type Token } from './render-tokenizer';
 import { adjacentTextOffset } from './multi-caret';
+import { lowerBound } from './editor-navigation';
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-
-function lowerBound(values: readonly number[], value: number): number {
-  let low = 0, high = values.length;
-  while (low < high) {
-    const middle = (low + high) >>> 1;
-    if (values[middle] < value) low = middle + 1;
-    else high = middle;
-  }
-  return low;
-}
 
 /** 표시 여부와 관계없이 같은 원문에서 같은 이동·삭제 경계를 만든다. DOM은 좌표만 담당한다. */
 export class RenderTextIndex {
@@ -23,7 +14,7 @@ export class RenderTextIndex {
   private starts: number[];
   private ends: number[];
 
-  constructor(readonly mapped: Pick<MappedMarkdown, 'maps' | 'texts' | 'codeRanges' | 'inlineCodeRanges' | 'hiddenHeadingMarkers' | 'disclosures'>,
+  constructor(readonly mapped: Pick<MappedMarkdown, 'maps' | 'texts' | 'codeRanges' | 'inlineCodeRanges' | 'fencedCodeBoundaries' | 'hiddenHeadingMarkers' | 'disclosures'>,
     disclosureState: readonly boolean[] = []) {
     const boundaries = new Set<number>();
     const characters: EditorSelection[] = [];

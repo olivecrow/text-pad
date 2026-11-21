@@ -11,6 +11,8 @@ export const markdownContainerTags = new Set(markdownHtmlTags.filter(tag => !['b
 type Position = { start: number; end: number };
 const positions = new WeakMap<Token, Position>();
 const inlineCodePositions = new WeakMap<Token, Position>();
+const breakSpaces = new WeakMap<Token, number>();
+const blockPositions = new WeakMap<Token, Position>();
 const pendingStarts = new WeakMap<object, number>();
 const BaseState = parser.inline.State;
 parser.inline.State = class extends BaseState {
@@ -33,6 +35,9 @@ for (const { name, fn } of [...parser.inline.ruler.__rules__]) {
     if (silent) return fn(state, true);
     const start = state.pos;
     const count = state.tokens.length;
+    const pendingTrailingSpaces = name === 'newline'
+      ? state.pending.length - state.pending.replace(/ +$/u, '').length
+      : 0;
     pendingStarts.set(state, start - state.pending.length);
     const matched = fn(state, false);
     if (!matched) return false;
@@ -53,8 +58,9 @@ for (const { name, fn } of [...parser.inline.ruler.__rules__]) {
         from += 1; end -= 1;
       } else if (name === 'linkify' && token.type === 'text') {
         from = end - token.content.length;
-      } else if (name === 'newline' && token.type === 'hardbreak') {
-        while (from > 0 && state.src[from - 1] === ' ') from -= 1;
+      } else if (name === 'newline' && (token.type === 'hardbreak' || token.type === 'softbreak')) {
+        const stripped = token.type === 'hardbreak' ? pendingTrailingSpaces : Math.min(1, pendingTrailingSpaces);
+        if (stripped > 0) breakSpaces.set(token, stripped);
       }
       positions.set(token, { start: from, end });
     }
@@ -121,7 +127,9 @@ parser.block.ruler.at('table', (state, startLine, endLine, silent) => {
   let column = 0;
   let rowEnd = 0;
   for (const token of state.tokens.slice(count)) {
-    if (token.type === 'tr_open' && token.map) {
+    if (token.type === 'table_open' && token.map) {
+      blockPositions.set(token, { start: state.bMarks[startLine] + state.tShift[startLine], end: state.eMarks[token.map[1] - 1] });
+    } else if (token.type === 'tr_open' && token.map) {
       const row = token.map[0];
       const begin = state.bMarks[row] + state.tShift[row];
       rowEnd = state.eMarks[row];
@@ -158,14 +166,28 @@ parser.block.ruler.at('table', (state, startLine, endLine, silent) => {
   return true;
 }, { alt: tableRule.alt });
 
+const fenceRule = parser.block.ruler.__rules__.find(rule => rule.name === 'fence')!;
+const parseFence = fenceRule.fn;
+parser.block.ruler.at('fence', (state, startLine, endLine, silent) => {
+  const count = state.tokens.length;
+  if (!parseFence(state, startLine, endLine, silent)) return false;
+  const token = state.tokens[count];
+  if (!silent && token?.map) {
+    blockPositions.set(token, { start: state.bMarks[startLine] + state.tShift[startLine], end: state.eMarks[token.map[1] - 1] });
+  }
+  return true;
+}, { alt: fenceRule.alt });
+
 export interface MappedMarkdown {
   html: string;
   attribute: string;
   maps: number[][];
   texts: string[];
   trailingWhitespaceSpans?: ReadonlySet<number>;
+  blockBoundarySpans?: ReadonlySet<number>;
   codeRanges?: Array<{ start: number; end: number }>;
   inlineCodeRanges?: Position[];
+  fencedCodeBoundaries?: ReadonlyMap<number, -1 | 1>;
   hiddenHeadingMarkers?: Position[];
   disclosures?: Array<{ bodyStart: number; end: number; open: boolean }>;
 }
@@ -185,8 +207,10 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
   const maps: number[][] = [];
   const texts: string[] = [];
   const trailingWhitespaceSpans = new Set<number>();
+  const blockBoundarySpans = new Set<number>();
   const codeRanges: Array<{ start: number; end: number }> = [];
   const inlineCodeRanges: Position[] = [];
+  const fencedCodeBoundaries = new Map<number, -1 | 1>();
   const hiddenHeadingMarkers: Position[] = [];
   let codeDepth = 0;
   const disclosures: NonNullable<MappedMarkdown['disclosures']> = [];
@@ -203,6 +227,11 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     texts.push(text);
     if (codeDepth > 0) codeRanges.push({ start: maps[id][0], end: maps[id].at(-1)! });
     return `<span ${attribute}="${id}">${escape(text)}</span>`;
+  }
+
+  function blockBoundary(offset: number): string {
+    blockBoundarySpans.add(maps.length);
+    return mapped('\u200b', [offset, offset]);
   }
   // 블록 해석기가 제거한 인용·목록 접두부와 들여쓰기를 줄 단위로 복원한다.
   function blockOffsets(token: Token): number[] {
@@ -269,7 +298,8 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
         // 문자 참조의 내부에는 캐럿을 놓지 않고 전체 원문 범위를 유지한다.
       }
       bounds.push(offsets[offset + chunk.length]);
-      return mapped(value, bounds);
+      const preserveSpaces = !/[\r\n]/u.test(value) && value.trim().length > 0 && /[ \t]{2}|[ \t]$/u.test(value);
+      return mapped(value, bounds, preserveSpaces);
     });
   }
   const tokens = options.inline ? parser.parseInline(normalized, { ...environment }) : parser.parse(normalized, { ...environment });
@@ -322,7 +352,8 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     const slice = inlineOffsets.slice(pos.start, pos.end + 1);
     const boundaries = slice.length === token.content.length + 1 ? slice
       : [slice[0], ...Array(Math.max(0, token.content.length - 1)).fill(slice[0]), slice.at(-1)!];
-    const text = mapped(token.content, boundaries);
+    const preserveSpaces = /^[ \t]|[ \t]{2}|[ \t]$/u.test(token.content);
+    const text = mapped(token.content, boundaries, preserveSpaces);
     const inlineCode = inlineCodePositions.get(token);
     if (!inlineCode) return text;
 
@@ -351,10 +382,15 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     return mapped('\u200b', [before, before]) + image + mapped('\u200b', [before, after]);
   };
   renderer.rules.hardbreak = (items, index) => {
-    const pos = positions.get(items[index])!;
+    const token = items[index];
+    const pos = positions.get(token)!;
+    const stripped = breakSpaces.get(token) ?? 0;
     const before = inlineOffsets[pos.start];
     const after = inlineOffsets[pos.end];
-    return mapped('\u200b', [before, before]) + '<br>' + mapped('\u200b', [before, after]);
+    const spaces = stripped > 0
+      ? mapped(' '.repeat(stripped), inlineOffsets.slice(pos.start - stripped, pos.start + 1), true)
+      : '';
+    return spaces + mapped('\u200b', [before, before]) + '<br>' + mapped('\u200b', [before, after]);
   };
   // 본문의 원문 개행도 화면에서 줄을 나누고 앞뒤 편집 위치를 유지한다.
   renderer.rules.softbreak = renderer.rules.hardbreak;
@@ -367,16 +403,52 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
   for (const type of ['fence', 'code_block']) renderer.rules[type] = (items, index) => {
     const token = items[index];
     const offsets = blockOffsets(token);
+    const block = blockPositions.get(token);
     // 마지막 코드 개행도 텍스트 경계를 하나 가진다.
     if (offsets.length === token.content.length) offsets.push(offsets.at(-1)! + 1);
     codeDepth++;
-    const code = mapped(token.content, offsets);
+    // 마지막 개행은 닫는 울타리로 이어지는 구분자다. 코드 내용의 편집 위치에서 제외한다.
+    const endsAtFence = block && token.content.endsWith('\n');
+    const code = endsAtFence ? mapped(token.content.slice(0, -1), offsets.slice(0, -1)) : mapped(token.content, offsets);
     codeDepth--;
-    return `<pre><code>${code}</code></pre>\n`;
+    if (block) {
+      fencedCodeBoundaries.set(originalOffsets[block.start], 1);
+      fencedCodeBoundaries.set(originalOffsets[block.end], -1);
+    }
+    const before = block ? blockBoundary(block.start) : '';
+    const after = block ? blockBoundary(block.end) : '';
+    return `<pre>${before}<code>${code}</code>${after}</pre>\n`;
   };
+  let tableEnd: number | undefined;
+  renderer.rules.table_open = (items, index, options) => {
+    const block = blockPositions.get(items[index]);
+    tableEnd = block?.end;
+    return (block ? blockBoundary(block.start) : '') + renderer.renderToken(items, index, options);
+  };
+  renderer.rules.table_close = (items, index, options) => renderer.renderToken(items, index, options)
+    + (tableEnd === undefined ? '' : blockBoundary(tableEnd));
   let html = '';
+  const blockquoteStack: Array<{ endLine: number; lastCoveredLine: number }> = [];
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    if (token.type === 'blockquote_open' && token.map) {
+      blockquoteStack.push({ endLine: token.map[1], lastCoveredLine: token.map[0] - 1 });
+    } else if (token.map && blockquoteStack.length > 0) {
+      const topQuote = blockquoteStack[blockquoteStack.length - 1];
+      topQuote.lastCoveredLine = Math.max(topQuote.lastCoveredLine, token.map[1] - 1);
+    }
+    if (token.type === 'blockquote_close') {
+      const quote = blockquoteStack.pop();
+      if (quote) {
+        for (let lineIndex = quote.lastCoveredLine + 1; lineIndex < quote.endLine; lineIndex += 1) {
+          const lineEnd = starts[lineIndex] + (lines[lineIndex] ?? '').length;
+          const prevEnd = lineIndex > 0 ? starts[lineIndex] - 1 : lineEnd;
+          html += `<p>${mapped('\u200b', [prevEnd, lineEnd])}</p>`;
+        }
+      }
+      html += renderer.renderToken(tokens, i, parser.options);
+      continue;
+    }
     if (token.type === 'inline') {
       if (token.map) inlineOffsets = blockOffsets(token);
       else {
@@ -402,7 +474,10 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
     } else if (renderer.rules[token.type]) html += renderer.rules[token.type](tokens, i, parser.options, environment, renderer);
     else {
       html += renderer.renderToken(tokens, i, parser.options);
-      if (token.type === 'heading_open' && token.map && token.markup.startsWith('#')) {
+      if (token.type === 'list_item_open' && tokens[i + 1]?.type === 'list_item_close' && token.map) {
+        const end = starts[token.map[0]] + (lines[token.map[0]] ?? '').length;
+        html += mapped('\u200b', [end, end]);
+      } else if (token.type === 'heading_open' && token.map && token.markup.startsWith('#')) {
         const line = lines[token.map[0]];
         const marker = line.match(/^(?: {0,3}>[ \t]?)* {0,3}(#{1,6}[ \t]+)/u);
         if (marker) {
@@ -417,7 +492,7 @@ export function renderMappedMarkdown(source: string, environment: Record<string,
       }
     }
   }
-  return { html, attribute, maps, texts, trailingWhitespaceSpans, codeRanges, inlineCodeRanges, hiddenHeadingMarkers,
+  return { html, attribute, maps, texts, trailingWhitespaceSpans, blockBoundarySpans, codeRanges, inlineCodeRanges, fencedCodeBoundaries, hiddenHeadingMarkers,
     disclosures: disclosures.map(range => ({ ...range,
       bodyStart: originalOffsets[range.bodyStart], end: originalOffsets[range.end] })) };
 }
